@@ -6,6 +6,15 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+## [0.4.0a1] — 2026-05-07
+
+First release of the 0.4 line. Bigger surface area than 0.3.0a* —
+new top-level endpoint (`/v1/embeddings`), new admin endpoint
+(`/v1/_freeride/providers`), new request header (`X-FreeRide-Force-Provider`),
+new response header (`X-FreeRide-Request-ID`), new CLI (`freeride watch`),
+canonical-id grouping in `/v1/models`. All backward-compatible
+with 0.3.0a* clients on the chat path.
+
 ### Added
 - **`X-FreeRide-Force-Provider` request header.** Pins a single
   request to a specific provider, bypassing failover. Useful for
@@ -267,7 +276,8 @@ First public release. Distributable name on PyPI: `freeride-gateway`.
   "Connection reset by peer" before TLS handshake completes. This is a
   Daytona network-policy restriction, not a FreeRide bug.
 
-[Unreleased]: https://github.com/Shaivpidadi/FreeRideV3/compare/v0.3.0a8...HEAD
+[Unreleased]: https://github.com/Shaivpidadi/FreeRideV3/compare/v0.4.0a1...HEAD
+[0.4.0a1]: https://github.com/Shaivpidadi/FreeRideV3/releases/tag/v0.4.0a1
 [0.3.0a8]: https://github.com/Shaivpidadi/FreeRideV3/releases/tag/v0.3.0a8
 [0.3.0a7]: https://github.com/Shaivpidadi/FreeRideV3/releases/tag/v0.3.0a7
 [0.3.0a6]: https://github.com/Shaivpidadi/FreeRideV3/releases/tag/v0.3.0a6
