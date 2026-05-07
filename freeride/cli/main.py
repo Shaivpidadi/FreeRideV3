@@ -165,6 +165,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Open each provider's signup URL in your default browser",
     )
 
+    p_keys = sub.add_parser(
+        "keys",
+        help="Show which provider keys are available vs cooling",
+    )
+    p_keys.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Show per-key breakdown with remaining cooldown",
+    )
+    p_keys.add_argument("--no-color", action="store_true")
+
     return parser
 
 
@@ -245,6 +257,11 @@ def main(argv: list[str] | None = None) -> int:
         from freeride.cli.cmd_init import cmd_init
 
         return cmd_init(args)
+
+    if args.command == "keys":
+        from freeride.cli.cmd_keys import cmd_keys
+
+        return cmd_keys(args)
 
     parser.print_help()
     return 1

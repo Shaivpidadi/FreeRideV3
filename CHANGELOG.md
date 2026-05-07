@@ -7,6 +7,14 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 ## [Unreleased]
 
 ### Added
+- **`freeride keys` CLI** — show which provider keys are available
+  vs cooling. Reads `~/.freeride/cooldown.json` directly (no need for
+  the gateway to be running) and cross-references with the per-provider
+  env vars currently set. Privacy-conscious: actual key values never
+  printed, just `k0`/`k1` indices plus a stable 8-char hash. Per-row:
+  total keys, available count, cooling count, "soonest back" countdown.
+  `--verbose` adds a per-key breakdown showing exactly which key is
+  cooling and how long.
 - **`freeride init` CLI** — interactive setup wizard. Walks through
   every supported provider, shows the signup URL (optional
   `--open-browser` opens each one in the user's default browser),
