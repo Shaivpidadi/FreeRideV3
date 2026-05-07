@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 # FreeRide installer. Run with:
 #
-#   curl -sSL https://free-ride.xyz/install.sh | sh
+#   curl -sSL https://api.free-ride.xyz/install.sh | sh
 #
 # What this does:
 #   1. Installs `uv` (Astral's Rust-based Python package manager) if it isn't already.
@@ -52,7 +52,7 @@ if ! command -v uv >/dev/null 2>&1; then
 
     if ! command -v uv >/dev/null 2>&1; then
         err "uv installed but not on PATH. Restart your shell and re-run this installer, or: \
-export PATH=\"\$HOME/.local/bin:\$PATH\" && curl -sSL https://free-ride.xyz/install.sh | sh"
+export PATH=\"\$HOME/.local/bin:\$PATH\" && curl -sSL https://api.free-ride.xyz/install.sh | sh"
     fi
 fi
 

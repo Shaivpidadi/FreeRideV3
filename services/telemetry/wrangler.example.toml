@@ -13,15 +13,19 @@ binding = "DB" # available as env.DB inside the worker
 database_name = "freeride-telemetry"
 database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"  # paste the UUID printed by `wrangler d1 create freeride-telemetry`
 
-# Public custom domains. Both apex (free-ride.xyz) and subdomain
-# (telemetry.free-ride.xyz) point at this worker:
-# - free-ride.xyz/install.sh + /  ->  installer + homepage
-# - free-ride.xyz/v1/*            ->  telemetry beacon + stats (alias)
-# - telemetry.free-ride.xyz/v1/*  ->  same telemetry endpoints
+# Public custom domains.
+#
+# Hostname split as of 2026-05:
+#   - free-ride.xyz (apex) is owned by the Vercel-hosted marketing site.
+#   - api.free-ride.xyz is the canonical hostname for this Worker.
+#     Routes: /install.sh, /v1/beacon, /v1/stats, /health.
+#   - telemetry.free-ride.xyz is kept as an alias so installs running
+#     pre-0.3.0a9 (which hard-coded that hostname into the beacon URL)
+#     keep working without a re-install.
 [[routes]]
-pattern = "telemetry.free-ride.xyz"
+pattern = "api.free-ride.xyz"
 custom_domain = true
 
 [[routes]]
-pattern = "free-ride.xyz"
+pattern = "telemetry.free-ride.xyz"
 custom_domain = true

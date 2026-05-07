@@ -172,7 +172,7 @@ First public release. Distributable name on PyPI: `freeride-gateway`.
   users get an in-place upgrade.
 - **Test suite** — 175 hermetic unit tests + 6 e2e tests (real Aider, real
   Hermes, openai-python SDK, real OpenClaw chat).
-- **One-line installer** at `https://free-ride.xyz/install.sh` — bootstraps
+- **One-line installer** at `https://api.free-ride.xyz/install.sh` — bootstraps
   `uv` if missing, runs `uv tool install --prerelease=allow freeride-gateway`,
   drops binary at `~/.local/bin/freeride`.
 

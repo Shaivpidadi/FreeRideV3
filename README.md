@@ -3,7 +3,7 @@
 One free AI endpoint. Five providers behind it. Your agents don't need to know.
 
 ```
-$ curl -sSL https://free-ride.xyz/install.sh | sh
+$ curl -sSL https://api.free-ride.xyz/install.sh | sh
 $ export OPENROUTER_API_KEY=sk-or-v1-...
 $ freeride serve
 
@@ -46,7 +46,7 @@ So you sign up for all of them and now you've got five API keys, five SDKs, and 
 ## Install
 
 ```bash
-curl -sSL https://free-ride.xyz/install.sh | sh
+curl -sSL https://api.free-ride.xyz/install.sh | sh
 ```
 
 The installer bootstraps `uv` if missing, then `uv tool install`s `freeride-gateway`. Binary lands at `~/.local/bin/freeride`. Same shape as the bun.sh and astral.sh installers.

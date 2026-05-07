@@ -168,10 +168,10 @@ export default {
     }
 
     if (url.pathname === "/" && request.method === "GET") {
-      return new Response(HOMEPAGE_HTML, {
-        status: 200,
-        headers: { "content-type": "text/html; charset=utf-8" },
-      });
+      // Apex hosts the marketing site (Vercel). The Worker only owns
+      // api.free-ride.xyz now; redirect bare api.free-ride.xyz/ visitors
+      // up to the marketing site so they don't get a stale terminal page.
+      return Response.redirect("https://free-ride.xyz/", 301);
     }
 
     return json({ ok: false, error: "not_found" }, 404);
@@ -185,7 +185,7 @@ export default {
 const INSTALL_SH = `#!/usr/bin/env sh
 # FreeRide installer. Run with:
 #
-#   curl -sSL https://free-ride.xyz/install.sh | sh
+#   curl -sSL https://api.free-ride.xyz/install.sh | sh
 #
 # What this does:
 #   1. Installs uv (Astral's Python package manager) if not already.
@@ -285,7 +285,7 @@ const HOMEPAGE_HTML = `<!doctype html>
 <p class="tagline">Local OpenAI-compatible gateway. Free AI across providers, transparent failover, BYO keys.</p>
 
 <h2>Install</h2>
-<pre>curl -sSL https://free-ride.xyz/install.sh | sh</pre>
+<pre>curl -sSL https://api.free-ride.xyz/install.sh | sh</pre>
 
 <h2>Use</h2>
 <pre>export OPENROUTER_API_KEY=sk-or-v1-...

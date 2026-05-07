@@ -20,7 +20,7 @@ You'll get an acknowledgement within 72 hours. If the issue is confirmed, we'll 
 
 - The `freeride-gateway` PyPI package and the `freeride` CLI
 - The Cloudflare Worker at `services/telemetry/` (running at `telemetry.free-ride.xyz` and `free-ride.xyz`)
-- The install script at `https://free-ride.xyz/install.sh`
+- The install script at `https://api.free-ride.xyz/install.sh`
 
 ## What's out of scope
 

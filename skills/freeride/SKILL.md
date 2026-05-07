@@ -171,4 +171,4 @@ Opt out: `freeride telemetry off`.
 
 - Source: https://github.com/Shaivpidadi/FreeRideV3
 - PyPI: https://pypi.org/project/freeride-gateway/
-- Install: `curl -sSL https://free-ride.xyz/install.sh | sh`
+- Install: `curl -sSL https://api.free-ride.xyz/install.sh | sh`
