@@ -98,13 +98,15 @@ The client never sees the failures — the response includes a `_freeride_provid
 
 Streaming uses **buffer-first-chunk failover**: FreeRide holds the first SSE event from upstream until it confirms the stream started successfully. If upstream errors before producing the first chunk, FreeRide tries the next (provider, key) tuple. Once the first chunk has shipped to the client, mid-stream errors propagate as a truncated stream (rare in practice; documented limitation).
 
-### Telemetry
+### Telemetry — ENABLED BY DEFAULT, opt out anytime
 
-Off by default. When you opt in (`freeride telemetry on`), FreeRide POSTs an aggregate beacon hourly with:
+FreeRide ships with anonymous aggregate telemetry **enabled**. The first time you run any `freeride` command, a one-time disclosure banner prints showing exactly what gets sent.
+
+**Sent hourly** to `https://telemetry.free-ride.xyz/v1/beacon` (silent on failure):
 
 ```json
 {
-  "installation_id": "uuid-v4",
+  "installation_id": "uuid-v4 random per install, opaque",
   "version": "0.3.0",
   "os": "darwin",
   "tokens_served": 412034,
@@ -114,7 +116,21 @@ Off by default. When you opt in (`freeride telemetry on`), FreeRide POSTs an agg
 }
 ```
 
-**Never sent**: prompts, completions, model IDs, API keys, hostnames. Run `freeride telemetry` (no args) to inspect the exact payload before deciding.
+**Never sent**: prompts, completions, model IDs, API keys, hostnames, IPs. The backend (`services/telemetry/`, this repo) explicitly does not log `cf-connecting-ip`.
+
+To opt out:
+
+```bash
+freeride telemetry off
+```
+
+To audit the exact payload before any of it is sent:
+
+```bash
+freeride telemetry
+```
+
+If you'd rather never have any beacon attempted at all, `freeride telemetry off` is sufficient — the gateway never POSTs after that.
 
 ## Commands
 

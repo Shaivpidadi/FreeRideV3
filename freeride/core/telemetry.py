@@ -1,7 +1,8 @@
-"""Opt-in anonymous telemetry beacon.
+"""Default-on anonymous aggregate telemetry beacon.
 
-Default: OFF. The user explicitly opts in via ``freeride telemetry on``,
-which writes ``{telemetry: true}`` to ``~/.freeride/config.json``.
+**Default: ON.** A first-run disclosure banner prints whenever telemetry
+is enabled and the user has not yet acknowledged. Opt out:
+``freeride telemetry off``.
 
 What gets sent (only when enabled, hourly):
 
@@ -49,11 +50,11 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 INSTALLATION_FILE = CONFIG_DIR / "installation_id"
 STATS_FILE = CONFIG_DIR / "stats.json"
 
-# Beacon endpoint. Implementation detail; documented in code, not in
-# the public spec. Override via FREERIDE_TELEMETRY_ENDPOINT env var
-# (mostly for tests, but also lets users redirect to their own
-# self-hosted observability if they really want).
-DEFAULT_BEACON_URL = "https://telemetry.freeride.dev/v1/beacon"
+# Beacon endpoint. Hosted under free-ride.xyz; backend lives at
+# services/telemetry/ in this repo (Cloudflare Worker + D1). Override
+# via FREERIDE_TELEMETRY_ENDPOINT env var for tests or for users who
+# want to redirect to their own self-hosted observability.
+DEFAULT_BEACON_URL = "https://telemetry.free-ride.xyz/v1/beacon"
 
 
 def beacon_url() -> str:
@@ -80,9 +81,16 @@ def installation_id() -> str:
 # ----- opt-in state --------------------------------------------------------
 
 def is_enabled() -> bool:
-    """True iff ``freeride telemetry on`` has been run."""
+    """True unless the user has explicitly opted out via
+    ``freeride telemetry off``. Default-on; honest disclosure handled
+    by :func:`should_show_disclosure` + first-run banner.
+    """
     cfg = read_json_or(CONFIG_FILE, {})
-    return bool(cfg.get("telemetry") is True)
+    if not isinstance(cfg, dict):
+        return True
+    # Explicit False = user opted out. Anything else (missing key, True,
+    # or garbage) means default-on.
+    return cfg.get("telemetry") is not False
 
 
 def set_enabled(enabled: bool) -> None:
@@ -94,6 +102,58 @@ def set_enabled(enabled: bool) -> None:
         cfg = {}
     cfg["telemetry"] = bool(enabled)
     write_json_atomic(CONFIG_FILE, cfg, indent=2)
+
+
+def should_show_disclosure() -> bool:
+    """True when the first-run banner should print: telemetry is on
+    AND the user has not yet acknowledged seeing the disclosure."""
+    if not is_enabled():
+        return False
+    cfg = read_json_or(CONFIG_FILE, {})
+    if not isinstance(cfg, dict):
+        return True
+    return not cfg.get("telemetry_disclosure_shown")
+
+
+def mark_disclosure_shown() -> None:
+    """Persist that the disclosure banner has been shown to this install
+    so it doesn't print on every command. Stored in
+    ``~/.freeride/config.json`` alongside the telemetry flag.
+    """
+    cfg = read_json_or(CONFIG_FILE, {})
+    if not isinstance(cfg, dict):
+        cfg = {}
+    cfg["telemetry_disclosure_shown"] = True
+    write_json_atomic(CONFIG_FILE, cfg, indent=2)
+
+
+DISCLOSURE_BANNER = """
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FreeRide telemetry: ENABLED (default).
+
+Sent hourly to {endpoint} (silent on failure):
+  installation_id, version, os, tokens_served, request_count,
+  providers_active, uptime_hours
+
+Never sent: prompts, completions, model IDs, API keys, hostname, IP.
+
+  Audit payload:  freeride telemetry
+  Opt out:        freeride telemetry off
+
+This banner shows once. Configure under ~/.freeride/config.json.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+
+
+def show_disclosure_banner_once() -> None:
+    """If telemetry is on and disclosure unseen, print the banner and
+    persist that we did. Idempotent — safe to call from every CLI
+    command's entry point.
+    """
+    if not should_show_disclosure():
+        return
+    print(DISCLOSURE_BANNER.format(endpoint=beacon_url()))
+    mark_disclosure_shown()
 
 
 # ----- payload -------------------------------------------------------------

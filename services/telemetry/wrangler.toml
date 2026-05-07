@@ -1,0 +1,16 @@
+name = "freeride-telemetry"
+main = "src/worker.js"
+compatibility_date = "2026-04-01"
+
+# Bind the D1 database created via `wrangler d1 create freeride-telemetry`.
+# Paste the printed database_id here after `wrangler d1 create`.
+[[d1_databases]]
+binding = "DB"                       # available as env.DB inside the worker
+database_name = "freeride-telemetry"
+database_id = "REPLACE-ME-WITH-D1-DATABASE-ID"
+
+# Deploy under the public custom domain when DNS is wired up.
+# Uncomment after adding a CNAME for `telemetry.free-ride.xyz` in CF.
+# [[routes]]
+# pattern = "telemetry.free-ride.xyz/*"
+# custom_domain = true

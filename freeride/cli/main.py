@@ -80,6 +80,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    # Print the telemetry disclosure banner once if it's still pending
+    # — but skip when the user is running `telemetry` itself (they're
+    # already managing it) and when the command is None (just printing
+    # help; banner would be confusing).
+    if args.command not in (None, "telemetry"):
+        from freeride.core.telemetry import show_disclosure_banner_once
+
+        show_disclosure_banner_once()
+
     if args.command is None:
         parser.print_help()
         return 0

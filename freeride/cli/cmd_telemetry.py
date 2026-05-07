@@ -1,4 +1,4 @@
-"""``freeride telemetry`` — manage the opt-in beacon."""
+"""``freeride telemetry`` — manage the default-on beacon."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ def cmd_telemetry(args) -> int:
 
     if state == "on":
         telemetry.set_enabled(True)
+        telemetry.mark_disclosure_shown()  # explicit on => already disclosed
         print("freeride telemetry: ENABLED")
         print()
         print("This installation will POST the following payload hourly to:")
@@ -29,12 +30,12 @@ def cmd_telemetry(args) -> int:
 
     # No args — status + payload preview
     enabled = telemetry.is_enabled()
-    print(f"freeride telemetry: {'ENABLED' if enabled else 'DISABLED'} (default: OFF)")
+    print(f"freeride telemetry: {'ENABLED' if enabled else 'DISABLED'} (default: ENABLED)")
     print()
     print(f"Endpoint: {telemetry.beacon_url()}")
     print(f"Installation ID: {telemetry.installation_id()}")
     print()
-    print("Payload that would be sent (audit before opting in):")
+    print("Payload that would be sent (audit current state):")
     print(telemetry.preview_payload())
     print()
     print("Toggle with: freeride telemetry on  /  freeride telemetry off")

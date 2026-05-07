@@ -44,13 +44,17 @@ class TestInstallationId:
 
 
 class TestEnabledState:
-    def test_default_off(self, isolated_config):
+    def test_default_on(self, isolated_config):
+        # No config file -> default ON.
+        assert telemetry.is_enabled() is True
+
+    def test_explicit_off_disables(self, isolated_config):
+        telemetry.set_enabled(False)
         assert telemetry.is_enabled() is False
 
-    def test_set_on_persists(self, isolated_config):
+    def test_explicit_on(self, isolated_config):
         telemetry.set_enabled(True)
         assert telemetry.is_enabled() is True
-        # Persisted to config.json
         cfg = json.loads(telemetry.CONFIG_FILE.read_text())
         assert cfg["telemetry"] is True
 
@@ -58,14 +62,47 @@ class TestEnabledState:
         telemetry.set_enabled(True)
         telemetry.set_enabled(False)
         assert telemetry.is_enabled() is False
+        telemetry.set_enabled(True)
+        assert telemetry.is_enabled() is True
 
     def test_other_config_keys_round_trip(self, isolated_config):
-        # User has unrelated keys in config.json
         telemetry.CONFIG_FILE.write_text(json.dumps({"some_other_setting": "preserved"}))
-        telemetry.set_enabled(True)
+        telemetry.set_enabled(False)
         cfg = json.loads(telemetry.CONFIG_FILE.read_text())
         assert cfg["some_other_setting"] == "preserved"
-        assert cfg["telemetry"] is True
+        assert cfg["telemetry"] is False
+
+
+class TestDisclosure:
+    def test_should_show_when_default_on_and_unseen(self, isolated_config):
+        # Fresh install: telemetry default-on, disclosure unseen -> show
+        assert telemetry.should_show_disclosure() is True
+
+    def test_does_not_show_after_marked(self, isolated_config):
+        telemetry.mark_disclosure_shown()
+        assert telemetry.should_show_disclosure() is False
+
+    def test_does_not_show_when_disabled(self, isolated_config):
+        # If user opted out before first run, no point showing the disclosure
+        telemetry.set_enabled(False)
+        assert telemetry.should_show_disclosure() is False
+
+    def test_show_disclosure_banner_once_prints_then_silences(self, isolated_config, capsys):
+        # First call: prints
+        telemetry.show_disclosure_banner_once()
+        out1 = capsys.readouterr().out
+        assert "freeride telemetry" in out1.lower()
+        assert telemetry.beacon_url() in out1
+        assert "freeride telemetry off" in out1
+        # Second call: silent
+        telemetry.show_disclosure_banner_once()
+        out2 = capsys.readouterr().out
+        assert out2 == ""
+
+    def test_banner_not_shown_when_opted_out(self, isolated_config, capsys):
+        telemetry.set_enabled(False)
+        telemetry.show_disclosure_banner_once()
+        assert capsys.readouterr().out == ""
 
 
 class TestPayload:
@@ -143,7 +180,8 @@ class TestShipBeacon:
 
                 return R()
 
-        # Don't even import httpx — disabled means no network, period.
+        # Explicitly opt out, then verify no call happens.
+        telemetry.set_enabled(False)
         assert telemetry.ship_beacon() is False
         assert called["n"] == 0
 
