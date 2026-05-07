@@ -201,12 +201,30 @@ single-backup rotation.
 freeride serve                  start the gateway
 freeride bind <agent>           write gateway URL into agent config
 freeride watch                  tail live failover events
+freeride bench                  per-provider latency comparison (needs serve running)
 freeride telemetry [on|off]     manage telemetry
 freeride list                   list available free models
 freeride status                 show OpenClaw config + cache age (v2)
 freeride auto                   auto-configure OpenClaw (v2)
 freeride rotate                 swap primary if it fails (v2)
 freeride-watcher                background daemon that rotates on failure
+```
+
+`freeride bench` example output:
+
+```
+$ freeride bench
+Benchmarking 5 providers, 3 requests each via http://localhost:11343/v1...
+
+provider              ok    p50      p95      tok/s
+─────────────────────────────────────────────────────
+groq                  3/3   142ms    287ms    98
+cloudflare_wai        3/3   284ms    410ms    81
+nvidia_nim            3/3   389ms    502ms    72
+openrouter            3/3   412ms    721ms    63
+huggingface           2/3   612ms    1840ms   41
+
+Fastest: groq (142ms p50)
 ```
 
 The v2 commands keep working for existing OpenClaw users.

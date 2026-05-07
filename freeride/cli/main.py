@@ -86,6 +86,33 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-color", action="store_true", help="Disable ANSI color output"
     )
 
+    p_bench = sub.add_parser(
+        "bench",
+        help="Per-provider latency comparison via the running gateway",
+    )
+    p_bench.add_argument(
+        "--url",
+        default="http://localhost:11343/v1",
+        help="Gateway base URL (default: http://localhost:11343/v1)",
+    )
+    p_bench.add_argument(
+        "--n",
+        type=int,
+        default=3,
+        help="Requests per provider (default: 3)",
+    )
+    p_bench.add_argument(
+        "--model",
+        default="openrouter/free",
+        help="Model id to ask each provider for (default: openrouter/free)",
+    )
+    p_bench.add_argument(
+        "--prompt",
+        default=None,
+        help="Override the test prompt (default: 'Reply with exactly one word: hi.')",
+    )
+    p_bench.add_argument("--no-color", action="store_true")
+
     return parser
 
 
@@ -136,6 +163,11 @@ def main(argv: list[str] | None = None) -> int:
         from freeride.cli.cmd_watch import cmd_watch
 
         return cmd_watch(args)
+
+    if args.command == "bench":
+        from freeride.cli.cmd_bench import cmd_bench
+
+        return cmd_bench(args)
 
     parser.print_help()
     return 1

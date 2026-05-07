@@ -6,6 +6,15 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+### Added
+- **`freeride bench` CLI** — per-provider latency comparison.
+  Uses `X-FreeRide-Force-Provider` to hit each registered provider
+  with N tiny chat completions (default 3), times each, prints a
+  sorted-by-p50 table with success rate + p50/p95 latency + tokens/s.
+  Useful for "which provider is fastest right now?" — a single
+  command answer instead of inspecting `freeride watch` over many
+  requests. Requires `freeride serve` running.
+
 ## [0.4.0a1] — 2026-05-07
 
 First release of the 0.4 line. Bigger surface area than 0.3.0a* —
