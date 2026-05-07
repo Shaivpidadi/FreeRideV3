@@ -42,9 +42,14 @@ Prereq: a Cloudflare account (free) and `wrangler` CLI.
 ```bash
 cd services/telemetry/
 
+# 0) Copy the example config — wrangler.toml itself is gitignored so each
+#    operator keeps their own database_id locally.
+cp wrangler.example.toml wrangler.toml
+
 # 1) Create a D1 database
 wrangler d1 create freeride-telemetry
-# wrangler prints a database_id — paste it into wrangler.toml
+# wrangler prints a database_id — paste it into wrangler.toml's
+# REPLACE_WITH_YOUR_D1_DATABASE_ID slot.
 
 # 2) Apply schema
 wrangler d1 execute freeride-telemetry --file=./schema.sql

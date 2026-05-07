@@ -33,3 +33,8 @@ freeride.egg-info/
 # wrangler / Cloudflare Workers local caches and state — must never be committed
 .wrangler/
 .dev.vars
+
+# Operator-specific wrangler config — real D1 database_id is per-account.
+# wrangler.example.toml is the committed placeholder; copy to wrangler.toml
+# locally and fill in your own values.
+services/telemetry/wrangler.toml
