@@ -7,6 +7,17 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 ## [Unreleased]
 
 ### Added
+- **Health-aware provider ordering** (`freeride/core/health.py`).
+  Per-provider rolling-window stats (default 50 attempts) of success
+  rate and p50 latency. The chat and embeddings routes sort the
+  failover chain by health score so a provider that's been timing out
+  recently gets demoted automatically. Sort is stable: tied providers
+  (which is everything until min-N data accumulates) keep their
+  registration order. Tunable: `FREERIDE_HEALTH_WINDOW` (window size),
+  `FREERIDE_HEALTH_MIN_N` (min attempts before health affects order),
+  `FREERIDE_HEALTH_OFF=1` to disable. New providers get a neutral 100.0
+  score until they cross the min-N threshold so brand-new plugins
+  aren't penalized for having no data.
 - **Canonical model name normalization** (`freeride/core/canonicalize.py`).
   Strips vendor prefixes (`@cf/`, `meta-llama/`, `Qwen/`, etc.),
   quantization suffixes (`-fp8`, `-fp16`, `-q4`, `-fp8-fast`, etc.),

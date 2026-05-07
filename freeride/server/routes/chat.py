@@ -35,7 +35,16 @@ from freeride.core.cooldown import KeyCooldown
 from freeride.core.errors import ErrorKind
 from freeride.core.events import emit as emit_event
 from freeride.core.events import new_request_id
+from freeride.core.health import ProviderHealth, sort_by_health
 from freeride.core.provider import Provider
+
+
+def _record_health(provider_name: str, *, ok: bool, duration_ms: int) -> None:
+    """Called alongside every ``provider_response`` emit so the health
+    tracker reflects what just happened. Next request's failover order
+    biases toward providers that have been responding well recently.
+    """
+    ProviderHealth.instance().record(provider_name, ok=ok, duration_ms=duration_ms)
 
 
 logger = logging.getLogger(__name__)
@@ -184,6 +193,7 @@ async def _try_stream_with_failover(
                     duration_ms=duration_ms,
                     status=last_error.value,
                 )
+                _record_health(provider.name, ok=False, duration_ms=duration_ms)
                 continue
             except httpx.HTTPStatusError as e:
                 duration_ms = int((time.perf_counter() - t0) * 1000)
@@ -209,6 +219,7 @@ async def _try_stream_with_failover(
                     status=kind.value,
                     **({"retry_after_s": summary.retry_after_s} if summary.retry_after_s else {}),
                 )
+                _record_health(provider.name, ok=False, duration_ms=duration_ms)
                 continue
             except httpx.HTTPError as e:
                 duration_ms = int((time.perf_counter() - t0) * 1000)
@@ -222,6 +233,7 @@ async def _try_stream_with_failover(
                     duration_ms=duration_ms,
                     status=last_error.value,
                 )
+                _record_health(provider.name, ok=False, duration_ms=duration_ms)
                 continue
             duration_ms = int((time.perf_counter() - t0) * 1000)
             emit_event(
@@ -233,6 +245,7 @@ async def _try_stream_with_failover(
                 status="OK",
                 first_chunk=True,
             )
+            _record_health(provider.name, ok=True, duration_ms=duration_ms)
             return provider, first, gen
     return None, None, last_error or ErrorKind.UNKNOWN
 
@@ -297,7 +310,11 @@ async def _build_stream_response(
 
 @router.post("/v1/chat/completions")
 async def chat_completions(request: Request, body: ChatRequest):
-    providers: list[Provider] = list(request.app.state.providers)
+    # Health-aware ordering: providers that have been responding well
+    # recently float to the top of the failover chain. Stable sort with
+    # neutral default scores means a fresh process keeps registration
+    # order until enough data accumulates.
+    providers: list[Provider] = sort_by_health(list(request.app.state.providers))
     ctx = FailoverContext(request_id=new_request_id())
 
     emit_event(
@@ -384,6 +401,7 @@ async def chat_completions(request: Request, body: ChatRequest):
                         else {}
                     ),
                 )
+                _record_health(provider.name, ok=False, duration_ms=duration_ms)
                 if kind in (ErrorKind.MODEL_NOT_FOUND, ErrorKind.QUOTA_EXHAUSTED):
                     break
                 continue
@@ -398,6 +416,7 @@ async def chat_completions(request: Request, body: ChatRequest):
                     duration_ms=duration_ms,
                     status=summary.last_error.value,
                 )
+                _record_health(provider.name, ok=False, duration_ms=duration_ms)
                 continue
             duration_ms = int((time.perf_counter() - t0) * 1000)
             emit_event(
@@ -408,6 +427,7 @@ async def chat_completions(request: Request, body: ChatRequest):
                 duration_ms=duration_ms,
                 status="OK",
             )
+            _record_health(provider.name, ok=True, duration_ms=duration_ms)
             chosen_provider = provider
             break
         if response is not None:
