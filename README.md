@@ -205,6 +205,7 @@ freeride watch                  tail live failover events
 freeride bench                  per-provider latency comparison (needs serve running)
 freeride reload                 refresh provider registry from env vars (no restart)
 freeride providers              live provider health from a running gateway
+freeride doctor                 diagnose common setup issues (env vars, PATH, port)
 freeride telemetry [on|off]     manage telemetry
 freeride list                   list available free models
 freeride status                 show OpenClaw config + cache age (v2)

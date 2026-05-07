@@ -134,6 +134,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_providers.add_argument("--no-color", action="store_true")
 
+    p_doctor = sub.add_parser(
+        "doctor",
+        help="Diagnose common setup issues (env vars, PATH, port, gateway reachability)",
+    )
+    p_doctor.add_argument("--no-color", action="store_true")
+
     return parser
 
 
@@ -199,6 +205,11 @@ def main(argv: list[str] | None = None) -> int:
         from freeride.cli.cmd_providers import cmd_providers
 
         return cmd_providers(args)
+
+    if args.command == "doctor":
+        from freeride.cli.cmd_doctor import cmd_doctor
+
+        return cmd_doctor(args)
 
     parser.print_help()
     return 1
