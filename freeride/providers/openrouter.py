@@ -30,10 +30,11 @@ and keeps unknown shapes (the live probe catches false positives).
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, AsyncIterator
 
 import httpx
 
+from freeride.core.chat_schema import ChatRequest, ChatResponse, ChatStreamEvent
 from freeride.core.errors import ErrorKind
 from freeride.core.provider import PROVIDER_API_VERSION
 from freeride.core.types import Model, ProbeResult
@@ -228,6 +229,28 @@ class OpenRouterProvider:
             return value if value >= 0 else None
         except (TypeError, ValueError):
             return None
+
+    # ----- request forwarding (gateway hot-path; impl in Phase 2/3) ------
+    async def forward_chat(
+        self, request: ChatRequest, model_id: str, key: str
+    ) -> ChatResponse:
+        """Non-streaming chat completion. Real implementation lands in Phase 2
+        (Task 2.3.1). Stubbed here so the Provider Protocol is fully satisfied
+        from Phase 1 onward and the conformance suite can run against the
+        real class.
+        """
+        raise NotImplementedError("OpenRouterProvider.forward_chat lands in Phase 2.3.1")
+
+    async def forward_chat_stream(
+        self, request: ChatRequest, model_id: str, key: str
+    ) -> AsyncIterator[ChatStreamEvent]:
+        """Streaming chat completion. Real implementation lands in Phase 3
+        (Task 3.1.1). Async generator stub — must yield to be a generator.
+        """
+        raise NotImplementedError("OpenRouterProvider.forward_chat_stream lands in Phase 3.1.1")
+        # Unreachable but required to make this an async generator function
+        # rather than a coroutine returning an awaitable.
+        yield  # type: ignore[unreachable]
 
     # ----- probing --------------------------------------------------------
     def probe(self, model_id: str, key: str) -> ProbeResult:
