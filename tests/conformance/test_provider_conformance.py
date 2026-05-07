@@ -18,12 +18,13 @@ from typing import Any
 import pytest
 
 from freeride.core.provider import PROVIDER_API_VERSION, Provider
+from freeride.providers.openrouter import OpenRouterProvider
 from tests.fixtures.noop_provider import NoopProvider
 
 
 # Registry: every Provider class that lands ships an entry here.
-# Add OpenRouter in Phase 1.4, NVIDIA NIM in Phase 3.3, etc.
-CONFORMANT_PROVIDERS: list[type] = [NoopProvider]
+# Add NVIDIA NIM in Phase 3.3, etc.
+CONFORMANT_PROVIDERS: list[type] = [NoopProvider, OpenRouterProvider]
 
 
 @pytest.fixture(params=CONFORMANT_PROVIDERS, ids=lambda cls: cls.__name__)
@@ -36,6 +37,28 @@ def provider(provider_class: type) -> Any:
     return provider_class()
 
 
+@pytest.fixture(autouse=True)
+def _stub_outbound_http(provider_class: type, httpx_mock):
+    """For non-Noop providers, stub all outbound HTTP to canned 200s so the
+    conformance suite can exercise list_free_models/probe without real keys
+    or network. NoopProvider doesn't make network calls, so it's a no-op.
+    """
+    if provider_class is NoopProvider:
+        return
+    httpx_mock.add_response(
+        json={
+            "data": [],
+            "id": "stub",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "stub",
+            "choices": [],
+        },
+        is_reusable=True,
+    )
+
+
+@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
 class TestProviderConformance:
     def test_runtime_isinstance(self, provider: Any):
         assert isinstance(provider, Provider), (
