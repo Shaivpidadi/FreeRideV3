@@ -36,6 +36,8 @@ class TestOpenClawBinder:
         assert prov["baseUrl"] == "http://x:1/v1"
         assert prov["apiKey"] == "any"
         assert prov["auth"] == "api-key"
+        # Required for pi-ai library to resolve the correct client class
+        assert prov["api"] == "openai"
         assert isinstance(prov["models"], list) and prov["models"]
         # Auth profile pointer — schema permits only {provider, mode, email}
         prof = cfg["auth"]["profiles"]["freeride:default"]

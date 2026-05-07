@@ -80,6 +80,7 @@ def bind(
         "baseUrl": gateway_url,
         "apiKey": api_key,
         "auth": "api-key",
+        "api": "openai",
         "models": [_FREE_MODEL_DEFINITION],
     }
 
