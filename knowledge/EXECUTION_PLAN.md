@@ -589,32 +589,43 @@ Returns non-empty content.
 **Commit:** `scaffold nvidia_nim provider`
 
 ### Task 3.3.2 — Free-detection logic
-- 3.3.2.1: NIM doesn't expose `:free` suffix; rely on documented free-credit tier list
-- 3.3.2.2: Hardcode known free models (publicly listed) as a starter set; revisit when NIM adds an API for it
+- 3.3.2.1: NIM has no programmatic free-tier signal — all catalog models are callable until the personal-credit pool exhausts (`knowledge/providers/nvidia_nim.md`)
+- 3.3.2.2: Hardcoded allowlist: Llama 3.x family, DeepSeek family, Mistral, Qwen, Gemma — covers the documented personal-use tier
+- 3.3.2.3: `NVIDIA_NIM_FREE_MODELS_OVERRIDE` env var (comma-separated IDs) overrides the allowlist for users with custom tiers
 
-**Commit:** `add nim free-model detection (hardcoded starter list)`
+**Commit:** `add nim free-model allowlist with override env var`
 
 ### Task 3.3.3 — list_free_models
-- 3.3.3.1: Hit NIM `/v1/models`; cross-reference free-list
+- 3.3.3.1: Hit NIM `/v1/models`; cross-reference free allowlist
+- 3.3.3.2: Dedupe by `id` — catalog has duplicate entries (observed `deepseek-v4-flash` and `pro` each appearing twice on 2026-05-07)
+- 3.3.3.3: Catalog only exposes `id`/`owned_by`/`created` — context_length, modalities, supported_parameters not available. Maintain `freeride/providers/nim_model_metadata.py` out-of-band for these
 
-**Commit:** `implement nim list_free_models`
+**Commit:** `implement nim list_free_models with dedup and metadata sidecar`
 
 ### Task 3.3.4 — probe + classify_error
-- 3.3.4.1: NIM error shapes — map to `ErrorKind`
-- 3.3.4.2: NIM uses HTTP 429 for rate limit; possibly HTTP 402 for quota
+- 3.3.4.1: HTTP 429 → `RATE_LIMIT`; standard retry-after parsed by `retry_after_hint`
+- 3.3.4.2: **HTTP 403 → `AUTH`** (NIM uses 403 for invalid keys, NOT 401 — must explicitly map; failure to do so will misclassify as UNKNOWN)
+- 3.3.4.3: **`text/plain` body with "404 page not found" → `MODEL_NOT_FOUND`** — routing-layer 404, NOT a JSON envelope; classifier must inspect Content-Type
+- 3.3.4.4: HTTP 5xx → `UNAVAILABLE`
+- 3.3.4.5: Probe convention: `max_tokens=5` accepted; no minimum-payload rejection observed
 
-**Commit:** `implement nim probe and error classification`
+**Commit:** `implement nim probe and content-type-aware error classification`
 
 ### Task 3.3.5 — forward_chat / forward_chat_stream
-- 3.3.5.1: NIM is OpenAI-compatible at `/v1/chat/completions` — pass-through
+- 3.3.5.1: NIM is OpenAI-compatible at `/v1/chat/completions` — pass-through with two scrub steps below
+- 3.3.5.2: Strip `nvext` field from request and response before forwarding to client (NIM extension; not OpenAI-spec)
+- 3.3.5.3: **Two response shapes observed.** 70b-instruct returns vLLM-extended fields (`refusal`, `annotations`, `audio`, `function_call`, `tool_calls`, `reasoning`, `reasoning_content`, `token_ids`, `stop_reason`, `prompt_logprobs`, `prompt_token_ids`, `kv_transfer_params`, `service_tier`, `system_fingerprint`); 8b-instruct returns classic NIM shape with `nvext`. Strip-list lives in `freeride/providers/nim_response_normalizer.py`
+- 3.3.5.4: Streaming uses standard SSE + `data: [DONE]` terminator. **Penultimate event** has `choices: []` with the final `usage` block — read stats there, NOT from `[DONE]`
+- 3.3.5.5: Surface `nvcf-reqid` response header in gateway logs when `--verbose` (only correlation handle NIM exposes)
 
-**Commit:** `implement nim forward_chat with streaming`
+**Commit:** `implement nim forward_chat with response-shape normalization and streaming usage extraction`
 
 ### Task 3.3.6 — auth + attribution
-- 3.3.6.1: `Authorization: Bearer <key>`
-- 3.3.6.2: `attribution_headers()` returns `{}` (NIM has no equivalent)
+- 3.3.6.1: `Authorization: Bearer <key>` — NIM keys prefix `nvapi-`
+- 3.3.6.2: `attribution_headers()` returns `{}` — NIM accepts `HTTP-Referer`/`X-Title` but ignores them; no app-attribution endpoint
+- 3.3.6.3: No `/v1/credits` or `/v1/usage` endpoint exists — `freeride status` shows "unknown" for NIM remaining quota (compute from local request history if at all)
 
-**Commit:** `implement nim auth headers`
+**Commit:** `implement nim auth headers; document no-attribution-no-quota-endpoint`
 
 ### Task 3.3.7 — Register provider
 - 3.3.7.1: `freeride/providers/__init__.py` — auto-register if `NVIDIA_API_KEY` is set
@@ -785,9 +796,11 @@ Returns non-empty content.
 **E2E test 4.6:** `freeride bind aider` writes `OPENAI_API_BASE` to `.aider.conf.yml` (or shell env). `aider` round-trips successfully.
 
 ### Task 4.6.1 — Aider binder
-- 4.6.1.1: `freeride/binders/aider.py` — writes `~/.aider.conf.yml` with `openai-api-base: http://localhost:11343/v1`
+- 4.6.1.1: `freeride/binders/aider.py` — writes `~/.aider.conf.yml` with `openai-api-base: http://localhost:11343/v1` and `openai-api-key: any`
+- 4.6.1.2: Aider's config search order is git-root → cwd → home (`knowledge/CONSUMERS.md`); default to home scope (`~/.aider.conf.yml`) and add `--scope=git|cwd|home` flag for repo-scoped users
+- 4.6.1.3: Aider requires restart after config change (no hot reload — bind output should remind the user)
 
-**Commit:** `add freeride bind aider`
+**Commit:** `add freeride bind aider with --scope flag`
 
 ### Task 4.6.2 — Tests
 - 4.6.2.1: Fixture aider config; bind; assert correct key written
@@ -796,24 +809,66 @@ Returns non-empty content.
 
 ---
 
-## Feature 4.7 — `freeride bind continue` (phase gate)
+## Feature 4.7 — `freeride bind continue`
 
-**E2E test 4.7 (= phase gate):** Real Continue install + default config + `freeride bind continue` + restart Continue → free AI request via Continue UI lands in gateway logs and responds.
+**E2E test 4.7:** Real Continue install + default config + `freeride bind continue` → free AI request via Continue UI lands in gateway logs and responds. Continue hot-reloads, no restart.
 
 ### Task 4.7.1 — Continue binder
-- 4.7.1.1: `freeride/binders/continue_.py` — writes one block to `~/.continue/config.json`
-- 4.7.1.2: Block: `{"models": [{"title": "freeride", "provider": "openai", "apiBase": "http://localhost:11343/v1", ...}]}`
+- 4.7.1.1: `freeride/binders/continue_.py` — appends a `models[]` entry to `~/.continue/config.yaml` (current Continue uses YAML; legacy installs may have `config.json` — check both paths)
+- 4.7.1.2: Entry shape: `{title: "freeride", provider: "openai", apiBase: "http://localhost:11343/v1", apiKey: "any", roles: [chat, edit, autocomplete]}` — use `provider: openai` NOT `openai-compatible` per docs
+- 4.7.1.3: Continue hot-reloads — no restart needed
+- 4.7.1.4: Verify `apiKey` field name live (canonical Continue example shows `apiBase` only; `apiKey` inferred from OpenAI provider conventions — `knowledge/CONSUMERS.md`)
 
-**Commit:** `add freeride bind continue`
+**Commit:** `add freeride bind continue (yaml, openai provider, hot-reload)`
 
 ### Task 4.7.2 — Tests
 - 4.7.2.1: Fixture continue config; bind; assert preserves unrelated keys
+- 4.7.2.2: Round-trip both YAML and JSON config formats
 
 **Commit:** `add continue bind tests`
 
-### Task 4.7.3 — Phase 4 gate
-- 4.7.3.1: Live test in Daytona with real Continue install
-- 4.7.3.2: Tag `v0.3.0-phase4`
+---
+
+## Feature 4.8 — `freeride bind hermes`
+
+Closes v2 issue #11 ("hermes agent support?"). Hermes is `NousResearch/hermes-agent` (verified against `cli-config.yaml.example` line 36 — `provider: "custom"` for "Any other OpenAI-compatible endpoint").
+
+**E2E test 4.8:** Fresh Hermes install + `freeride bind hermes` + Hermes CLI prompt → request lands in gateway logs and responds.
+
+### Task 4.8.1 — Hermes binder
+- 4.8.1.1: `freeride/binders/hermes.py` — writes 4 keys under `model:` in `~/.hermes/cli-config.yaml`: `provider: "custom"`, `base_url: "http://localhost:11343/v1"`, `api_key: "any"`, `default: "openrouter/free"`
+- 4.8.1.2: Preserve all other top-level keys and unrelated `model.*` keys (including `provider_routing`, `providers:` overrides)
+- 4.8.1.3: Don't touch `~/.hermes/.env` — env vars take precedence in Hermes; we don't want to fight a stale `OPENROUTER_API_KEY` there
+
+**Commit:** `add freeride bind hermes`
+
+### Task 4.8.2 — Tests
+- 4.8.2.1: Fixture cli-config.yaml with unrelated keys; bind; assert preservation
+- 4.8.2.2: Round-trip an existing `provider: "openrouter"` config without losing the previous setting
+
+**Commit:** `add hermes bind tests`
+
+---
+
+## Feature 4.9 — `freeride bind opencode` (extended; not in phase gate)
+
+**E2E test 4.9:** Fresh `sst/opencode` install + `freeride bind opencode` → user prompt routes through gateway.
+
+### Task 4.9.1 — OpenCode binder
+- 4.9.1.1: `freeride/binders/opencode.py` — writes provider block to `~/.config/opencode/opencode.json` using `npm: "@ai-sdk/openai-compatible"`, `options.baseURL`, `options.apiKey`
+- 4.9.1.2: Pre-populate the `models` array from the gateway's own `/v1/models` at bind time (`knowledge/CONSUMERS.md`: OpenCode requires explicit model enumeration)
+- 4.9.1.3: Hot-reloads on next prompt
+
+**Commit:** `add freeride bind opencode (extended target)`
+
+---
+
+## Phase 4 gate
+
+### Task 4.G — Continue integration test (= phase gate)
+- 4.G.1: Live test in Daytona with real Continue install
+- 4.G.2: Verify cross-provider failover still invisible to client at this layer
+- 4.G.3: Tag `v0.3.0-phase4`
 
 **Commit:** `tag phase 4 complete; continue integration verified`
 
@@ -979,9 +1034,9 @@ Rough commit budget across phases (one per task):
 | 1 | ~25 | ~25 |
 | 2 | ~20 | ~20 |
 | 3 | ~14 | ~14 |
-| 4 | ~13 | ~13 |
+| 4 | ~17 | ~17 |
 | 5 | ~14 | ~14 |
-| **Total** | **~86** | **~86** |
+| **Total** | **~90** | **~90** |
 
 Plus phase tags (5). Plus E2E test additions per feature (already counted as tasks). Net commit log readable as a step-by-step build history.
 

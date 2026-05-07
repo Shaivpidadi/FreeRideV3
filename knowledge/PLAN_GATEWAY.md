@@ -257,6 +257,8 @@ All design questions from earlier drafts now have committed answers. Summarized 
 
 If new design questions surface during Phase 1–2, they land here and get resolved before code lands on `main`.
 
+**Provider Protocol absorption verified (2026-05-07).** `knowledge/providers/SURVEY.md` checks Groq, Cloudflare Workers AI, and HuggingFace Inference Providers against the §7 Protocol; all three fit without changes. NIM brought three classification quirks (HTTP 403 not 401 for AUTH; `text/plain` 404 for MODEL_NOT_FOUND; no programmatic free-tier signal — see `knowledge/providers/nvidia_nim.md`); the Protocol absorbs them inside `classify_error` and a per-provider free-list, no Protocol shape change.
+
 ## 14. Telemetry — what gets sent, what doesn't
 
 ### Why this section exists
