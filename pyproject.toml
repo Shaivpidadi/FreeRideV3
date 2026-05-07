@@ -32,7 +32,11 @@ dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",
     "pytest-httpx>=0.30",
+    "pytest-timeout>=2.3",
     "ruff>=0.6",
+]
+e2e = [
+    "openai>=2",
 ]
 
 [project.scripts]
@@ -56,3 +60,9 @@ target-version = "py310"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# e2e tests are slow and need real API keys + agent installs.
+# Default suite skips them; opt-in via `pytest -m e2e` or `FREERIDE_E2E=1`.
+addopts = "-m 'not e2e'"
+markers = [
+    "e2e: end-to-end tests against real agents and live providers (slow, network-bound)",
+]

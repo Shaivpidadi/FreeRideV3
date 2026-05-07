@@ -1,0 +1,110 @@
+"""End-to-end test fixtures.
+
+These tests are slow, hit the network, and need real API keys. They're
+opt-in via either ``-m e2e`` or by setting ``FREERIDE_E2E=1``. CI runs
+them on push (when the org provides keys); local devs run them
+explicitly when verifying agent integrations.
+
+Each test gets a fresh gateway subprocess on a free-ish port, with the
+configured providers loaded via env. Tests subprocess out to the agent
+under test, then assert the agent got a real response and that the
+gateway logged the request.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import time
+from contextlib import closing
+from pathlib import Path
+from typing import Generator
+
+import httpx
+import pytest
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+GATEWAY_BIN = REPO_ROOT / ".venv" / "bin" / "freeride"
+
+
+def _free_port() -> int:
+    """Pick an OS-assigned free port, then close it."""
+    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _wait_for_health(url: str, *, timeout_s: float = 15.0) -> None:
+    """Poll /health until 200 or timeout."""
+    deadline = time.time() + timeout_s
+    last_err = None
+    while time.time() < deadline:
+        try:
+            r = httpx.get(url, timeout=2.0)
+            if r.status_code == 200:
+                return
+        except httpx.HTTPError as e:
+            last_err = e
+        time.sleep(0.3)
+    raise RuntimeError(f"gateway never became healthy at {url}: {last_err}")
+
+
+@pytest.fixture(scope="session")
+def gateway_url() -> Generator[str, None, None]:
+    """Session-scoped gateway subprocess.
+
+    Skips the entire session if no provider API key is available — the
+    gateway can technically start without keys but every e2e test needs
+    real providers.
+    """
+    if not (os.environ.get("OPENROUTER_API_KEY") or os.environ.get("NVIDIA_API_KEY")):
+        pytest.skip("no provider API key set (OPENROUTER_API_KEY or NVIDIA_API_KEY)")
+
+    if not GATEWAY_BIN.exists():
+        pytest.skip(f"gateway binary missing at {GATEWAY_BIN} (run `pip install -e .`)")
+
+    port = _free_port()
+    base = f"http://127.0.0.1:{port}"
+    health = f"{base}/health"
+
+    proc = subprocess.Popen(
+        [str(GATEWAY_BIN), "serve", "--port", str(port), "--host", "127.0.0.1"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env={**os.environ},
+    )
+    try:
+        _wait_for_health(health)
+        yield f"{base}/v1"
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+
+
+def _have(binary: str) -> bool:
+    return shutil.which(binary) is not None
+
+
+# Per-agent skip helpers — each e2e test calls the matching one.
+
+def require_aider():
+    if not _have("aider"):
+        pytest.skip("aider not installed (curl -sLS https://aider.chat/install.sh | sh)")
+
+
+def require_hermes():
+    if not _have("hermes"):
+        pytest.skip("hermes-agent not installed")
+
+
+def require_openclaw():
+    if not _have("openclaw"):
+        pytest.skip("openclaw not installed")
