@@ -1,0 +1,58 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "freeride"
+dynamic = ["version"]
+description = "Free-AI gateway: OpenAI-compatible local proxy that orchestrates free-tier inference across multiple providers"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Shaishav Pidadi" }]
+keywords = ["ai", "llm", "openai", "openrouter", "proxy", "gateway"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "httpx>=0.27",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "pytest-httpx>=0.30",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+freeride = "freeride.cli.main:main"
+freeride-watcher = "freeride.cli.watcher:main"
+
+[project.urls]
+Homepage = "https://github.com/Shaivpidadi/FreeRideV3"
+Repository = "https://github.com/Shaivpidadi/FreeRideV3"
+
+[tool.hatch.version]
+path = "freeride/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["freeride"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
