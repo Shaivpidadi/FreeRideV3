@@ -24,7 +24,7 @@ from freeride.core.embedding_schema import EmbeddingRequest, EmbeddingResponse
 from freeride.core.errors import ErrorKind
 from freeride.core.events import emit as emit_event
 from freeride.core.events import new_request_id
-from freeride.core.health import sort_by_health
+from freeride.core.health import sort_by_health, sort_keys_by_health
 from freeride.core.provider import Provider
 from freeride.server.routes.chat import (
     FailoverContext,
@@ -139,7 +139,8 @@ async def embeddings(request: Request, body: EmbeddingRequest):
     response: EmbeddingResponse | None = None
     for provider, keys in chain:
         summary = ctx.attempt(provider.name)
-        for key_idx, key in enumerate(keys):
+        ordered_keys = sort_keys_by_health(provider.name, keys)
+        for key_idx, key in enumerate(ordered_keys):
             summary.keys_tried += 1
             emit_event(
                 "provider_attempt",
@@ -173,7 +174,7 @@ async def embeddings(request: Request, body: EmbeddingRequest):
                         else {}
                     ),
                 )
-                _record_health(provider.name, ok=False, duration_ms=duration_ms)
+                _record_health(provider.name, ok=False, duration_ms=duration_ms, key=key)
                 if kind in (ErrorKind.MODEL_NOT_FOUND, ErrorKind.QUOTA_EXHAUSTED):
                     break
                 continue
@@ -188,7 +189,7 @@ async def embeddings(request: Request, body: EmbeddingRequest):
                     duration_ms=duration_ms,
                     status=summary.last_error.value,
                 )
-                _record_health(provider.name, ok=False, duration_ms=duration_ms)
+                _record_health(provider.name, ok=False, duration_ms=duration_ms, key=key)
                 continue
             duration_ms = int((time.perf_counter() - t0) * 1000)
             emit_event(
@@ -199,7 +200,7 @@ async def embeddings(request: Request, body: EmbeddingRequest):
                 duration_ms=duration_ms,
                 status="OK",
             )
-            _record_health(provider.name, ok=True, duration_ms=duration_ms)
+            _record_health(provider.name, ok=True, duration_ms=duration_ms, key=key)
             chosen_provider = provider
             break
         if response is not None:

@@ -7,6 +7,16 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 ## [Unreleased]
 
 ### Added
+- **Per-key health tracking and ordering.** The health module now also
+  tracks rolling success-rate + p50 latency per `(provider, key_hash)`
+  in addition to the per-provider rollup. The chat and embeddings
+  routes call `sort_keys_by_health(provider, keys)` to sort within a
+  provider's keys before walking them, so a single flaky key gets
+  demoted relative to its siblings without affecting the provider's
+  overall ordering. Privacy: keys are stored hashed (SHA256 prefix)
+  inside the tracker; raw key never persists. Backward-compatible:
+  `record()` still works without a `key=` arg (continues to update
+  only the provider rollup), so non-route callers don't need changes.
 - **`freeride keys` CLI** — show which provider keys are available
   vs cooling. Reads `~/.freeride/cooldown.json` directly (no need for
   the gateway to be running) and cross-references with the per-provider

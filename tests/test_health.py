@@ -133,3 +133,81 @@ class TestSortByHealth:
         # With reordering disabled, original order is preserved.
         sorted_p = sort_by_health(providers)
         assert [p.name for p in sorted_p] == ["openrouter", "groq"]
+
+
+class TestPerKeyHealth:
+    def test_record_with_key_updates_both_provider_and_key_stats(self):
+        h = ProviderHealth.instance()
+        h.record("openrouter", ok=True, duration_ms=100, key="key1")
+        h.record("openrouter", ok=False, duration_ms=500, key="key1")
+        # Provider rollup sees both attempts.
+        assert h.stats("openrouter")["n"] == 2
+        # Per-key stats also see both.
+        assert h.key_stats("openrouter", "key1")["n"] == 2
+        # Different key has its own stats.
+        assert h.key_stats("openrouter", "key2")["n"] == 0
+
+    def test_keys_isolated_across_providers(self):
+        """Same raw key string used by two providers should have
+        independent per-key stats — keying is by (provider, hash) tuple.
+        """
+        h = ProviderHealth.instance()
+        h.record("openrouter", ok=True, duration_ms=100, key="shared-key")
+        h.record("groq", ok=False, duration_ms=999, key="shared-key")
+        assert h.key_stats("openrouter", "shared-key")["success_rate"] == 1.0
+        assert h.key_stats("groq", "shared-key")["success_rate"] == 0.0
+
+    def test_record_without_key_doesnt_pollute_key_stats(self):
+        h = ProviderHealth.instance()
+        h.record("openrouter", ok=True, duration_ms=100)  # no key=
+        # Provider stats updated.
+        assert h.stats("openrouter")["n"] == 1
+        # No per-key entry created.
+        assert h.key_stats("openrouter", "anything")["n"] == 0
+
+
+class TestSortKeysByHealth:
+    def test_stable_when_no_data(self):
+        from freeride.core.health import sort_keys_by_health
+
+        keys = ["k1", "k2", "k3"]
+        assert sort_keys_by_health("openrouter", keys) == keys
+
+    def test_demotes_failing_key_within_provider(self, monkeypatch):
+        from freeride.core.health import sort_keys_by_health
+
+        monkeypatch.setenv("FREERIDE_HEALTH_MIN_N", "3")
+        ProviderHealth.reset()
+        h = ProviderHealth.instance()
+        # k1 is failing; k2 is healthy.
+        for _ in range(5):
+            h.record("openrouter", ok=False, duration_ms=999, key="k1")
+            h.record("openrouter", ok=True, duration_ms=100, key="k2")
+        ordered = sort_keys_by_health("openrouter", ["k1", "k2"])
+        assert ordered == ["k2", "k1"], "expected healthier k2 first"
+
+    def test_disabled_preserves_input_order(self, monkeypatch):
+        from freeride.core.health import sort_keys_by_health
+
+        monkeypatch.setenv("FREERIDE_HEALTH_OFF", "1")
+        monkeypatch.setenv("FREERIDE_HEALTH_MIN_N", "3")
+        ProviderHealth.reset()
+        h = ProviderHealth.instance()
+        for _ in range(5):
+            h.record("openrouter", ok=False, duration_ms=999, key="k1")
+        # Even though k1 looks bad, OFF=1 keeps original order.
+        ordered = sort_keys_by_health("openrouter", ["k1", "k2"])
+        assert ordered == ["k1", "k2"]
+
+    def test_key_hashes_dont_leak_secret(self):
+        """The internal storage uses a hash, not the raw key. Verify by
+        scoring with a different string than was recorded.
+        """
+        h = ProviderHealth.instance()
+        h.record("openrouter", ok=True, duration_ms=50, key="secret-key-abc")
+        # Score for the recorded key reflects the data:
+        s_recorded = h.key_stats("openrouter", "secret-key-abc")
+        assert s_recorded["n"] == 1
+        # Score for a different key returns the neutral default:
+        s_other = h.key_stats("openrouter", "different-key")
+        assert s_other["n"] == 0

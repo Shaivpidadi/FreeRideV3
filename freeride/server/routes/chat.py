@@ -35,16 +35,22 @@ from freeride.core.cooldown import KeyCooldown
 from freeride.core.errors import ErrorKind
 from freeride.core.events import emit as emit_event
 from freeride.core.events import new_request_id
-from freeride.core.health import ProviderHealth, sort_by_health
+from freeride.core.health import ProviderHealth, sort_by_health, sort_keys_by_health
 from freeride.core.provider import Provider
 
 
-def _record_health(provider_name: str, *, ok: bool, duration_ms: int) -> None:
+def _record_health(
+    provider_name: str, *, ok: bool, duration_ms: int, key: str | None = None
+) -> None:
     """Called alongside every ``provider_response`` emit so the health
     tracker reflects what just happened. Next request's failover order
-    biases toward providers that have been responding well recently.
+    biases toward providers (and keys) that have been responding well
+    recently. ``key`` is the raw secret — it's hashed before storage
+    inside ProviderHealth.
     """
-    ProviderHealth.instance().record(provider_name, ok=ok, duration_ms=duration_ms)
+    ProviderHealth.instance().record(
+        provider_name, ok=ok, duration_ms=duration_ms, key=key
+    )
 
 
 logger = logging.getLogger(__name__)
@@ -170,7 +176,11 @@ async def _try_stream_with_failover(
     for provider, keys in chain:
         summary = ctx.attempt(provider.name)
         provider_done = False
-        for key_idx, key in enumerate(keys):
+        # Sort within-provider keys by per-key health so a single flaky
+        # key gets demoted relative to its siblings without affecting
+        # the provider's overall ordering.
+        ordered_keys = sort_keys_by_health(provider.name, keys)
+        for key_idx, key in enumerate(ordered_keys):
             if provider_done:
                 break
             summary.keys_tried += 1
@@ -198,7 +208,7 @@ async def _try_stream_with_failover(
                     duration_ms=duration_ms,
                     status=last_error.value,
                 )
-                _record_health(provider.name, ok=False, duration_ms=duration_ms)
+                _record_health(provider.name, ok=False, duration_ms=duration_ms, key=key)
                 continue
             except httpx.HTTPStatusError as e:
                 duration_ms = int((time.perf_counter() - t0) * 1000)
@@ -224,7 +234,7 @@ async def _try_stream_with_failover(
                     status=kind.value,
                     **({"retry_after_s": summary.retry_after_s} if summary.retry_after_s else {}),
                 )
-                _record_health(provider.name, ok=False, duration_ms=duration_ms)
+                _record_health(provider.name, ok=False, duration_ms=duration_ms, key=key)
                 continue
             except httpx.HTTPError as e:
                 duration_ms = int((time.perf_counter() - t0) * 1000)
@@ -238,7 +248,7 @@ async def _try_stream_with_failover(
                     duration_ms=duration_ms,
                     status=last_error.value,
                 )
-                _record_health(provider.name, ok=False, duration_ms=duration_ms)
+                _record_health(provider.name, ok=False, duration_ms=duration_ms, key=key)
                 continue
             duration_ms = int((time.perf_counter() - t0) * 1000)
             emit_event(
@@ -250,7 +260,7 @@ async def _try_stream_with_failover(
                 status="OK",
                 first_chunk=True,
             )
-            _record_health(provider.name, ok=True, duration_ms=duration_ms)
+            _record_health(provider.name, ok=True, duration_ms=duration_ms, key=key)
             return provider, first, gen
     return None, None, last_error or ErrorKind.UNKNOWN
 
@@ -403,7 +413,8 @@ async def chat_completions(request: Request, body: ChatRequest):
     response: ChatResponse | None = None
     for provider, keys in chain:
         summary = ctx.attempt(provider.name)
-        for key_idx, key in enumerate(keys):
+        ordered_keys = sort_keys_by_health(provider.name, keys)
+        for key_idx, key in enumerate(ordered_keys):
             summary.keys_tried += 1
             emit_event(
                 "provider_attempt",
@@ -437,7 +448,7 @@ async def chat_completions(request: Request, body: ChatRequest):
                         else {}
                     ),
                 )
-                _record_health(provider.name, ok=False, duration_ms=duration_ms)
+                _record_health(provider.name, ok=False, duration_ms=duration_ms, key=key)
                 if kind in (ErrorKind.MODEL_NOT_FOUND, ErrorKind.QUOTA_EXHAUSTED):
                     break
                 continue
@@ -452,7 +463,7 @@ async def chat_completions(request: Request, body: ChatRequest):
                     duration_ms=duration_ms,
                     status=summary.last_error.value,
                 )
-                _record_health(provider.name, ok=False, duration_ms=duration_ms)
+                _record_health(provider.name, ok=False, duration_ms=duration_ms, key=key)
                 continue
             duration_ms = int((time.perf_counter() - t0) * 1000)
             emit_event(
@@ -463,7 +474,7 @@ async def chat_completions(request: Request, body: ChatRequest):
                 duration_ms=duration_ms,
                 status="OK",
             )
-            _record_health(provider.name, ok=True, duration_ms=duration_ms)
+            _record_health(provider.name, ok=True, duration_ms=duration_ms, key=key)
             chosen_provider = provider
             break
         if response is not None:
