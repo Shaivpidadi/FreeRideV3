@@ -22,6 +22,7 @@ from typing import Any
 from fastapi import APIRouter, Query, Request
 
 from freeride.core.cache import TTLCache
+from freeride.core.canonicalize import canonicalize
 from freeride.core.cooldown import KeyCooldown
 from freeride.core.provider import Provider
 
@@ -71,13 +72,21 @@ def _key_for(provider: Provider) -> str | None:
     return available[0] if available else None
 
 
-async def _aggregate_models(providers: list[Provider]) -> list[dict[str, Any]]:
+async def _aggregate_models(
+    providers: list[Provider], *, group: bool
+) -> list[dict[str, Any]]:
     """Run each provider's sync ``list_free_models`` in a thread so we
-    don't block the event loop, dedupe by api_id, return the union as
-    OpenAI-formatted dicts.
+    don't block the event loop, then either:
+
+    - ``group=True`` (default): collapse models that canonicalize to the
+      same key into one entry. The first-seen entry wins for ``id``,
+      ``context_length``, etc.; later ones contribute their
+      provider-specific id to ``aliases`` and provider name to
+      ``available_providers``. ``canonical_id`` is stamped on every entry.
+    - ``group=False``: return one entry per (provider, api_id) pair with
+      ``canonical_id`` stamped but no merging.
     """
-    results: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    raw_entries: list[tuple[str, Any]] = []
     for p in providers:
         key = _key_for(p)
         if key is None:
@@ -89,24 +98,65 @@ async def _aggregate_models(providers: list[Provider]) -> list[dict[str, Any]]:
             logger.warning("provider %s list_free_models failed: %s", p.name, e)
             continue
         for m in models:
-            if m.api_id in seen:
+            raw_entries.append((p.name, m))
+
+    if not group:
+        results: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for provider_name, m in raw_entries:
+            key = f"{provider_name}::{m.api_id}"
+            if key in seen:
                 continue
-            seen.add(m.api_id)
-            results.append(_model_to_openai_obj(p.name, m))
-    return results
+            seen.add(key)
+            obj = _model_to_openai_obj(provider_name, m)
+            obj["canonical_id"] = canonicalize(m.api_id)
+            obj["aliases"] = []
+            obj["available_providers"] = [provider_name]
+            results.append(obj)
+        return results
+
+    # Grouped: dedupe by canonical key, merging aliases.
+    groups: dict[str, dict[str, Any]] = {}
+    for provider_name, m in raw_entries:
+        canon = canonicalize(m.api_id) or m.api_id
+        if canon not in groups:
+            entry = _model_to_openai_obj(provider_name, m)
+            entry["canonical_id"] = canon
+            entry["aliases"] = []
+            entry["available_providers"] = [provider_name]
+            groups[canon] = entry
+            continue
+        # Merge: add this provider's id as an alias if it's not already
+        # the primary id, and append the provider name (deduped).
+        existing = groups[canon]
+        if m.api_id != existing["id"] and m.api_id not in existing["aliases"]:
+            existing["aliases"].append(m.api_id)
+        if provider_name not in existing["available_providers"]:
+            existing["available_providers"].append(provider_name)
+    return list(groups.values())
 
 
 @router.get("/v1/models")
 async def list_models(
     request: Request,
     refresh: bool = Query(False, description="Bypass the 6h cache and re-fetch from providers"),
+    group: bool = Query(
+        True,
+        description=(
+            "Collapse models that canonicalize to the same logical model "
+            "(e.g. Llama 3.1 8B Instruct from OR/Groq/HF/CF) into one entry "
+            "with `aliases` listing the provider-specific ids. "
+            "Pass `group=false` to return one entry per (provider, model)."
+        ),
+    ),
 ) -> dict[str, Any]:
+    cache_key = f"{_CACHE_KEY}.grouped" if group else f"{_CACHE_KEY}.ungrouped"
     if not refresh:
-        cached = _CACHE.get(_CACHE_KEY)
+        cached = _CACHE.get(cache_key)
         if cached is not None:
             return {"object": "list", "data": cached}
 
     providers: list[Provider] = list(request.app.state.providers)
-    data = await _aggregate_models(providers)
-    _CACHE.set(_CACHE_KEY, data)
+    data = await _aggregate_models(providers, group=group)
+    _CACHE.set(cache_key, data)
     return {"object": "list", "data": data}

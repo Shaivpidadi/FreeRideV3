@@ -7,6 +7,20 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 ## [Unreleased]
 
 ### Added
+- **Canonical model name normalization** (`freeride/core/canonicalize.py`).
+  Strips vendor prefixes (`@cf/`, `meta-llama/`, `Qwen/`, etc.),
+  quantization suffixes (`-fp8`, `-fp16`, `-q4`, `-fp8-fast`, etc.),
+  Groq release-train aliases (`-instant`, `-versatile`, `-tool-use-preview`
+  → `-instruct`), and HF routing-policy suffixes (`:fastest`, `:cheapest`,
+  `:<provider>`). Idempotent. 28 unit tests covering each provider's
+  representations of Llama 3.1 8B converging to the same key.
+- **`/v1/models` grouped mode (default).** When the same logical model
+  is exposed by multiple providers under different ids, returns ONE
+  entry with `canonical_id`, `aliases` (list of provider-specific ids),
+  and `available_providers` (list of provider names). The first-seen
+  provider's id surfaces as the primary `id`. Pass `?group=false` to
+  return the un-merged matrix (one entry per provider/model pair).
+  All entries get `canonical_id` regardless of mode.
 - **`POST /v1/embeddings` endpoint** — OpenAI-compatible embeddings
   with cross-provider failover. Implemented on OpenRouter, NVIDIA NIM,
   Cloudflare Workers AI, and HuggingFace. Groq is excluded (chat-only
