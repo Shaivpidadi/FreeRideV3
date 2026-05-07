@@ -189,9 +189,10 @@ Or anything else: `OPENAI_API_BASE=http://localhost:11343/v1` + `OPENAI_API_KEY=
 
 ## Docs
 
-- [`knowledge/PLAN_GATEWAY.md`](knowledge/PLAN_GATEWAY.md) — design plan, decisions, telemetry spec
-- [`knowledge/providers/`](knowledge/providers/) — per-provider technical references
-- [`knowledge/CONSUMERS.md`](knowledge/CONSUMERS.md) — per-agent bind reference
+- [`docs/providers/SURVEY.md`](docs/providers/SURVEY.md) — Provider Protocol fit per provider (auth shape, free-tier semantics, error mapping)
+- [`docs/providers/nvidia_nim.md`](docs/providers/nvidia_nim.md) — NVIDIA NIM specifics (free-model allowlist, 403=AUTH quirk)
+- [`docs/agent-binders.md`](docs/agent-binders.md) — per-agent bind reference (config locations, hot-reload behavior, edge cases)
+- [`docs/hermes.md`](docs/hermes.md) — Hermes identification + bind plan
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — adding a provider or binder
 
 ## License

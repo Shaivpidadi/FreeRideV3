@@ -65,4 +65,3 @@ Ship Protocol as v1; revisit only on real friction.
 - https://developers.cloudflare.com/workers-ai/platform/pricing/
 - https://huggingface.co/docs/inference-providers/index
 - https://huggingface.co/docs/inference-providers/pricing
-- `/Users/shaivpidadi/Desktop/oss/free-ride/FreeRideV3/knowledge/PLAN_GATEWAY.md` §7, §9 (D1–D14)

@@ -183,7 +183,7 @@ Keys to preserve are agent-specific but the rule is the same for all three: read
 1. **Continue config-file location precedence.** Some installs use `~/.continue/config.json` (legacy). The bind helper should detect whichever file exists, prefer YAML, and fall back to JSON only if the YAML doesn't exist.
 2. **Aider `.aider.conf.yml` location precedence.** Aider's three-place search (git root → cwd → home) means the bind helper must decide which one to write. Default to `~/.aider.conf.yml` (home), but document a `--scope=cwd|git|home` flag for users who keep per-project Aider config.
 3. **OpenCode model list bootstrapping.** At bind time, fetch the gateway's `/v1/models` and pre-populate `provider.freeride.models{}` so the user has something to pick. Refresh on `freeride bind opencode --refresh`.
-4. **Hermes** — separate research note (knowledge/HERMES.md). Not covered here.
+4. **Hermes** — separate research note (docs/hermes.md). Not covered here.
 
 ### Not in scope (per `PLAN_GATEWAY.md` §15)
 - llama.cpp, LM Studio — local inference, no gateway need.

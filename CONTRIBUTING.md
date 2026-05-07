@@ -98,13 +98,13 @@ need to import or subclass anything.
   (gateway request handler) contexts. Keep methods that don't need to be
   async sync; the async ones (`forward_chat`, `forward_chat_stream`) are
   the ones that hit the request hot-path.
-- Free-detection: see `knowledge/providers/SURVEY.md` for the three patterns
+- Free-detection: see `docs/providers/SURVEY.md` for the three patterns
   in the wild (per-model flag, global free-credit pool, per-model RPM/TPM
   caps).
 
 ### Documentation
 
-Add a per-provider reference at `knowledge/providers/<your_provider>.md`
+Add a per-provider reference at `docs/providers/<your_provider>.md`
 covering: auth, catalog endpoint, free-tier semantics, probe convention,
 error classification, streaming, capabilities, attribution, and any
 OpenAI-compat deltas. The NIM and OpenRouter docs in there are good
@@ -187,9 +187,9 @@ that spins up the gateway and runs a real prompt.
 
 ## Roadmap visibility
 
-- `knowledge/PLAN_GATEWAY.md` — design plan
-- `knowledge/EXECUTION_PLAN.md` — phased execution playbook
-- `knowledge/RELEASE_CHECKLIST.md` — go-live status
+- [`docs/providers/SURVEY.md`](docs/providers/SURVEY.md) — Provider Protocol fit per provider
+- [`docs/agent-binders.md`](docs/agent-binders.md) — agent bind reference
+- [GitHub Issues](https://github.com/Shaivpidadi/FreeRideV3/issues) — current backlog and roadmap
 
 For new product directions, open a GitHub issue first to discuss.
 

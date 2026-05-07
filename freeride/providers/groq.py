@@ -2,7 +2,7 @@
 
 Implements the v3 :class:`Provider` Protocol for ``api.groq.com``.
 Groq is OpenAI-compatible at ``/openai/v1/`` with a few quirks per
-``knowledge/providers/SURVEY.md``:
+``docs/providers/SURVEY.md``:
 
 1. **No programmatic free-tier signal.** The catalog exposes
    ``context_window`` but not a "free" flag — what's accessible depends

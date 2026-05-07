@@ -65,7 +65,7 @@ class Provider(Protocol):
         """Return the provider's free-tier-eligible chat models.
 
         Implementations decide what "free" means per provider — see
-        ``knowledge/providers/SURVEY.md`` for the three patterns
+        ``docs/providers/SURVEY.md`` for the three patterns
         (per-model flag, global free budget, per-model RPM/TPM caps).
         """
         ...
@@ -104,7 +104,7 @@ class Provider(Protocol):
         Provider-specific quirks live here — e.g., NIM uses HTTP 403 (not
         401) for invalid keys, and serves a ``text/plain`` 404 for unknown
         models (not a JSON error envelope). See per-provider docs in
-        ``knowledge/providers/``.
+        ``docs/providers/``.
         """
         ...
 

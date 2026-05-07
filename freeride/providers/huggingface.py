@@ -3,7 +3,7 @@
 Implements the v3 :class:`Provider` Protocol against HF's router endpoint:
 ``https://router.huggingface.co/v1`` (chat-completions OpenAI-compat).
 
-HF-specific shape (per ``knowledge/providers/SURVEY.md``):
+HF-specific shape (per ``docs/providers/SURVEY.md``):
 
 1. **Free tier is a small monthly credit budget** ($0.10/mo on Free,
    $2/mo on PRO), not a per-model flag. After exhaustion the API

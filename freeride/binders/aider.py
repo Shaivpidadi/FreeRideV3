@@ -1,6 +1,6 @@
 """``freeride bind aider`` — point Aider at the gateway.
 
-Per ``knowledge/CONSUMERS.md``: Aider's config search order is
+Per ``docs/agent-binders.md``: Aider's config search order is
 git-root → cwd → home, so we default to the home-scoped
 ``~/.aider.conf.yml``. The user can pass a ``scope`` to force one of
 the other locations.

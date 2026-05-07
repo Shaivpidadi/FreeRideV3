@@ -13,8 +13,7 @@ OpenRouter exposes two signals that disagree occasionally:
 * ``":free"`` suffix in ``model.id`` — the routing-side flag
 
 We treat a model as free if **either** signal says free. Direct port
-of v2's behavior; matches the dual-signal note in
-``knowledge/PLAN_GATEWAY.md`` §5 carry-forward principle 1.
+of v2's behavior (carry-forward principle 1: dual-signal free detection).
 
 Chat-shape filter
 -----------------

@@ -1,7 +1,7 @@
 """NVIDIA NIM / NVIDIA Build provider plugin.
 
 Implements the v3 :class:`Provider` Protocol for ``integrate.api.nvidia.com``.
-Per ``knowledge/providers/nvidia_nim.md``, NIM has three classification
+Per ``docs/providers/nvidia_nim.md``, NIM has three classification
 quirks that the gateway must absorb in ``classify_error`` (without any
 core/ changes — Phase 3 seam-quality gate):
 
@@ -73,7 +73,7 @@ def _free_model_set() -> frozenset[str]:
 
 
 # Provider-specific response keys to strip before forwarding to client.
-# Per knowledge/providers/nvidia_nim.md: nvext is a NIM extension; the
+# Per docs/providers/nvidia_nim.md: nvext is a NIM extension; the
 # vLLM extras (refusal/annotations/audio/function_call/tool_calls/
 # reasoning/reasoning_content/token_ids/stop_reason/prompt_logprobs/
 # prompt_token_ids/kv_transfer_params/service_tier/system_fingerprint)

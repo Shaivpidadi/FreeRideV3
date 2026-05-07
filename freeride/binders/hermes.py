@@ -1,6 +1,6 @@
 """``freeride bind hermes`` — point Hermes Agent at the gateway.
 
-Per ``knowledge/HERMES.md``: ``NousResearch/hermes-agent`` ships a
+Per ``docs/hermes.md``: ``NousResearch/hermes-agent`` ships a
 first-class ``provider: "custom"`` mode for "Any other OpenAI-compatible
 endpoint" with a ``base_url:`` field. The repo distributes a sample
 file as ``cli-config.yaml.example``, but the canonical install reads

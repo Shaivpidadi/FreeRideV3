@@ -4,7 +4,7 @@ Implements the v3 :class:`Provider` Protocol against CF Workers AI's
 OpenAI-compatible surface:
 ``https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1/``
 
-Two CF-specific quirks worth flagging (per ``knowledge/providers/SURVEY.md``):
+Two CF-specific quirks worth flagging (per ``docs/providers/SURVEY.md``):
 
 1. **Account ID is part of the URL, not the key.** The plugin needs both
    an API token and the account UUID. Account ID is read from

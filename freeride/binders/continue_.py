@@ -1,6 +1,6 @@
 """``freeride bind continue`` — append a model entry to Continue's config.
 
-Per ``knowledge/CONSUMERS.md``: current Continue uses ``~/.continue/config.yaml``
+Per ``docs/agent-binders.md``: current Continue uses ``~/.continue/config.yaml``
 (legacy ``config.json`` may exist on older installs). The provider type
 must be ``openai`` (NOT ``openai-compatible``). Continue hot-reloads on
 next prompt — no restart needed.
