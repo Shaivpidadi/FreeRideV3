@@ -7,6 +7,16 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 ## [Unreleased]
 
 ### Added
+- **`freeride init` CLI** — interactive setup wizard. Walks through
+  every supported provider, shows the signup URL (optional
+  `--open-browser` opens each one in the user's default browser),
+  prompts for the env var(s), writes a `~/.freeride/.env` file
+  (or `--out <path>`). Re-running is non-destructive — only
+  user-entered values overwrite, existing keys preserved. Empty
+  input skips a provider. Ctrl-C aborts without writing. Cuts
+  onboarding from "read README + sign up + paste 7 exports" to one
+  guided command. After writing, prints next-steps:
+  `source ~/.freeride/.env && freeride serve`.
 - **`freeride providers` CLI** — pretty-printed live health from a
   running gateway. Hits `/v1/_freeride/providers` and renders a table:
   per-provider attempt count, success rate, p50 latency, computed

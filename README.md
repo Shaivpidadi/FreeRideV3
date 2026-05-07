@@ -207,6 +207,7 @@ freeride reload                 refresh provider registry from env vars (no rest
 freeride providers              live provider health from a running gateway
 freeride doctor                 diagnose common setup issues (env vars, PATH, port)
 freeride upgrade                bump installed package to latest PyPI release
+freeride init                   interactive setup wizard — prompts for keys, writes ~/.freeride/.env
 freeride telemetry [on|off]     manage telemetry
 freeride list                   list available free models
 freeride status                 show OpenClaw config + cache age (v2)

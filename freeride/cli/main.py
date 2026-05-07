@@ -150,6 +150,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print the command that would run, don't execute it",
     )
 
+    p_init = sub.add_parser(
+        "init",
+        help="Interactive setup wizard: collects provider keys, writes .env",
+    )
+    p_init.add_argument(
+        "--out",
+        default=None,
+        help="Where to write the .env file (default: ~/.freeride/.env)",
+    )
+    p_init.add_argument(
+        "--open-browser",
+        action="store_true",
+        help="Open each provider's signup URL in your default browser",
+    )
+
     return parser
 
 
@@ -225,6 +240,11 @@ def main(argv: list[str] | None = None) -> int:
         from freeride.cli.cmd_upgrade import cmd_upgrade
 
         return cmd_upgrade(args)
+
+    if args.command == "init":
+        from freeride.cli.cmd_init import cmd_init
+
+        return cmd_init(args)
 
     parser.print_help()
     return 1
