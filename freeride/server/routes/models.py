@@ -55,6 +55,8 @@ def _key_for(provider: Provider) -> str | None:
         if provider.name == "openrouter"
         else "NVIDIA_API_KEY"
         if provider.name == "nvidia_nim"
+        else "GROQ_API_KEY"
+        if provider.name == "groq"
         else f"{provider.name.upper()}_API_KEY"
     )
     raw = os.environ.get(env_var, "")

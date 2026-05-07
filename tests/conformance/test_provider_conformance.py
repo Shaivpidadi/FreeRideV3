@@ -18,13 +18,19 @@ from typing import Any
 import pytest
 
 from freeride.core.provider import PROVIDER_API_VERSION, Provider
+from freeride.providers.groq import GroqProvider
 from freeride.providers.nvidia_nim import NVIDIANIMProvider
 from freeride.providers.openrouter import OpenRouterProvider
 from tests.fixtures.noop_provider import NoopProvider
 
 
 # Registry: every Provider class that lands ships an entry here.
-CONFORMANT_PROVIDERS: list[type] = [NoopProvider, OpenRouterProvider, NVIDIANIMProvider]
+CONFORMANT_PROVIDERS: list[type] = [
+    NoopProvider,
+    OpenRouterProvider,
+    NVIDIANIMProvider,
+    GroqProvider,
+]
 
 
 @pytest.fixture(params=CONFORMANT_PROVIDERS, ids=lambda cls: cls.__name__)

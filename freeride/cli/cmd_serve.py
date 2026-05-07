@@ -20,6 +20,7 @@ import sys
 
 import uvicorn
 
+from freeride.providers.groq import GroqProvider
 from freeride.providers.nvidia_nim import NVIDIANIMProvider
 from freeride.providers.openrouter import OpenRouterProvider
 from freeride.server.app import create_app
@@ -48,6 +49,8 @@ def _build_provider_registry() -> list:
     providers: list = [OpenRouterProvider()]
     if os.environ.get("NVIDIA_API_KEY"):
         providers.append(NVIDIANIMProvider())
+    if os.environ.get("GROQ_API_KEY"):
+        providers.append(GroqProvider())
     return providers
 
 

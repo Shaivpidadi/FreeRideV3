@@ -6,6 +6,22 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+### Added
+- **Groq provider** (`freeride/providers/groq.py`). OpenAI-compatible at
+  `api.groq.com/openai/v1`. Free-tier detection is a hardcoded allowlist
+  (Llama 3.x family, Gemma 2, Mixtral, DeepSeek-R1-distill) with a
+  `GROQ_FREE_MODELS_OVERRIDE` env var for users on different plans.
+  Classifier handles "model decommissioned" 400s by mapping to
+  `MODEL_NOT_FOUND` so the resolver advances. Strips Groq's `x_groq`
+  response extension before forwarding to clients. Auto-loaded by
+  `freeride serve` when `GROQ_API_KEY` is set.
+- **GitHub Actions CI** (`.github/workflows/test.yml`) — runs pytest on
+  every push/PR across {ubuntu, macos} × {3.10, 3.11, 3.12, 3.13}.
+- **GitHub Actions release pipeline** (`.github/workflows/release.yml`) —
+  Trusted Publishing (OIDC) for tag-driven PyPI uploads. Requires the
+  one-time PyPI publisher config documented in `knowledge/PYPI_TOKEN.md`.
+- **`CONTRIBUTING.md`** — Provider plugin + binder authoring guide.
+
 ## [0.3.0a5] — 2026-05-07
 
 ### Added
