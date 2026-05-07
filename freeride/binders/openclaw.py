@@ -37,8 +37,17 @@ from freeride.v2compat.openclaw import (
 
 
 _FREE_MODEL_DEFINITION: dict = {
-    "id": "free",
-    "name": "FreeRide free-tier router",
+    # OpenClaw forwards the bare id (after stripping the leading
+    # provider segment from `agents.defaults.model.primary`) directly
+    # to our /v1/chat/completions as the `model` field. We pass that
+    # field straight through to OpenRouter. So this id MUST be a
+    # valid OpenRouter model id — `openrouter/free` is OpenRouter's
+    # smart-router that picks the best free model per request.
+    # Net path: OpenClaw config "freeride/openrouter/free" -> OpenClaw
+    # strips "freeride/" -> we receive "openrouter/free" -> OpenRouter
+    # smart-router resolves to a real free model.
+    "id": "openrouter/free",
+    "name": "FreeRide free-tier router (OpenRouter smart-router)",
     # ModelApi enum (per dist/config/types.models.d.ts):
     #   openai-completions, openai-responses, anthropic-messages,
     #   google-generative-ai, github-copilot, bedrock-converse-stream
@@ -96,19 +105,19 @@ def bind(
         "mode": "api_key",
     }
 
-    # 3. Make the gateway-routed model the primary
-    config["agents"]["defaults"]["model"]["primary"] = "freeride/free"
+    # 3. Make the gateway-routed model the primary. Format is
+    #    <provider>/<model.id> per OpenClaw's routing prefix convention.
+    primary = f"freeride/{_FREE_MODEL_DEFINITION['id']}"
+    config["agents"]["defaults"]["model"]["primary"] = primary
     # Old shape from v2: also register under agents.defaults.models for
     # OpenClaw's local primary/fallback lookup. Keep for v2 compat.
-    config["agents"]["defaults"]["models"]["freeride/free"] = {}
+    config["agents"]["defaults"]["models"][primary] = {}
 
     write_json_atomic(path, config, indent=2)
     return (
         f"OpenClaw config at {path} updated.\n"
         f"  models.providers.freeride: -> {gateway_url}\n"
         f"  auth.profiles.freeride:default: registered\n"
-        f"  agents.defaults.model.primary: freeride/free\n"
-        f"  Next: run `openclaw login freeride:default` to store the\n"
-        f"  API key (or any value — the gateway accepts any), then\n"
-        f"  restart OpenClaw."
+        f"  agents.defaults.model.primary: {primary}\n"
+        f"  Restart OpenClaw to pick up the change."
     )

@@ -42,11 +42,17 @@ class TestOpenClawBinder:
         # compatible /v1/chat/completions endpoint is "openai-completions"
         # (per dist/config/types.models.d.ts ModelApi enum).
         assert prov["models"][0]["api"] == "openai-completions"
+        # Model id must be a valid OpenRouter model id — OpenClaw forwards
+        # this bare id (after stripping our `freeride/` provider prefix)
+        # straight to /v1/chat/completions. `openrouter/free` is the
+        # smart-router.
+        assert prov["models"][0]["id"] == "openrouter/free"
         # Auth profile pointer — schema permits only {provider, mode, email}
         prof = cfg["auth"]["profiles"]["freeride:default"]
         assert prof == {"provider": "freeride", "mode": "api_key"}
-        # Primary
-        assert cfg["agents"]["defaults"]["model"]["primary"] == "freeride/free"
+        # Primary follows OpenClaw's <provider>/<model-id> routing prefix
+        # convention. The id is the actual OpenRouter model id.
+        assert cfg["agents"]["defaults"]["model"]["primary"] == "freeride/openrouter/free"
 
     def test_preserves_unrelated_top_level_keys(self, tmpdir):
         p = tmpdir / "openclaw.json"
@@ -76,10 +82,10 @@ class TestOpenClawBinder:
         openclaw.bind("http://x:1/v1", config_path=p)
         openclaw.bind("http://x:1/v1", config_path=p)  # second run
         cfg = json.loads(p.read_text())
-        # Still exactly one freeride profile + one freeride provider + one freeride/free entry
+        # Still exactly one freeride profile + one freeride provider + one primary
         assert list(cfg["auth"]["profiles"].keys()) == ["freeride:default"]
         assert list(cfg["models"]["providers"].keys()) == ["freeride"]
-        assert "freeride/free" in cfg["agents"]["defaults"]["models"]
+        assert "freeride/openrouter/free" in cfg["agents"]["defaults"]["models"]
 
 
 # ---- aider ----------------------------------------------------------------
