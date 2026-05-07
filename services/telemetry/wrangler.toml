@@ -7,7 +7,7 @@ compatibility_date = "2026-04-01"
 [[d1_databases]]
 binding = "DB"                       # available as env.DB inside the worker
 database_name = "freeride-telemetry"
-database_id = "REPLACE-ME-WITH-D1-DATABASE-ID"
+database_id = "a2dcd6e7-6a86-40d1-b836-772965eab765"
 
 # Deploy under the public custom domain when DNS is wired up.
 # Uncomment after adding a CNAME for `telemetry.free-ride.xyz` in CF.
