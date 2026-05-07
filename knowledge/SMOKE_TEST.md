@@ -11,24 +11,22 @@
 - An OpenRouter free API key from <https://openrouter.ai/keys> (free signup, no credit card)
 - ~500MB free disk for a venv + Aider
 
-## 1. Fresh venv + install
+## 1. Install (one command)
 
 ```bash
-mkdir freeride-test && cd freeride-test
-python3 -m venv .venv
-source .venv/bin/activate           # on Windows: .venv\Scripts\activate
-pip install --upgrade pip
-pip install --pre freeride-gateway
+curl -sSL https://raw.githubusercontent.com/Shaivpidadi/FreeRideV3/main/install.sh | sh
 freeride --version
 ```
 
-**Expected:** `freeride 0.3.0a4` (or higher). Anything else, **report**.
+**Expected:** `freeride 0.3.0a5` (or higher). Anything else, **report**.
 
-**If you see `freeride: command not found`:** the venv probably isn't activated. This is expected venv behavior — venvs only exist for the shell where you sourced `.venv/bin/activate`. Three fixes:
+The installer bootstraps `uv` (Astral's Python tool installer) if you don't have it, then drops the `freeride` binary at `~/.local/bin/freeride` with PATH set up. `freeride` works in every shell after that, no venv activation needed.
 
-1. **Re-activate in this shell:** `source ~/freeride-test/.venv/bin/activate` then retry. (Fastest.)
-2. **Use the path-free fallback:** `python -m freeride --version` works regardless of PATH. Use it everywhere `freeride` appears below if needed.
-3. **For real daily use** (not this test), prefer `pipx install --pip-args=--pre freeride-gateway` instead of pip + venv. Pipx puts the binary on PATH globally; no per-shell activation. We're using venv here ON PURPOSE for hermeticity.
+**If `freeride: command not found` after install:** restart your terminal (the installer added `~/.local/bin` to PATH but already-open shells don't see the change). If still nothing, run:
+
+```bash
+~/.local/bin/freeride --version
+```
 
 ## 2. First-run telemetry banner
 

@@ -23,32 +23,35 @@ Crucially:
 
 ## Install
 
-The PyPI distribution is named `freeride-gateway`; the CLI binary it installs is `freeride`. Python ≥ 3.10.
-
-### Recommended: `pipx` (works in every terminal, no venv juggling)
-
 ```bash
-brew install pipx                                  # macOS
-sudo apt install pipx                              # Debian/Ubuntu
-pipx ensurepath                                    # adds ~/.local/bin to PATH (one-time)
-
-pipx install --pip-args=--pre freeride-gateway     # alpha / pre-release (current)
-# pipx install freeride-gateway                    # stable (after 0.3.0 final)
+curl -sSL https://raw.githubusercontent.com/Shaivpidadi/FreeRideV3/main/install.sh | sh
 ```
 
-After this, `freeride` works in any new terminal — no `source .venv/bin/activate` needed.
+That's it. `freeride` works in every terminal afterward.
 
-### Alternative: pip + venv
+The script bootstraps `uv` if you don't have it, then `uv tool install`s freeride-gateway. The binary lands at `~/.local/bin/freeride`, which uv ensures is on PATH. Same shape as the bun.sh / astral.sh/uv / aider.chat installers.
+
+<details>
+<summary>Manual install</summary>
 
 ```bash
+# Option A: uv (what the installer above does)
+uv tool install --prerelease=allow freeride-gateway
+
+# Option B: pipx
+pipx install --pip-args=--pre freeride-gateway
+
+# Option C: pip + venv (works in the venv only; need to re-activate per shell)
 python3 -m venv .venv && source .venv/bin/activate
 pip install --pre freeride-gateway
-freeride --version
+
+# Option D: from source (for development)
+git clone https://github.com/Shaivpidadi/FreeRideV3 && cd FreeRideV3
+pip install -e .
 ```
 
-Caveat: `freeride` is only on PATH in shells where you've activated the venv. To use FreeRide in a fresh terminal, either re-activate or run via `python -m freeride <command>`.
-
-For local development, clone and `pip install -e .` from the repo root.
+PyPI distribution is `freeride-gateway`; CLI binary is `freeride`. Python ≥ 3.10.
+</details>
 
 ## Quick start
 
