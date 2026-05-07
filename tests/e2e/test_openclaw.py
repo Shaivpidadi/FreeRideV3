@@ -1,18 +1,17 @@
-"""End-to-end: OpenClaw integration check.
+"""End-to-end: OpenClaw schema-validity check via `openclaw doctor`.
 
 OpenClaw's real interaction surface is messaging channels (WhatsApp,
-Telegram, Discord, dashboard) — there's no obvious headless "send a
-prompt, get a response" CLI mode that's pytest-friendly. This test is
-intentionally minimal:
+Telegram, Discord, dashboard); a fully-headless "send a prompt, get a
+response" CLI flow requires writing OpenClaw's encrypted
+``auth-profiles.json`` store directly and there's no public CLI to
+populate that without an interactive wizard. So our e2e gate is the
+next-strongest property: **OpenClaw's own doctor accepts the config
+our binder wrote** with no config-shape errors.
 
-* Run the binder against a tmp OpenClaw config
-* Assert the config file landed in the v3-expected shape
-* Run ``openclaw doctor`` (if available) to confirm OpenClaw can parse
-  the config we wrote
-
-Anything beyond that — sending a real chat message and observing the
-agent reply — requires the messaging-channel infra to be wired up,
-which is out of scope for this pytest suite.
+This catches the most common regression — a binder write that produces
+a schema-invalid file — which is exactly what happened on the first
+v3 cut (we wrote ``base_url`` directly under the auth profile, which
+OpenClaw rejected as "Unrecognized keys").
 """
 
 from __future__ import annotations
@@ -32,32 +31,55 @@ from tests.e2e.conftest import require_openclaw
 pytestmark = [pytest.mark.e2e, pytest.mark.timeout(60)]
 
 
-def test_openclaw_config_round_trip(gateway_url: str, tmp_path: Path):
-    """Smoke: bind writes a v3 config that OpenClaw's doctor accepts."""
+# Wording that openclaw doctor uses to surface config-shape errors.
+# Update if a future OpenClaw version changes the diagnostic.
+_OPENCLAW_CONFIG_ERROR_NEEDLES = (
+    "unrecognized keys",
+    "invalid config at",
+    "config error",
+    "config invalid",
+    "schema",  # generic; any schema-validation diagnostic
+)
+
+
+def test_openclaw_config_passes_doctor(gateway_url: str, tmp_path: Path, monkeypatch):
     require_openclaw()
 
-    cfg_path = tmp_path / "openclaw.json"
+    # Drive openclaw with an isolated config dir so we don't touch
+    # the developer's real ~/.openclaw.
+    fake_state = tmp_path / "openclaw"
+    fake_state.mkdir()
+    cfg_path = fake_state / "openclaw.json"
     cfg_path.write_text("{}")
+
     openclaw_binder.bind(gateway_url, api_key="any", config_path=cfg_path)
 
     written = json.loads(cfg_path.read_text())
-    assert written["auth"]["profiles"]["freeride:default"]["base_url"] == gateway_url
+    # Sanity: the binder wrote the schema-valid shape we expect
+    prov = written["models"]["providers"]["freeride"]
+    assert prov["baseUrl"] == gateway_url
+    assert prov["apiKey"] == "any"
+    assert written["auth"]["profiles"]["freeride:default"]["provider"] == "freeride"
     assert written["agents"]["defaults"]["model"]["primary"] == "freeride/free"
 
-    # If OpenClaw has a `doctor` subcommand, run it against our config
-    # to confirm shape validity. Skip the assertion if doctor isn't
-    # available (some versions don't ship it).
-    if shutil.which("openclaw"):
-        result = subprocess.run(
-            ["openclaw", "doctor", "--config", str(cfg_path)],
-            capture_output=True,
-            text=True,
-            timeout=20,
-        )
-        # Accept any exit code that doesn't indicate a config-shape
-        # parse error. OpenClaw doctor surfaces config errors with
-        # specific wording; bail loudly if seen.
-        out = result.stdout + result.stderr
-        assert "config error" not in out.lower(), (
-            f"openclaw doctor flagged the config:\n{out}"
+    # Run openclaw doctor against our config dir. We don't assert on
+    # exit code (doctor surfaces unrelated warnings like "gateway.mode
+    # not set" that we don't care about) — only that no config-shape
+    # diagnostic appears.
+    result = subprocess.run(
+        ["openclaw", "doctor"],
+        env={
+            **os.environ,
+            "OPENCLAW_STATE_DIR": str(fake_state),
+            "OPENCLAW_CONFIG_PATH": str(cfg_path),
+        },
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    output = (result.stdout + "\n" + result.stderr).lower()
+    for needle in _OPENCLAW_CONFIG_ERROR_NEEDLES:
+        assert needle not in output, (
+            f"openclaw doctor surfaced a config-shape error containing "
+            f"'{needle}':\n{result.stdout}\n{result.stderr}"
         )
