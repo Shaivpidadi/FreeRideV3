@@ -56,9 +56,5 @@ jobs:
       - name: Install ruff
         run: pip install ruff>=0.6
 
-      # Don't fail the build on lint diffs yet — the codebase isn't
-      # ruff-clean and forcing it now would be a separate cleanup pass.
-      # `--exit-zero` makes this advisory; promote to a hard fail once
-      # we've gone through the existing warnings deliberately.
       - name: Run ruff
-        run: ruff check freeride/ tests/ --exit-zero
+        run: ruff check freeride/ tests/

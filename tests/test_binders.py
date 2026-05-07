@@ -226,11 +226,11 @@ class TestHermesBinder:
     def test_does_not_clobber_existing_user_keys_in_env(self, tmpdir):
         p = tmpdir / "config.yaml"
         env_p = tmpdir / ".env"
-        env_p.write_text("OPENROUTER_API_KEY=sk-real-key\nOTHER_VAR=foo\n")
+        env_p.write_text("OPENROUTER_API_KEY=sk-test-fixture\nOTHER_VAR=foo\n")
         hermes.bind("http://x:1/v1", config_path=p, env_path=env_p)
         env_text = env_p.read_text()
         # User's real key is preserved
-        assert "OPENROUTER_API_KEY=sk-real-key" in env_text
+        assert "OPENROUTER_API_KEY=sk-test-fixture" in env_text
         # Unrelated env vars preserved
         assert "OTHER_VAR=foo" in env_text
         # LM_API_KEY NOT added since user already has a real key

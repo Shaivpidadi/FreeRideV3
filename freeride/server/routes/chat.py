@@ -3,7 +3,7 @@
 Phase 2: single-provider non-streaming with per-key retry on RATE_LIMIT/AUTH.
 Phase 3: streaming with buffer-first-chunk failover (this commit).
 
-The streaming failover policy is described in PLAN_GATEWAY.md §8.1: hold
+The streaming failover policy is described in the design plan: hold
 the first chunk until upstream confirms 200 + first SSE event. If the
 upstream fails before the first chunk, retry on next key. Once the
 first chunk has shipped to the client, errors propagate.
@@ -11,10 +11,9 @@ first chunk has shipped to the client, errors propagate.
 
 from __future__ import annotations
 
-import json as _json
 import logging
 import os
-from typing import Any, AsyncIterator
+from typing import AsyncIterator
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request

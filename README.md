@@ -8,7 +8,7 @@ $ export OPENROUTER_API_KEY=sk-or-v1-...
 $ freeride serve
 
 freeride gateway listening on http://127.0.0.1:11343
-  providers: openrouter, groq, huggingface
+  providers: openrouter        # add more by exporting their keys
   point any OpenAI-compatible agent at:
     OPENAI_API_BASE=http://127.0.0.1:11343/v1
     OPENAI_API_KEY=any

@@ -21,16 +21,16 @@ shipped to PyPI — see `packages = ["freeride"]` in `pyproject.toml`.
 Each beacon row contains exactly the public payload shape (also asserted
 by `tests/test_telemetry.py`):
 
-| column            | type    | source                                          |
+| column | type | source |
 |-------------------|---------|-------------------------------------------------|
-| installation_id   | TEXT    | client UUID4 (random per install, opaque)       |
-| version           | TEXT    | freeride version string                         |
-| os                | TEXT    | darwin / linux / windows / other                |
-| tokens_served     | INTEGER | sum of input+output tokens since last beacon    |
-| request_count     | INTEGER | request count since last beacon                 |
-| providers_active  | TEXT    | JSON array, e.g. `["openrouter","nvidia_nim"]`  |
-| uptime_hours      | INTEGER | gateway uptime hours                            |
-| received_at       | INTEGER | server-side unix epoch (added by worker)        |
+| installation_id | TEXT | client UUID4 (random per install, opaque) |
+| version | TEXT | freeride version string |
+| os | TEXT | darwin / linux / windows / other |
+| tokens_served | INTEGER | sum of input+output tokens since last beacon |
+| request_count | INTEGER | request count since last beacon |
+| providers_active | TEXT | JSON array, e.g. `["openrouter","nvidia_nim"]` |
+| uptime_hours | INTEGER | gateway uptime hours |
+| received_at | INTEGER | server-side unix epoch (added by worker) |
 
 What's **not** stored: prompts, completions, model IDs, API keys, IPs
 (the worker explicitly does not read `cf-connecting-ip` or log it).

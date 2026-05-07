@@ -9,7 +9,7 @@
 //
 // The worker explicitly does NOT log or store IPs / hostnames /
 // `cf-connecting-ip`. Inputs we accept are exactly the public spec
-// (PLAN_GATEWAY.md §14); anything else is dropped.
+// (the design plan); anything else is dropped.
 //
 // The install.sh content is embedded in INSTALL_SH below — keep it
 // in sync with /install.sh at the repo root by hand. The repo file is

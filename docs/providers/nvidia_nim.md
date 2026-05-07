@@ -9,7 +9,7 @@
 
 ## Protocol implications (read first)
 
-Three quirks force decisions in the FreeRide Provider Protocol (`PLAN_GATEWAY.md` §7):
+Three quirks force decisions in the FreeRide Provider Protocol (the design plan):
 
 1. **Auth failures are HTTP 403, not 401.** Bad token returns
    `403 Forbidden` with `application/problem+json`:

@@ -78,7 +78,7 @@ fi
 
 print ""
 print "Done. Next:"
-print "  export OPENROUTER_API_KEY=sk-or-v1-...      # get a free one at https://openrouter.ai/keys"
-print "  freeride serve                              # start the gateway"
-print "  freeride bind aider                         # point your favourite agent at it"
+print " export OPENROUTER_API_KEY=sk-or-v1-... # get a free one at https://openrouter.ai/keys"
+print " freeride serve # start the gateway"
+print " freeride bind aider # point your favourite agent at it"
 print ""

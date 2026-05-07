@@ -6,6 +6,23 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+## [0.3.0a8] — 2026-05-07
+
+### Added
+- **OSS hygiene files** for the public launch: `SECURITY.md`, `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1), `.github/ISSUE_TEMPLATE/{bug_report,feature_request,config}.{md,yml}`, `.github/PULL_REQUEST_TEMPLATE.md`.
+
+### Changed
+- **`pyproject.toml` metadata** filled out for PyPI: expanded keywords for all five providers, added `Issues`/`Documentation`/`Changelog` URLs alongside `Homepage` (now points at `free-ride.xyz`), expanded classifiers (Intended Audience, Topic, OS-specific, FastAPI, Environment), bumped status to `4 - Beta`, dropped redundant License classifier (SPDX `license` field is canonical).
+- **CI lint job promoted to hard-fail.** Cleaned up 23 ruff issues (mostly unused-imports) and removed `--exit-zero` from `.github/workflows/test.yml`.
+- **README hero ASCII demo** softened — was overclaiming the providers list a fresh install would surface.
+- **Test fixture key** renamed `sk-real-key` → `sk-test-fixture` to avoid tripping secret scanners.
+
+### Internal docs
+- Stripped dangling references to `PLAN_GATEWAY.md` / `EXECUTION_PLAN.md` / `RELEASE_CHECKLIST.md` from source docstrings and public docs. Those files live in a private tracking repo, not the OSS source tree.
+
+### Operational
+- `services/telemetry/wrangler.toml` ships with a `REPLACE_WITH_YOUR_D1_DATABASE_ID` placeholder so forks don't accidentally bind to the upstream telemetry DB.
+
 ## [0.3.0a7] — 2026-05-07
 
 ### Added
@@ -165,7 +182,8 @@ First public release. Distributable name on PyPI: `freeride-gateway`.
   "Connection reset by peer" before TLS handshake completes. This is a
   Daytona network-policy restriction, not a FreeRide bug.
 
-[Unreleased]: https://github.com/Shaivpidadi/FreeRideV3/compare/v0.3.0a7...HEAD
+[Unreleased]: https://github.com/Shaivpidadi/FreeRideV3/compare/v0.3.0a8...HEAD
+[0.3.0a8]: https://github.com/Shaivpidadi/FreeRideV3/releases/tag/v0.3.0a8
 [0.3.0a7]: https://github.com/Shaivpidadi/FreeRideV3/releases/tag/v0.3.0a7
 [0.3.0a6]: https://github.com/Shaivpidadi/FreeRideV3/releases/tag/v0.3.0a6
 [0.3.0a5]: https://github.com/Shaivpidadi/FreeRideV3/releases/tag/v0.3.0a5

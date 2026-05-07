@@ -1,7 +1,7 @@
 """Per-agent binder helpers — write one URL into one config file.
 
 These are deliberately *not* a generic Consumer plugin abstraction (see
-PLAN_GATEWAY.md §6). Each binder is a small, ad-hoc adapter that knows
+the design plan). Each binder is a small, ad-hoc adapter that knows
 exactly how to point its specific agent at the FreeRide gateway. The
 common pattern is:
 

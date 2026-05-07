@@ -166,7 +166,7 @@ OpenCode is a TUI; config is re-read on next prompt or via `/reload`. Hot-reload
 ## Cross-cutting notes
 
 ### What `freeride bind` is and isn't
-Per `PLAN_GATEWAY.md` §6: bind helpers are **two-line file-touchers**, not a generalized Consumer plugin layer. Each helper:
+Per the design plan: bind helpers are **two-line file-touchers**, not a generalized Consumer plugin layer. Each helper:
 1. Reads the existing config (handle missing-file as empty defaults).
 2. Sets *exactly* the URL + key + a name/model entry — nothing else.
 3. Writes back atomically (`core/state.atomic_write`).
@@ -185,6 +185,6 @@ Keys to preserve are agent-specific but the rule is the same for all three: read
 3. **OpenCode model list bootstrapping.** At bind time, fetch the gateway's `/v1/models` and pre-populate `provider.freeride.models{}` so the user has something to pick. Refresh on `freeride bind opencode --refresh`.
 4. **Hermes** — separate research note (docs/hermes.md). Not covered here.
 
-### Not in scope (per `PLAN_GATEWAY.md` §15)
+### Not in scope 
 - llama.cpp, LM Studio — local inference, no gateway need.
 - IDE-direct extensions (Cursor, Zed AI) — covered if/when they expose a `OPENAI_API_BASE`-equivalent knob; if not, they don't ship a bind helper.

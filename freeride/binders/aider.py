@@ -10,7 +10,6 @@ Aider requires a restart after config changes (no hot reload).
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Literal
 

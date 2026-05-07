@@ -11,8 +11,6 @@ import pytest
 from freeride.v2compat.openclaw import (
     ensure_config_structure,
     format_model_for_openclaw,
-    get_current_fallbacks,
-    get_current_model,
     load_openclaw_config,
     save_openclaw_config,
     setup_openrouter_auth,

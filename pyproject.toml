@@ -5,20 +5,44 @@ build-backend = "hatchling.build"
 [project]
 name = "freeride-gateway"
 dynamic = ["version"]
-description = "Free-AI gateway: OpenAI-compatible local proxy that orchestrates free-tier inference across multiple providers"
+description = "Local OpenAI-compatible gateway that routes across free-tier providers (OpenRouter, Groq, NVIDIA NIM, Cloudflare Workers AI, HuggingFace) with automatic failover."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
-authors = [{ name = "Shaishav Pidadi" }]
-keywords = ["ai", "llm", "openai", "openrouter", "proxy", "gateway"]
+authors = [{ name = "Shaishav Pidadi", email = "shaivpidadi@gmail.com" }]
+keywords = [
+    "ai",
+    "llm",
+    "openai-compatible",
+    "ai-gateway",
+    "free-tier",
+    "openrouter",
+    "groq",
+    "nvidia-nim",
+    "cloudflare-workers-ai",
+    "huggingface",
+    "proxy",
+    "gateway",
+    "failover",
+    "cli",
+]
 classifiers = [
-    "Development Status :: 3 - Alpha",
-    "License :: OSI Approved :: MIT License",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: Proxy Servers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Framework :: FastAPI",
+    "Environment :: Console",
+    "Environment :: Web Environment",
 ]
 dependencies = [
     # Pin httpx <1.0: the 1.0 dev releases dropped the full exception
@@ -49,8 +73,11 @@ freeride = "freeride.cli.main:main"
 freeride-watcher = "freeride.cli.watcher:main"
 
 [project.urls]
-Homepage = "https://github.com/Shaivpidadi/FreeRideV3"
+Homepage = "https://free-ride.xyz"
 Repository = "https://github.com/Shaivpidadi/FreeRideV3"
+Issues = "https://github.com/Shaivpidadi/FreeRideV3/issues"
+Documentation = "https://github.com/Shaivpidadi/FreeRideV3/tree/main/docs"
+Changelog = "https://github.com/Shaivpidadi/FreeRideV3/blob/main/CHANGELOG.md"
 
 [tool.hatch.version]
 path = "freeride/__init__.py"

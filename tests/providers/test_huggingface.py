@@ -6,7 +6,6 @@ import pytest
 
 from freeride.core.errors import ErrorKind
 from freeride.providers.huggingface import (
-    HF_CHAT_URL,
     HF_MODELS_URL,
     HuggingFaceProvider,
 )

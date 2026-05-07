@@ -80,7 +80,7 @@ def cmd_serve(args) -> int:
     print(f"  verbose: {args.verbose}")
     print("  point any OpenAI-compatible agent at:")
     print(f"    OPENAI_API_BASE=http://{host}:{port}/v1")
-    print(f"    OPENAI_API_KEY=any")
+    print("    OPENAI_API_KEY=any")
     print()
 
     # log_level mapped to uvicorn's; we do our own configuration in the app.

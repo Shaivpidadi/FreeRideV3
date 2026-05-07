@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import json
-import tempfile
 import uuid as _uuid
-from pathlib import Path
 
 import pytest
 
@@ -137,7 +135,7 @@ class TestPayload:
 
     def test_payload_never_includes_forbidden_fields(self, isolated_config):
         """The audit gate: prompts/completions/keys/model_ids/hostname must
-        NOT be in the payload — this is the contract per PLAN_GATEWAY.md §14.
+        NOT be in the payload — this is the contract per the design plan
         """
         p = telemetry.build_payload()
         keys = set(p.keys())

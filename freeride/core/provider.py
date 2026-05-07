@@ -8,7 +8,7 @@ core has no per-provider knowledge beyond what this Protocol declares.
 The contract is **versioned from day one** as ``api_version = 1``. Future
 breaking changes to the Protocol bump this number; older plugins keep
 working because the loader filters on ``api_version`` at registration time.
-This is decision D5 in PLAN_GATEWAY.md §9.
+This is decision D5 in the design plan
 """
 
 from __future__ import annotations

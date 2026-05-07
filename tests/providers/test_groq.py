@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 
 import pytest
 
@@ -11,7 +10,6 @@ from freeride.providers.groq import (
     GROQ_CHAT_URL,
     GROQ_MODELS_URL,
     GroqProvider,
-    _free_model_set,
 )
 
 

@@ -4,7 +4,7 @@ Preserves v2's exact ``~/.openclaw/openclaw.json`` mutation surface. The
 single behavior delta vs v2: writes go through
 :func:`~freeride.core.state.write_json_atomic` so a crash mid-write
 can't corrupt the user's OpenClaw config (latent v2 bug; see
-PLAN_GATEWAY.md §5.5).
+the design plan).
 """
 
 from __future__ import annotations

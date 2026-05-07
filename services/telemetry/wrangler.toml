@@ -9,9 +9,9 @@ workers_dev = true
 # Bind the D1 database created via `wrangler d1 create freeride-telemetry`.
 # Paste the printed database_id here after `wrangler d1 create`.
 [[d1_databases]]
-binding = "DB"                       # available as env.DB inside the worker
+binding = "DB" # available as env.DB inside the worker
 database_name = "freeride-telemetry"
-database_id = "a2dcd6e7-6a86-40d1-b836-772965eab765"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"  # paste the UUID printed by `wrangler d1 create freeride-telemetry`
 
 # Public custom domains. Both apex (free-ride.xyz) and subdomain
 # (telemetry.free-ride.xyz) point at this worker:

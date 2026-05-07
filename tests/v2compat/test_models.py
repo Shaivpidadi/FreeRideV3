@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import tempfile
 import time
@@ -17,8 +16,6 @@ from freeride.v2compat.models import (
     _parse_api_keys,
     calculate_model_score,
     fetch_all_models,
-    get_api_keys,
-    get_free_models,
     rank_free_models,
     save_models_cache,
     get_cached_models,

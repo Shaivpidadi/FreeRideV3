@@ -26,7 +26,7 @@ This module owns the data plumbing. The beacon scheduler that POSTs
 on a 1h tick lives in :mod:`freeride.server.telemetry_loop` (added
 when the gateway needs it).
 
-PLAN_GATEWAY.md §14 is the canonical spec.
+the design plan is the canonical spec.
 """
 
 from __future__ import annotations
@@ -34,7 +34,6 @@ from __future__ import annotations
 import json
 import os
 import platform
-import sys
 import uuid
 from dataclasses import dataclass
 from pathlib import Path

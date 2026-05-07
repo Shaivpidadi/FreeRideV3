@@ -1,7 +1,7 @@
 # Future-provider Protocol-fit survey
 
 > Phase 0 design validation: confirming the Provider Protocol from
-> `PLAN_GATEWAY.md` §7 absorbs Groq, Cloudflare Workers AI, and HuggingFace
+> the design plan absorbs Groq, Cloudflare Workers AI, and HuggingFace
 > Inference Providers without redesign. Not for immediate implementation —
 > Phases 1–3 ship with OpenRouter and NVIDIA NIM only. This is the
 > seam-quality stress test.
@@ -38,12 +38,12 @@
 
 ## Protocol absorption verdict
 
-**Yes — the Protocol from PLAN_GATEWAY.md §7 absorbs all three providers without any changes.** No D1–D14 decision needs revising.
+**Yes — the Protocol from the design plan absorbs all three providers without any changes.** No D1–D14 decision needs revising.
 
 Two heterogeneity patterns surface that are all handled *inside* the plugin, not at the Protocol level:
 
 - **Per-model free flag (OpenRouter pattern)** vs **global free budget (CF, HF, NIM credits pattern)** vs **per-model RPM/TPM caps (Groq pattern).** Each plugin's `list_free_models(key)` is the single function that hides this — for CF/HF it returns models tagged with cost hints; for OpenRouter it returns models with `:free` suffix; for Groq it returns the hardcoded allowlist; for NIM it returns models with positive credit balance.
-- **Construction config that isn't a key** (CF account_id; potentially NIM region or HF bill-to). Handled in `Provider.__init__`, not in the Protocol's runtime methods. Plugin discovery via Python entrypoints (PLAN_GATEWAY.md §7) already supports per-plugin configuration.
+- **Construction config that isn't a key** (CF account_id; potentially NIM region or HF bill-to). Handled in `Provider.__init__`, not in the Protocol's runtime methods. Plugin discovery via Python entrypoints (the design plan) already supports per-plugin configuration.
 
 ## Recommended Protocol changes (if any)
 

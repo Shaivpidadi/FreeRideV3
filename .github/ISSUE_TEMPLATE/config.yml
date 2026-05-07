@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or discussion
+    url: https://github.com/Shaivpidadi/FreeRideV3/discussions
+    about: Use Discussions for usage questions, integration help, or "is this a good fit for X" conversations.

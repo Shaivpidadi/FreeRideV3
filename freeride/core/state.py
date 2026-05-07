@@ -4,7 +4,7 @@ Anything FreeRide writes to disk goes through :func:`atomic_write` so a
 crash mid-write can never corrupt state. Lifted and generalized from
 v2's ``watcher._atomic_write``; the v2 ``save_openclaw_config`` was a
 latent bug — non-atomic ``Path.write_text`` could leave a half-written
-JSON file. PLAN_GATEWAY.md §5 carry-forward principle 5.
+JSON file. the design plan carry-forward principle 5.
 
 We also expose :func:`read_json_or` and :func:`write_json_atomic` because
 nearly every state file in FreeRide is small JSON.

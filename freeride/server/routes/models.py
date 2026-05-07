@@ -4,7 +4,7 @@ Aggregates :meth:`Provider.list_free_models` results across all registered
 providers, ranks them, and returns the OpenAI ``{"object": "list", "data": [...]}``
 shape. Cached for 6h by default; ``?refresh=true`` bypasses.
 
-Per PLAN_GATEWAY.md D11, when the same canonical model is exposed by
+Per the design plan D11, when the same canonical model is exposed by
 multiple providers, we surface ONE logical entry. The resolver
 (Phase 2.6) decides which provider to dispatch to per request. For
 now, dedup is based on equality of ``model.api_id`` — we don't yet

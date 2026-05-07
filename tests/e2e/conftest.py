@@ -17,7 +17,6 @@ import os
 import shutil
 import socket
 import subprocess
-import sys
 import time
 from contextlib import closing
 from pathlib import Path

@@ -21,7 +21,6 @@ from freeride.v2compat.models import (
     CACHE_DURATION_HOURS,
     CACHE_FILE,
     _openrouter_headers,
-    fetch_all_models,
     get_api_keys,
     get_free_models,
 )
@@ -33,7 +32,6 @@ from freeride.v2compat.openclaw import (
     get_current_model,
     load_openclaw_config,
     save_openclaw_config,
-    setup_openrouter_auth,
     stored_to_api_id,
     update_model_config,
 )

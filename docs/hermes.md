@@ -68,17 +68,17 @@ Out of scope for this binder:
 - Don't change `provider_routing` or `providers:` overrides — those are user-tuned.
 - Don't write `cli-config.yaml` (project-local). Bind is user-global only.
 
-E2E test for the binder (Phase 4 Feature 4.x — addition to current EXECUTION_PLAN.md):
+E2E test for the binder (Phase 4 Feature 4.x — addition to current the execution plan):
 1. Fresh hermes install with default `~/.hermes/config.yaml`.
 2. `freeride bind hermes` → file rewritten with the four keys above; all other keys byte-identical.
 3. Start hermes; ask a one-shot question; gateway logs show inbound request.
 
-Resolution maps to PLAN_GATEWAY.md §16: "if Hermes speaks `OPENAI_API_BASE`, no work needed beyond `freeride bind hermes`." It does (via the `custom` provider), so the answer is the binder. **Do not close the issue with "use a different agent."**
+Resolution maps to the design plan: "if Hermes speaks `OPENAI_API_BASE`, no work needed beyond `freeride bind hermes`." It does (via the `custom` provider), so the answer is the binder. **Do not close the issue with "use a different agent."**
 
 ## Open questions
 
 - **Issue reporter's version of Hermes.** Stars and topics make `NousResearch/hermes-agent` the only credible match, but a one-line confirmation comment from `@lewdon` would close it. Suggested reply on issue #11: *"Confirming this is `NousResearch/hermes-agent`? V3 will land a `freeride bind hermes` helper."*
-- **Whether to add Hermes to the Phase 4 binder set in `EXECUTION_PLAN.md`.** Currently Phase 4 names `openclaw / aider / continue`. Recommend appending `hermes` as Feature 4.8.
+- **Whether to add Hermes to the Phase 4 binder set in the execution plan.** Currently Phase 4 names `openclaw / aider / continue`. Recommend appending `hermes` as Feature 4.8.
 
 ## Sources
 
