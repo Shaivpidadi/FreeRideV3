@@ -87,6 +87,8 @@ class TestAiderBinder:
         text = p.read_text()
         assert "openai-api-base: http://x:1/v1" in text
         assert "openai-api-key: any" in text
+        # Default model wired so `aider` (no flags) works
+        assert "model: openai/openrouter/free" in text
 
     def test_preserves_existing_lines(self, tmpdir):
         p = tmpdir / ".aider.conf.yml"

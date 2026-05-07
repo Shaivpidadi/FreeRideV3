@@ -68,17 +68,28 @@ def bind(
     *,
     api_key: str = "any",
     scope: Scope = "home",
+    default_model: str = "openai/openrouter/free",
     config_path: Path | None = None,
 ) -> str:
+    """Write Aider's three load-bearing keys: openai-api-base, openai-api-key,
+    and `model:` so `aider` (no flags) just works.
+
+    The default model uses Aider's ``openai/`` prefix syntax — this tells
+    Aider to use its OpenAI-compatible client (which we are, via the
+    gateway). The rest of the model id (``openrouter/free``) is what the
+    gateway resolves to a free model on the configured provider chain.
+    """
     path = config_path or _aider_config_path(scope)
     lines = _read_yaml_lines(path)
     lines = _set_or_append(lines, "openai-api-base", gateway_url)
     lines = _set_or_append(lines, "openai-api-key", api_key)
+    lines = _set_or_append(lines, "model", default_model)
 
     atomic_write(path, "\n".join(lines) + "\n")
     return (
         f"Aider config at {path} updated.\n"
         f"  openai-api-base: {gateway_url}\n"
         f"  openai-api-key: {api_key}\n"
+        f"  model: {default_model}\n"
         f"  Aider has no hot-reload — restart aider for changes to take effect."
     )
