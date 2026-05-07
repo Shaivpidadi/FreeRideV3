@@ -71,11 +71,18 @@ def gateway_url() -> Generator[str, None, None]:
     base = f"http://127.0.0.1:{port}"
     health = f"{base}/health"
 
+    # start_new_session=True puts the gateway in its own session group
+    # so SIGINT/SIGTERM to pytest doesn't propagate. stdout/stderr go
+    # to DEVNULL so the gateway never holds onto pytest's stdio (which
+    # would prevent the parent SSH session from cleanly exiting after
+    # pytest completes).
     proc = subprocess.Popen(
         [str(GATEWAY_BIN), "serve", "--port", str(port), "--host", "127.0.0.1"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
         env={**os.environ},
+        start_new_session=True,
     )
     try:
         _wait_for_health(health)
