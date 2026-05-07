@@ -1,0 +1,23 @@
+{
+  "name": "freeride",
+  "description": "Teach Claude to detect, wire, and troubleshoot FreeRide — a local OpenAI-compatible gateway routing across free-tier providers (OpenRouter, Groq, NVIDIA NIM, Cloudflare Workers AI, HuggingFace).",
+  "version": "0.3.0",
+  "author": {
+    "name": "Shaishav Pidadi",
+    "url": "https://github.com/Shaivpidadi"
+  },
+  "homepage": "https://free-ride.xyz",
+  "repository": "https://github.com/Shaivpidadi/FreeRideV3",
+  "license": "MIT",
+  "keywords": [
+    "openai",
+    "openai-compatible",
+    "ai-gateway",
+    "free-tier",
+    "openrouter",
+    "groq",
+    "nvidia-nim",
+    "cloudflare-workers-ai",
+    "huggingface"
+  ]
+}

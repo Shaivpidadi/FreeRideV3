@@ -38,6 +38,19 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
   prose. ASCII demo block replaces the missing gif.
 - **Provider env-var maps** in `server/routes/chat.py` and
   `server/routes/models.py` updated for the two new providers.
+- **`knowledge/` directory replaced with `docs/`.** Personal ops notes
+  (release checklist, PyPI token rotation, Daytona sandbox notes,
+  smoke test runbook, full design plans) moved out of the public OSS
+  repo into a private tracking repo. Public-facing subset kept under
+  `docs/providers/`, `docs/agent-binders.md`, `docs/hermes.md`. All
+  cross-references in source docstrings updated.
+
+### Added (post-CF/HF)
+- **Claude Code plugin + skill.** `/plugin install https://github.com/Shaivpidadi/FreeRideV3`
+  loads `skills/freeride/SKILL.md` so Claude auto-detects FreeRide is
+  running, wires `OPENAI_API_BASE` against it, and explains the
+  `X-FreeRide-Provider` header without the user having to teach it.
+  Plugin manifest at `.claude-plugin/plugin.json`.
 
 ## [0.3.0a6] — 2026-05-07
 

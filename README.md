@@ -187,6 +187,20 @@ Adding a sixth: implement `freeride.core.provider.Provider` (`api_version=1`) in
 
 Or anything else: `OPENAI_API_BASE=http://localhost:11343/v1` + `OPENAI_API_KEY=any`.
 
+## Claude Code skill
+
+If you use Claude Code, install the FreeRide skill so Claude knows how to
+detect, wire, and troubleshoot the gateway:
+
+```
+/plugin install https://github.com/Shaivpidadi/FreeRideV3
+```
+
+After install, Claude auto-invokes the skill when you mention FreeRide,
+have it running on `localhost:11343`, or ask about routing across
+free-tier providers. See [`skills/README.md`](skills/README.md) for
+manual-install instructions.
+
 ## Docs
 
 - [`docs/providers/SURVEY.md`](docs/providers/SURVEY.md) — Provider Protocol fit per provider (auth shape, free-tier semantics, error mapping)
