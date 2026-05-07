@@ -120,6 +120,28 @@ def create_app(
             "providers": [p.name for p in app.state.providers],
         }
 
+    @app.get("/v1/_freeride/providers")
+    async def freeride_providers() -> dict[str, Any]:
+        """Diagnostic endpoint: per-provider health stats from the
+        in-process tracker. Read-only; no auth (gateway listens on
+        localhost so the user already controls access). Useful for
+        ``freeride status``-style introspection without subprocess'ing
+        into the running gateway.
+        """
+        from freeride.core.health import ProviderHealth
+
+        h = ProviderHealth.instance()
+        return {
+            "providers": [
+                {
+                    "name": p.name,
+                    "embeddings_supported": bool(getattr(p, "embeddings_supported", False)),
+                    **h.stats(p.name),
+                }
+                for p in app.state.providers
+            ],
+        }
+
     # Route modules attach via APIRouter so the app stays composable.
     from freeride.server.routes import chat as chat_route
     from freeride.server.routes import embeddings as embeddings_route

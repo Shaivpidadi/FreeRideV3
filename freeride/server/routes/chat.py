@@ -308,6 +308,21 @@ async def _build_stream_response(
     )
 
 
+def _apply_force_provider(
+    providers: list[Provider], request: Request
+) -> tuple[list[Provider], str | None]:
+    """If the request carries ``X-FreeRide-Force-Provider``, filter the
+    chain down to that provider only. Returns the filtered chain plus
+    the requested name (so the route can 503 with an actionable error
+    when the name doesn't match anything registered).
+    """
+    forced = request.headers.get("X-FreeRide-Force-Provider", "").strip()
+    if not forced:
+        return providers, None
+    matched = [p for p in providers if p.name == forced]
+    return matched, forced
+
+
 @router.post("/v1/chat/completions")
 async def chat_completions(request: Request, body: ChatRequest):
     # Health-aware ordering: providers that have been responding well
@@ -315,6 +330,22 @@ async def chat_completions(request: Request, body: ChatRequest):
     # neutral default scores means a fresh process keeps registration
     # order until enough data accumulates.
     providers: list[Provider] = sort_by_health(list(request.app.state.providers))
+
+    # Per-request override: X-FreeRide-Force-Provider pins the chain to
+    # one specific provider for benchmarking or debugging. No failover.
+    providers, forced = _apply_force_provider(providers, request)
+    if forced is not None and not providers:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "type": "force_provider_unknown",
+                    "message": f"X-FreeRide-Force-Provider={forced!r} is not a registered provider.",
+                    "registered": [p.name for p in request.app.state.providers],
+                }
+            },
+        )
+
     ctx = FailoverContext(request_id=new_request_id())
 
     emit_event(

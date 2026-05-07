@@ -28,6 +28,7 @@ from freeride.core.health import sort_by_health
 from freeride.core.provider import Provider
 from freeride.server.routes.chat import (
     FailoverContext,
+    _apply_force_provider,
     _build_503_detail,
     _record_health,
     _resolve_provider_chain,
@@ -49,6 +50,19 @@ def _embedding_capable(p: Provider) -> bool:
 @router.post("/v1/embeddings")
 async def embeddings(request: Request, body: EmbeddingRequest):
     providers: list[Provider] = sort_by_health(list(request.app.state.providers))
+    providers, forced = _apply_force_provider(providers, request)
+    if forced is not None and not providers:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "type": "force_provider_unknown",
+                    "message": f"X-FreeRide-Force-Provider={forced!r} is not a registered provider.",
+                    "registered": [p.name for p in request.app.state.providers],
+                }
+            },
+        )
+
     ctx = FailoverContext(request_id=new_request_id())
 
     emit_event(

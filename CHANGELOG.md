@@ -7,6 +7,19 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 ## [Unreleased]
 
 ### Added
+- **`X-FreeRide-Force-Provider` request header.** Pins a single
+  request to a specific provider, bypassing failover. Useful for
+  benchmarking ("what's Groq's actual latency?"), debugging ("is OR
+  really the issue?"), and any time you want to override the
+  health-aware ordering. Returns 400 with `force_provider_unknown`
+  when the named provider isn't registered. Works on both
+  `/v1/chat/completions` and `/v1/embeddings`.
+- **`GET /v1/_freeride/providers`** — diagnostic endpoint that returns
+  the in-process health snapshot (per-provider attempt count, success
+  rate, p50 latency, computed score, embeddings_supported flag).
+  Read-only; no auth (gateway is localhost-only by design). Useful
+  for surfacing live provider health into a future
+  `freeride status --remote` CLI command.
 - **Health-aware provider ordering** (`freeride/core/health.py`).
   Per-provider rolling-window stats (default 50 attempts) of success
   rate and p50 latency. The chat and embeddings routes sort the
