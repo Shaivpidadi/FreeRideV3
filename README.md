@@ -23,12 +23,30 @@ Crucially:
 
 ## Install
 
+The PyPI distribution is named `freeride-gateway`; the CLI binary it installs is `freeride`. Python ≥ 3.10.
+
+### Recommended: `pipx` (works in every terminal, no venv juggling)
+
 ```bash
-pip install freeride-gateway            # latest stable (after 0.3.0 final)
-pip install --pre freeride-gateway      # alpha / pre-release (current)
+brew install pipx                                  # macOS
+sudo apt install pipx                              # Debian/Ubuntu
+pipx ensurepath                                    # adds ~/.local/bin to PATH (one-time)
+
+pipx install --pip-args=--pre freeride-gateway     # alpha / pre-release (current)
+# pipx install freeride-gateway                    # stable (after 0.3.0 final)
 ```
 
-The PyPI distribution is named `freeride-gateway`; the CLI binary it installs is `freeride`. Python ≥ 3.10.
+After this, `freeride` works in any new terminal — no `source .venv/bin/activate` needed.
+
+### Alternative: pip + venv
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install --pre freeride-gateway
+freeride --version
+```
+
+Caveat: `freeride` is only on PATH in shells where you've activated the venv. To use FreeRide in a fresh terminal, either re-activate or run via `python -m freeride <command>`.
 
 For local development, clone and `pip install -e .` from the repo root.
 

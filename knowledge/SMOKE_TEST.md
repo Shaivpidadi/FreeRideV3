@@ -24,13 +24,11 @@ freeride --version
 
 **Expected:** `freeride 0.3.0a4` (or higher). Anything else, **report**.
 
-**If you see `freeride: command not found`:** the venv probably isn't activated. Either re-run `source .venv/bin/activate` and retry, or use the always-works fallback:
+**If you see `freeride: command not found`:** the venv probably isn't activated. This is expected venv behavior — venvs only exist for the shell where you sourced `.venv/bin/activate`. Three fixes:
 
-```bash
-python -m freeride --version
-```
-
-`python -m freeride` works regardless of PATH or venv-activation state. Use it everywhere `freeride` appears in the rest of this doc if needed.
+1. **Re-activate in this shell:** `source ~/freeride-test/.venv/bin/activate` then retry. (Fastest.)
+2. **Use the path-free fallback:** `python -m freeride --version` works regardless of PATH. Use it everywhere `freeride` appears below if needed.
+3. **For real daily use** (not this test), prefer `pipx install --pip-args=--pre freeride-gateway` instead of pip + venv. Pipx puts the binary on PATH globally; no per-shell activation. We're using venv here ON PURPOSE for hermeticity.
 
 ## 2. First-run telemetry banner
 
