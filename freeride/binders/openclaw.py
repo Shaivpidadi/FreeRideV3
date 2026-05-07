@@ -39,6 +39,7 @@ from freeride.v2compat.openclaw import (
 _FREE_MODEL_DEFINITION: dict = {
     "id": "free",
     "name": "FreeRide free-tier router",
+    "api": "openai",  # tells pi-ai to use the OpenAI-compatible client class
     "reasoning": False,
     "input": ["text", "image"],
     "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
@@ -80,7 +81,6 @@ def bind(
         "baseUrl": gateway_url,
         "apiKey": api_key,
         "auth": "api-key",
-        "api": "openai",
         "models": [_FREE_MODEL_DEFINITION],
     }
 
