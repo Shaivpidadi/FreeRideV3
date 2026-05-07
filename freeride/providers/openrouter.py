@@ -202,8 +202,13 @@ class OpenRouterProvider:
             if err.get("code") == "model_not_found":
                 return ErrorKind.MODEL_NOT_FOUND
             msg = str(err.get("message", ""))
-            if "Unknown model" in msg or "model_not_found" in msg:
-                return ErrorKind.MODEL_NOT_FOUND
+            # Patterns observed from real OpenRouter responses (2026-05-07):
+            #   400 with "<id> is not a valid model ID" — typo'd model
+            #   404 with "Unknown model" — different shape, also seen
+            #   "model_not_found" — sometimes echoed in message
+            for needle in ("Unknown model", "model_not_found", "not a valid model"):
+                if needle in msg:
+                    return ErrorKind.MODEL_NOT_FOUND
         return ErrorKind.UNKNOWN
 
     def retry_after_hint(self, response: Any) -> int | None:
