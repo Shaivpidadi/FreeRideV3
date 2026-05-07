@@ -6,6 +6,31 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+### Added
+- **`freeride watch` — live failover stream.** Tails a JSONL event log
+  written by the gateway (`~/.freeride/events.jsonl`) and pretty-prints
+  every request, provider attempt, response, and completion in real
+  time. Color-coded by status (green OK, yellow rate-limit/quota, red
+  auth/unknown). Tails through file rotation. Opt out with
+  `FREERIDE_EVENTS=0`. Useful for demoing failover, debugging "is my
+  agent actually using FreeRide", and post-hoc inspection.
+- **Structured 503 responses.** When all (provider, key) pairs fail,
+  the response body is now JSON with a per-provider `tried` array
+  (`provider`, `keys_tried`, `last_error`, `retry_after_s`) plus a
+  `request_id` and an actionable `suggestion` string. Replaces the
+  previous "All providers/keys failed; last error kind: AUTH" string.
+- **`X-FreeRide-Request-ID` response header** on every chat completion
+  (success and failure). Same value lands in `_freeride_request_id`
+  on JSON responses and pairs each failure mode with the entries in
+  `freeride watch` output.
+
+### Changed
+- **`/v1/chat/completions` failover loop** rewritten around a
+  `FailoverContext` so per-provider attempt summaries can be
+  collected and emitted as events without polluting the happy path.
+  Behavior unchanged from a client perspective except for the new
+  503 shape and headers.
+
 ## [0.3.0a8] — 2026-05-07
 
 ### Added

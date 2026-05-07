@@ -73,6 +73,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_tel = sub.add_parser("telemetry", help="Manage telemetry beacon (Phase 5)")
     p_tel.add_argument("state", nargs="?", choices=["on", "off"])
 
+    p_watch = sub.add_parser(
+        "watch",
+        help="Tail live failover events from a running gateway (~/.freeride/events.jsonl)",
+    )
+    p_watch.add_argument(
+        "--since-start",
+        action="store_true",
+        help="Replay all existing events before tailing new ones",
+    )
+    p_watch.add_argument(
+        "--no-color", action="store_true", help="Disable ANSI color output"
+    )
+
     return parser
 
 
@@ -118,6 +131,11 @@ def main(argv: list[str] | None = None) -> int:
         from freeride.cli.cmd_telemetry import cmd_telemetry
 
         return cmd_telemetry(args)
+
+    if args.command == "watch":
+        from freeride.cli.cmd_watch import cmd_watch
+
+        return cmd_watch(args)
 
     parser.print_help()
     return 1

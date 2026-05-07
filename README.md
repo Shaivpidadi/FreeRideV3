@@ -149,11 +149,36 @@ freeride telemetry off    # turn it off
 freeride telemetry        # show what would be sent
 ```
 
+## See what FreeRide is doing
+
+```bash
+freeride watch
+```
+
+Tails live failover events from a running gateway. Every request, every
+provider attempt, every rate-limit, every retry. Useful for seeing
+failover happen in real time, debugging "is my agent actually using
+FreeRide", or just demoing.
+
+```
+[14:23:01.412] req_a3f8e2c1  ▶ request model=openrouter/free stream
+[14:23:01.421] req_a3f8e2c1  → openrouter[k0] openrouter/free
+[14:23:01.833] req_a3f8e2c1  ← openrouter[k0] 412ms RATE_LIMIT ✗ (retry-after 47s)
+[14:23:01.835] req_a3f8e2c1  → groq[k0] openrouter/free
+[14:23:02.153] req_a3f8e2c1  ← groq[k0] 318ms OK ✓ first-chunk
+[14:23:02.154] req_a3f8e2c1  ■ complete via groq
+```
+
+Events are written to `~/.freeride/events.jsonl`. Opt out with
+`FREERIDE_EVENTS=0` if you don't want them. File caps at 1 MiB with
+single-backup rotation.
+
 ## Commands
 
 ```
 freeride serve                  start the gateway
 freeride bind <agent>           write gateway URL into agent config
+freeride watch                  tail live failover events
 freeride telemetry [on|off]     manage telemetry
 freeride list                   list available free models
 freeride status                 show OpenClaw config + cache age (v2)

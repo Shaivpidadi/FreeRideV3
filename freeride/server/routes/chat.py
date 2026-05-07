@@ -1,27 +1,40 @@
 """``POST /v1/chat/completions`` — OpenAI-compatible chat completions.
 
-Phase 2: single-provider non-streaming with per-key retry on RATE_LIMIT/AUTH.
-Phase 3: streaming with buffer-first-chunk failover (this commit).
+Cross-provider failover: walks the (provider, key) chain. On
+``RATE_LIMIT``/``AUTH`` advance keys; on ``MODEL_NOT_FOUND`` /
+``QUOTA_EXHAUSTED`` advance providers; on success ship the response
+and stamp ``X-FreeRide-Provider``.
 
-The streaming failover policy is described in the design plan: hold
-the first chunk until upstream confirms 200 + first SSE event. If the
-upstream fails before the first chunk, retry on next key. Once the
-first chunk has shipped to the client, errors propagate.
+Streaming uses buffer-first-chunk failover: hold the first SSE event
+until upstream confirms 200 + first chunk. If upstream fails before
+the first chunk, retry on the next (provider, key). Once the first
+chunk has shipped to the client, mid-stream errors propagate as a
+truncated stream (rare in practice; documented limitation).
+
+Observability: every transition emits a JSONL event to
+``~/.freeride/events.jsonl`` for ``freeride watch`` to tail. On
+all-failure, the 503 response carries a structured ``tried`` array
+per-provider so clients (and humans) can see exactly which providers
+were attempted, how many keys, and the last error per provider.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-from typing import AsyncIterator
+import time
+from dataclasses import dataclass, field
+from typing import Any, AsyncIterator
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from freeride.core.chat_schema import ChatRequest, ChatResponse, ChatStreamEvent
 from freeride.core.cooldown import KeyCooldown
 from freeride.core.errors import ErrorKind
+from freeride.core.events import emit as emit_event
+from freeride.core.events import new_request_id
 from freeride.core.provider import Provider
 
 
@@ -49,15 +62,6 @@ def _all_keys_for(provider_name: str) -> list[str]:
 
 
 def _resolve_provider_chain(providers: list[Provider]) -> list[tuple[Provider, list[str]]]:
-    """Return ``[(provider, available_keys), ...]`` in fallback order.
-
-    Phase 3 cross-provider failover: try every provider with at least
-    one available key. The retry loop advances along this chain when
-    a provider's keys are exhausted.
-
-    Phase 2.6+ may add health-awareness (latency, recent failure rate)
-    to reorder providers per request; for now order matches registration.
-    """
     cooldown = KeyCooldown()
     chain: list[tuple[Provider, list[str]]] = []
     for p in providers:
@@ -71,37 +75,118 @@ def _resolve_provider_chain(providers: list[Provider]) -> list[tuple[Provider, l
     return chain
 
 
+@dataclass
+class AttemptSummary:
+    """One row in the per-provider attempt log surfaced in 503 responses."""
+
+    provider: str
+    keys_tried: int = 0
+    last_error: ErrorKind | None = None
+    retry_after_s: int | None = None
+
+
+@dataclass
+class FailoverContext:
+    request_id: str
+    tried: list[AttemptSummary] = field(default_factory=list)
+
+    def attempt(self, provider_name: str) -> AttemptSummary:
+        for s in self.tried:
+            if s.provider == provider_name:
+                return s
+        s = AttemptSummary(provider=provider_name)
+        self.tried.append(s)
+        return s
+
+
+def _suggestion(tried: list[AttemptSummary]) -> str:
+    """Pick the most actionable hint based on the failure mix."""
+    if not tried:
+        return "No providers had usable keys. Set at least one provider env var (e.g. OPENROUTER_API_KEY)."
+    kinds = {t.last_error for t in tried if t.last_error is not None}
+    cooling = [t for t in tried if t.retry_after_s]
+    if kinds == {ErrorKind.RATE_LIMIT} and cooling:
+        soonest = min(t.retry_after_s for t in cooling if t.retry_after_s)
+        return f"All providers rate-limited. Soonest retry-after: ~{soonest}s. Add a Groq or HF key for more failover headroom."
+    if ErrorKind.AUTH in kinds:
+        bad = [t.provider for t in tried if t.last_error == ErrorKind.AUTH]
+        env_vars = ", ".join(_env_var_for(p) for p in bad)
+        return f"Auth failed on {', '.join(bad)}. Verify {env_vars} is set correctly."
+    if ErrorKind.MODEL_NOT_FOUND in kinds:
+        return "Model not available on any provider. Run `freeride list` to see what's currently free."
+    if ErrorKind.QUOTA_EXHAUSTED in kinds:
+        return "Free-tier budgets exhausted across providers. Wait for the next billing cycle, or add another provider's free key."
+    return "All providers failed. Run `freeride watch` in another terminal to see live transitions."
+
+
+def _build_503_detail(ctx: FailoverContext) -> dict[str, Any]:
+    return {
+        "error": {
+            "type": "all_upstreams_failed",
+            "message": "All providers/keys exhausted before a successful response.",
+            "request_id": ctx.request_id,
+            "tried": [
+                {
+                    "provider": t.provider,
+                    "keys_tried": t.keys_tried,
+                    "last_error": t.last_error.value if t.last_error else None,
+                    **(
+                        {"retry_after_s": t.retry_after_s}
+                        if t.retry_after_s is not None
+                        else {}
+                    ),
+                }
+                for t in ctx.tried
+            ],
+            "suggestion": _suggestion(ctx.tried),
+        }
+    }
+
+
 async def _try_stream_with_failover(
     chain: list[tuple[Provider, list[str]]],
     body: ChatRequest,
     cooldown: KeyCooldown,
+    ctx: FailoverContext,
 ) -> (
     tuple[Provider, ChatStreamEvent, AsyncIterator[ChatStreamEvent]]
     | tuple[None, None, ErrorKind]
 ):
-    """Buffer-first-chunk failover across providers.
-
-    Walks the (provider, keys) chain; for each (provider, key) tuple,
-    attempts to pull the first SSE event. On success returns the
-    chosen provider plus the stream. On all-failure returns the last
-    classified ErrorKind. PLAN §8.1: once first chunk has shipped to
-    client, mid-stream errors propagate.
-    """
     last_error: ErrorKind | None = None
     for provider, keys in chain:
-        provider_done = False  # set True on MODEL_NOT_FOUND to advance providers
-        for key in keys:
+        summary = ctx.attempt(provider.name)
+        provider_done = False
+        for key_idx, key in enumerate(keys):
             if provider_done:
                 break
+            summary.keys_tried += 1
+            emit_event(
+                "provider_attempt",
+                request_id=ctx.request_id,
+                provider=provider.name,
+                key_index=key_idx,
+                model=body.model,
+                streaming=True,
+            )
+            t0 = time.perf_counter()
             gen = provider.forward_chat_stream(body, body.model, key)
             try:
                 first = await gen.__anext__()
             except StopAsyncIteration:
+                duration_ms = int((time.perf_counter() - t0) * 1000)
                 last_error = ErrorKind.UNKNOWN
+                summary.last_error = last_error
+                emit_event(
+                    "provider_response",
+                    request_id=ctx.request_id,
+                    provider=provider.name,
+                    key_index=key_idx,
+                    duration_ms=duration_ms,
+                    status=last_error.value,
+                )
                 continue
             except httpx.HTTPStatusError as e:
-                # Read the streaming body before classifying so message
-                # patterns (model_not_found, etc.) are visible.
+                duration_ms = int((time.perf_counter() - t0) * 1000)
                 try:
                     await e.response.aread()
                 except Exception:
@@ -109,13 +194,45 @@ async def _try_stream_with_failover(
                 kind = provider.classify_error(e.response)
                 if kind in (ErrorKind.RATE_LIMIT, ErrorKind.AUTH):
                     cooldown.mark_rate_limited(provider.name, key)
-                if kind == ErrorKind.MODEL_NOT_FOUND:
+                if kind == ErrorKind.MODEL_NOT_FOUND or kind == ErrorKind.QUOTA_EXHAUSTED:
                     provider_done = True
+                summary.last_error = kind
+                if kind == ErrorKind.RATE_LIMIT:
+                    summary.retry_after_s = provider.retry_after_hint(e.response)
                 last_error = kind
+                emit_event(
+                    "provider_response",
+                    request_id=ctx.request_id,
+                    provider=provider.name,
+                    key_index=key_idx,
+                    duration_ms=duration_ms,
+                    status=kind.value,
+                    **({"retry_after_s": summary.retry_after_s} if summary.retry_after_s else {}),
+                )
                 continue
             except httpx.HTTPError as e:
+                duration_ms = int((time.perf_counter() - t0) * 1000)
                 last_error = provider.classify_error(e)
+                summary.last_error = last_error
+                emit_event(
+                    "provider_response",
+                    request_id=ctx.request_id,
+                    provider=provider.name,
+                    key_index=key_idx,
+                    duration_ms=duration_ms,
+                    status=last_error.value,
+                )
                 continue
+            duration_ms = int((time.perf_counter() - t0) * 1000)
+            emit_event(
+                "provider_response",
+                request_id=ctx.request_id,
+                provider=provider.name,
+                key_index=key_idx,
+                duration_ms=duration_ms,
+                status="OK",
+                first_chunk=True,
+            )
             return provider, first, gen
     return None, None, last_error or ErrorKind.UNKNOWN
 
@@ -132,14 +249,19 @@ async def _build_stream_response(
     chain: list[tuple[Provider, list[str]]],
     body: ChatRequest,
     cooldown: KeyCooldown,
+    ctx: FailoverContext,
 ) -> StreamingResponse:
-    chosen, first_event, rest_or_err = await _try_stream_with_failover(chain, body, cooldown)
+    chosen, first_event, rest_or_err = await _try_stream_with_failover(
+        chain, body, cooldown, ctx
+    )
     if chosen is None:
-        kind = rest_or_err if isinstance(rest_or_err, ErrorKind) else ErrorKind.UNKNOWN
-        raise HTTPException(
-            status_code=503,
-            detail=f"All providers/keys failed before first chunk; last error: {kind.value}",
+        emit_event(
+            "request_failed",
+            request_id=ctx.request_id,
+            phase="pre_first_chunk",
+            tried=[t.provider for t in ctx.tried],
         )
+        raise HTTPException(status_code=503, detail=_build_503_detail(ctx))
     rest = rest_or_err  # AsyncIterator at this point
 
     async def emit() -> AsyncIterator[bytes]:
@@ -149,68 +271,170 @@ async def _build_stream_response(
                 yield _format_sse(evt)
         except Exception as e:
             logger.warning("mid-stream upstream error after first chunk shipped: %s", e)
+            emit_event(
+                "request_mid_stream_error",
+                request_id=ctx.request_id,
+                provider=chosen.name,
+                error=str(e)[:200],
+            )
+        emit_event(
+            "request_complete",
+            request_id=ctx.request_id,
+            provider=chosen.name,
+            streaming=True,
+        )
         yield _format_done()
 
     return StreamingResponse(
         emit(),
         media_type="text/event-stream",
-        headers={"X-FreeRide-Provider": chosen.name},
+        headers={
+            "X-FreeRide-Provider": chosen.name,
+            "X-FreeRide-Request-ID": ctx.request_id,
+        },
     )
 
 
 @router.post("/v1/chat/completions")
 async def chat_completions(request: Request, body: ChatRequest):
     providers: list[Provider] = list(request.app.state.providers)
+    ctx = FailoverContext(request_id=new_request_id())
+
+    emit_event(
+        "request_start",
+        request_id=ctx.request_id,
+        model=body.model,
+        streaming=body.is_streaming(),
+    )
+
     if not providers:
-        raise HTTPException(status_code=503, detail="No providers configured.")
+        emit_event("request_failed", request_id=ctx.request_id, phase="no_providers")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": {
+                    "type": "no_providers",
+                    "message": "No provider plugins registered. This is a server-config bug.",
+                    "request_id": ctx.request_id,
+                }
+            },
+        )
 
     cooldown = KeyCooldown()
     chain = _resolve_provider_chain(providers)
     if not chain:
+        emit_event(
+            "request_failed",
+            request_id=ctx.request_id,
+            phase="no_usable_keys",
+            providers=[p.name for p in providers],
+        )
         raise HTTPException(
             status_code=503,
-            detail="No providers have usable, non-cooling API keys for this request.",
+            detail={
+                "error": {
+                    "type": "no_usable_keys",
+                    "message": "No providers have usable (non-cooling) API keys for this request.",
+                    "request_id": ctx.request_id,
+                    "configured_providers": [p.name for p in providers],
+                    "suggestion": "Either set a provider env var (e.g. OPENROUTER_API_KEY) or wait for cooldowns to expire (~120s).",
+                }
+            },
         )
 
     if body.is_streaming():
-        return await _build_stream_response(chain, body, cooldown)
+        return await _build_stream_response(chain, body, cooldown, ctx)
 
     # Non-streaming with cross-provider failover.
-    last_error: ErrorKind | None = None
     chosen_provider: Provider | None = None
     response: ChatResponse | None = None
     for provider, keys in chain:
-        for key in keys:
+        summary = ctx.attempt(provider.name)
+        for key_idx, key in enumerate(keys):
+            summary.keys_tried += 1
+            emit_event(
+                "provider_attempt",
+                request_id=ctx.request_id,
+                provider=provider.name,
+                key_index=key_idx,
+                model=body.model,
+                streaming=False,
+            )
+            t0 = time.perf_counter()
             try:
                 response = await provider.forward_chat(body, body.model, key)
             except httpx.HTTPStatusError as e:
+                duration_ms = int((time.perf_counter() - t0) * 1000)
                 kind = provider.classify_error(e.response)
                 if kind in (ErrorKind.RATE_LIMIT, ErrorKind.AUTH):
                     cooldown.mark_rate_limited(provider.name, key)
-                last_error = kind
-                # Same-provider key advance only on RATE_LIMIT / AUTH;
-                # MODEL_NOT_FOUND advances to next provider since other
-                # keys won't help.
-                if kind == ErrorKind.MODEL_NOT_FOUND:
+                summary.last_error = kind
+                if kind == ErrorKind.RATE_LIMIT:
+                    summary.retry_after_s = provider.retry_after_hint(e.response)
+                emit_event(
+                    "provider_response",
+                    request_id=ctx.request_id,
+                    provider=provider.name,
+                    key_index=key_idx,
+                    duration_ms=duration_ms,
+                    status=kind.value,
+                    **(
+                        {"retry_after_s": summary.retry_after_s}
+                        if summary.retry_after_s
+                        else {}
+                    ),
+                )
+                if kind in (ErrorKind.MODEL_NOT_FOUND, ErrorKind.QUOTA_EXHAUSTED):
                     break
                 continue
             except httpx.HTTPError as e:
-                last_error = provider.classify_error(e)
+                duration_ms = int((time.perf_counter() - t0) * 1000)
+                summary.last_error = provider.classify_error(e)
+                emit_event(
+                    "provider_response",
+                    request_id=ctx.request_id,
+                    provider=provider.name,
+                    key_index=key_idx,
+                    duration_ms=duration_ms,
+                    status=summary.last_error.value,
+                )
                 continue
+            duration_ms = int((time.perf_counter() - t0) * 1000)
+            emit_event(
+                "provider_response",
+                request_id=ctx.request_id,
+                provider=provider.name,
+                key_index=key_idx,
+                duration_ms=duration_ms,
+                status="OK",
+            )
             chosen_provider = provider
             break
         if response is not None:
             break
 
     if response is None or chosen_provider is None:
-        detail = (
-            f"All providers/keys failed; last error kind: "
-            f"{last_error.value if last_error else 'unknown'}"
+        emit_event(
+            "request_failed",
+            request_id=ctx.request_id,
+            phase="all_attempts_exhausted",
+            tried=[t.provider for t in ctx.tried],
         )
-        raise HTTPException(status_code=503, detail=detail)
+        return JSONResponse(status_code=503, content=_build_503_detail(ctx))
 
+    emit_event(
+        "request_complete",
+        request_id=ctx.request_id,
+        provider=chosen_provider.name,
+        streaming=False,
+    )
     out = response.model_dump(exclude_none=False)
-    # Surface which provider actually served the request — useful for
-    # the Phase 3 failover demo and for operator debugging.
     out["_freeride_provider"] = chosen_provider.name
-    return out
+    out["_freeride_request_id"] = ctx.request_id
+    return JSONResponse(
+        content=out,
+        headers={
+            "X-FreeRide-Provider": chosen_provider.name,
+            "X-FreeRide-Request-ID": ctx.request_id,
+        },
+    )
