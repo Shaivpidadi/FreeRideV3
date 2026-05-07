@@ -6,6 +6,8 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+## [0.3.0a6] — 2026-05-07
+
 ### Added
 - **Groq provider** (`freeride/providers/groq.py`). OpenAI-compatible at
   `api.groq.com/openai/v1`. Free-tier detection is a hardcoded allowlist
@@ -18,8 +20,8 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 - **GitHub Actions CI** (`.github/workflows/test.yml`) — runs pytest on
   every push/PR across {ubuntu, macos} × {3.10, 3.11, 3.12, 3.13}.
 - **GitHub Actions release pipeline** (`.github/workflows/release.yml`) —
-  Trusted Publishing (OIDC) for tag-driven PyPI uploads. Requires the
-  one-time PyPI publisher config documented in `knowledge/PYPI_TOKEN.md`.
+  Trusted Publishing (OIDC) for tag-driven PyPI uploads. First release
+  cut by this pipeline.
 - **`CONTRIBUTING.md`** — Provider plugin + binder authoring guide.
 
 ## [0.3.0a5] — 2026-05-07
@@ -117,7 +119,8 @@ First public release. Distributable name on PyPI: `freeride-gateway`.
   "Connection reset by peer" before TLS handshake completes. This is a
   Daytona network-policy restriction, not a FreeRide bug.
 
-[Unreleased]: https://github.com/Shaivpidadi/FreeRideV3/compare/v0.3.0a5...HEAD
+[Unreleased]: https://github.com/Shaivpidadi/FreeRideV3/compare/v0.3.0a6...HEAD
+[0.3.0a6]: https://github.com/Shaivpidadi/FreeRideV3/releases/tag/v0.3.0a6
 [0.3.0a5]: https://github.com/Shaivpidadi/FreeRideV3/releases/tag/v0.3.0a5
 [0.3.0a4]: https://github.com/Shaivpidadi/FreeRideV3/releases/tag/v0.3.0a4
 [0.3.0a3]: https://github.com/Shaivpidadi/FreeRideV3/releases/tag/v0.3.0a3
