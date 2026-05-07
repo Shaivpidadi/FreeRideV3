@@ -2,6 +2,10 @@ name = "freeride-telemetry"
 main = "src/worker.js"
 compatibility_date = "2026-04-01"
 
+# Keep the *.workers.dev URL active as a fallback so the worker is
+# reachable even before / outside of the custom-domain DNS path.
+workers_dev = true
+
 # Bind the D1 database created via `wrangler d1 create freeride-telemetry`.
 # Paste the printed database_id here after `wrangler d1 create`.
 [[d1_databases]]
@@ -9,8 +13,9 @@ binding = "DB"                       # available as env.DB inside the worker
 database_name = "freeride-telemetry"
 database_id = "a2dcd6e7-6a86-40d1-b836-772965eab765"
 
-# Deploy under the public custom domain when DNS is wired up.
-# Uncomment after adding a CNAME for `telemetry.free-ride.xyz` in CF.
-# [[routes]]
-# pattern = "telemetry.free-ride.xyz/*"
-# custom_domain = true
+# Public custom domain — created via wrangler once free-ride.xyz is
+# active in Cloudflare. CF creates the DNS record automatically when
+# the route is bound.
+[[routes]]
+pattern = "telemetry.free-ride.xyz"
+custom_domain = true
