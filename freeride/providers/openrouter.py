@@ -29,6 +29,11 @@ and keeps unknown shapes (the live probe catches false positives).
 
 from __future__ import annotations
 
+import httpx
+
+from freeride.core.provider import PROVIDER_API_VERSION
+from freeride.core.types import Model
+
 OPENROUTER_API_BASE = "https://openrouter.ai/api/v1"
 OPENROUTER_MODELS_URL = f"{OPENROUTER_API_BASE}/models"
 OPENROUTER_CHAT_URL = f"{OPENROUTER_API_BASE}/chat/completions"
@@ -99,3 +104,62 @@ def filter_free_chat_models(models: list[dict]) -> list[dict]:
         out.append(m)
         seen.add(mid)
     return out
+
+
+def _to_model(raw: dict) -> Model:
+    """Convert one OpenRouter catalog entry to a :class:`Model`."""
+    arch = raw.get("architecture") or {}
+    out_mods = arch.get("output_modalities")
+    if not isinstance(out_mods, list) or not out_mods:
+        out_mods = ["text"]
+    return Model(
+        api_id=raw.get("id", ""),
+        provider="openrouter",
+        context_length=int(raw.get("context_length") or 0),
+        output_modalities=tuple(out_mods),
+        supported_parameters=tuple(raw.get("supported_parameters") or ()),
+        raw=raw,
+    )
+
+
+class OpenRouterProvider:
+    """OpenRouter Provider plugin (incremental impl, full surface lands in 1.4.6)."""
+
+    name: str = "openrouter"
+    api_version: int = PROVIDER_API_VERSION
+
+    def __init__(self, *, http_timeout: float = 30.0) -> None:
+        self._timeout = http_timeout
+
+    # ----- request stamping (Provider Protocol) --------------------------
+    def auth_header(self, key: str) -> dict[str, str]:
+        return {"Authorization": f"Bearer {key}"}
+
+    def attribution_headers(self) -> dict[str, str]:
+        return {
+            "HTTP-Referer": OPENROUTER_REFERER,
+            "X-Title": OPENROUTER_APP_TITLE,
+        }
+
+    def _outbound_headers(self, key: str, *, json_content: bool = False) -> dict[str, str]:
+        h: dict[str, str] = {**self.auth_header(key), **self.attribution_headers()}
+        if json_content:
+            h["Content-Type"] = "application/json"
+        return h
+
+    # ----- discovery ------------------------------------------------------
+    def list_free_models(self, key: str) -> list[Model]:
+        """Fetch OpenRouter's catalog with ``key`` and return the free-tier
+        chat-shaped subset as :class:`Model` instances.
+
+        Single-key per the Protocol — multi-key rotation belongs in the
+        gateway's key pool (lands in Phase 1.6). The CLI's ``freeride list``
+        will iterate over keys via that pool, calling this method per-key
+        and short-circuiting on first success.
+        """
+        with httpx.Client(timeout=self._timeout) as client:
+            resp = client.get(OPENROUTER_MODELS_URL, headers=self._outbound_headers(key))
+        resp.raise_for_status()
+        raw_models: list[dict] = resp.json().get("data", []) or []
+        free = filter_free_chat_models(raw_models)
+        return [_to_model(r) for r in free]
