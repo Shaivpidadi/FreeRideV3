@@ -83,8 +83,10 @@ def create_app(
         }
 
     # Route modules attach via APIRouter so the app stays composable.
+    from freeride.server.routes import chat as chat_route
     from freeride.server.routes import models as models_route
 
     app.include_router(models_route.router)
+    app.include_router(chat_route.router)
 
     return app

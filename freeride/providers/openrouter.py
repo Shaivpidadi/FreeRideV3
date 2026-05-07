@@ -230,16 +230,34 @@ class OpenRouterProvider:
         except (TypeError, ValueError):
             return None
 
-    # ----- request forwarding (gateway hot-path; impl in Phase 2/3) ------
+    # ----- request forwarding (gateway hot-path) -------------------------
     async def forward_chat(
         self, request: ChatRequest, model_id: str, key: str
     ) -> ChatResponse:
-        """Non-streaming chat completion. Real implementation lands in Phase 2
-        (Task 2.3.1). Stubbed here so the Provider Protocol is fully satisfied
-        from Phase 1 onward and the conformance suite can run against the
-        real class.
+        """Non-streaming chat completion. Forward the request to OpenRouter
+        verbatim (modulo the model swap — the gateway lets clients use a
+        different model name than the upstream id), then validate the
+        response into our :class:`ChatResponse` schema. Permissive parsing
+        means provider extensions like vLLM's ``reasoning_content`` and
+        ``nvext`` round-trip without loss.
         """
-        raise NotImplementedError("OpenRouterProvider.forward_chat lands in Phase 2.3.1")
+        # Build the outbound payload: copy the inbound request, override
+        # model with the resolved upstream id, force stream=False.
+        payload = request.model_dump(exclude_none=True)
+        payload["model"] = model_id
+        payload["stream"] = False
+
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.post(
+                OPENROUTER_CHAT_URL,
+                headers=self._outbound_headers(key, json_content=True),
+                json=payload,
+            )
+        # Let raise_for_status surface 4xx/5xx — the gateway's retry loop
+        # will catch via classify_error and pick another tuple. Phase 2
+        # simplest path: surface the error to the client.
+        resp.raise_for_status()
+        return ChatResponse.model_validate(resp.json())
 
     async def forward_chat_stream(
         self, request: ChatRequest, model_id: str, key: str
