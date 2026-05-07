@@ -29,8 +29,11 @@ and keeps unknown shapes (the live probe catches false positives).
 
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 
+from freeride.core.errors import ErrorKind
 from freeride.core.provider import PROVIDER_API_VERSION
 from freeride.core.types import Model
 
@@ -146,6 +149,79 @@ class OpenRouterProvider:
         if json_content:
             h["Content-Type"] = "application/json"
         return h
+
+    # ----- error classification (Provider Protocol) ----------------------
+    def classify_error(self, response_or_exc: Any) -> ErrorKind:
+        """Map an httpx response or exception to an :class:`ErrorKind`.
+
+        OpenRouter conventions:
+
+        - 401 → AUTH (key invalid)
+        - 429 → RATE_LIMIT
+        - 503 → UNAVAILABLE
+        - other 5xx → UNAVAILABLE
+        - 4xx with ``error.code == "model_not_found"`` or message containing
+          "Unknown model" → MODEL_NOT_FOUND
+        - any other 4xx → UNKNOWN
+        - httpx.TimeoutException → TIMEOUT
+        - httpx.RequestError (other network) → UNAVAILABLE (transient)
+        - any other exception → UNKNOWN
+        """
+        # Exception path
+        if isinstance(response_or_exc, httpx.TimeoutException):
+            return ErrorKind.TIMEOUT
+        if isinstance(response_or_exc, httpx.RequestError):
+            return ErrorKind.UNAVAILABLE
+        if isinstance(response_or_exc, BaseException):
+            return ErrorKind.UNKNOWN
+
+        # Response path
+        resp = response_or_exc
+        status = getattr(resp, "status_code", None)
+        if status is None:
+            return ErrorKind.UNKNOWN
+        if 200 <= status < 300:
+            return ErrorKind.OK
+        if status == 401:
+            return ErrorKind.AUTH
+        if status == 429:
+            return ErrorKind.RATE_LIMIT
+        if status == 503:
+            return ErrorKind.UNAVAILABLE
+        if 500 <= status < 600:
+            return ErrorKind.UNAVAILABLE
+
+        # 4xx (other): inspect body for model_not_found
+        try:
+            body = resp.json()
+        except (ValueError, AttributeError):
+            return ErrorKind.UNKNOWN
+        err = body.get("error") if isinstance(body, dict) else None
+        if isinstance(err, dict):
+            if err.get("code") == "model_not_found":
+                return ErrorKind.MODEL_NOT_FOUND
+            msg = str(err.get("message", ""))
+            if "Unknown model" in msg or "model_not_found" in msg:
+                return ErrorKind.MODEL_NOT_FOUND
+        return ErrorKind.UNKNOWN
+
+    def retry_after_hint(self, response: Any) -> int | None:
+        """Parse a ``Retry-After`` header. OpenRouter rarely sends it; the
+        gateway falls back to its own cooldown when this returns ``None``.
+        """
+        if response is None:
+            return None
+        headers = getattr(response, "headers", None)
+        if headers is None:
+            return None
+        raw = headers.get("retry-after") if hasattr(headers, "get") else None
+        if not raw:
+            return None
+        try:
+            value = int(raw)
+            return value if value >= 0 else None
+        except (TypeError, ValueError):
+            return None
 
     # ----- discovery ------------------------------------------------------
     def list_free_models(self, key: str) -> list[Model]:
