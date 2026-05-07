@@ -102,10 +102,10 @@ def main(argv: list[str] | None = None) -> int:
 
         return cmd_bind(args)
 
-    # telemetry lands in Phase 5
     if args.command == "telemetry":
-        print(f"freeride {__version__}: 'telemetry' lands in Phase 5.")
-        return 0
+        from freeride.cli.cmd_telemetry import cmd_telemetry
+
+        return cmd_telemetry(args)
 
     parser.print_help()
     return 1

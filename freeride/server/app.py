@@ -3,7 +3,8 @@
 The server is the heart of v3: an OpenAI-compatible HTTP surface that
 agents point at instead of OpenRouter/NIM/etc. directly. Phase 2 lands
 ``/health``, ``/v1/models``, and non-streaming ``/v1/chat/completions``;
-Phase 3 adds streaming + a second provider.
+Phase 3 adds streaming + a second provider; Phase 5 wires the hourly
+opt-in telemetry beacon.
 
 We use a factory (``create_app``) instead of a module-level ``app =``
 so tests can construct fresh app instances and the CLI can pass
@@ -12,6 +13,7 @@ provider registries / config in.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import Any, Sequence
@@ -19,7 +21,11 @@ from typing import Any, Sequence
 from fastapi import FastAPI
 
 from freeride import __version__
+from freeride.core import telemetry
 from freeride.core.provider import Provider
+
+
+_TELEMETRY_INTERVAL_SECONDS = 3600  # hourly
 
 
 logger = logging.getLogger("freeride.server")
@@ -38,11 +44,43 @@ def _configure_logging(*, verbose: bool) -> None:
         )
 
 
+async def _telemetry_loop() -> None:
+    """Hourly opt-in beacon. Skips entirely while telemetry is disabled
+    (the user can flip it on/off without restarting the gateway —
+    ``is_enabled()`` re-reads ``~/.freeride/config.json`` each tick).
+    Errors are silent per spec.
+    """
+    while True:
+        try:
+            await asyncio.sleep(_TELEMETRY_INTERVAL_SECONDS)
+            if telemetry.is_enabled():
+                # Run the sync httpx call in a thread so we don't block
+                # the event loop on the network round-trip.
+                await asyncio.to_thread(telemetry.ship_beacon)
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.debug("telemetry beacon failed: %s", e)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    logger.info("freeride gateway starting (v=%s providers=%s)", __version__, [p.name for p in app.state.providers])
-    yield
-    logger.info("freeride gateway shutting down")
+    logger.info(
+        "freeride gateway starting (v=%s providers=%s telemetry=%s)",
+        __version__,
+        [p.name for p in app.state.providers],
+        "on" if telemetry.is_enabled() else "off",
+    )
+    task = asyncio.create_task(_telemetry_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+        logger.info("freeride gateway shutting down")
 
 
 def create_app(
