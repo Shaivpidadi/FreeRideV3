@@ -151,7 +151,7 @@ These are not in `PLAN.md` and will eat real time. Calling them out so they don'
 ## 9. Refined roadmap
 
 ### Phase 0 — Decisions (this week, no code)
-Update this document and `PLAN.md` with these committed calls:
+Committed calls:
 - **D1:** V3 is a gateway, not a config-writer. PLAN.md §10 non-goal *flipped*.
 - **D2:** Wire protocol = OpenAI-compatible chat completions. Anthropic Messages = deferred to Phase 6+.
 - **D3:** HTTP server = FastAPI on uvicorn. HTTP client = `httpx` (async).
@@ -162,6 +162,10 @@ Update this document and `PLAN.md` with these committed calls:
 - **D8:** Logs off by default; `--verbose` opt-in only.
 - **D9:** `freeride auto` CLI surface frozen; everything else can change.
 - **D10:** Naming — keep `FreeRide`. It generalizes (still riding free).
+- **D11:** Multi-provider model identity = **one logical entry per canonical model**; resolver dispatches across providers. (Closes §13 Q1.)
+- **D12:** Telemetry = **opt-in anonymous aggregate beacon, default OFF**. Aggregate counts only — never prompts, completions, model IDs, or keys. Full payload in §14. (Closes §13 Q2.)
+- **D13:** Quota visibility surfaced inside `freeride status`, computed from local request history per key plus any provider-exposed quota field. No separate command. (Closes §13 Q3.)
+- **D14:** Anthropic Messages API surface deferred until ≥2 real Anthropic-API-shaped clients ask. Don't pre-build. (Closes §13 Q4.)
 
 ### Phase 1 — Lift v2 logic into a library (1–2 weeks)
 Pure refactor; no behavior change.
@@ -240,28 +244,92 @@ What's uniquely FreeRide:
 
 Narrow but credible position. Don't drift from it.
 
-## 13. Open questions (decide before Phase 2)
+## 13. Resolved questions
 
-Most of `PLAN.md` §9 is resolved by the decisions in §9.D1–D10 above. What remains:
+All design questions from earlier drafts now have committed answers. Summarized for traceability:
 
-1. **Multi-provider model identity.** DeepSeek-V3 lives on OpenRouter, NIM, DeepInfra under different `api_id`s. Should `/v1/models` expose them as one logical entry (and the resolver picks the provider) or N entries (and the user picks)? **Tentative: one logical entry per "canonical" model**, with the resolver dispatching across providers. This is the gateway's killer feature — don't punt it to the user.
+| # | Question | Resolution |
+|---|---|---|
+| Q1 | Multi-provider model identity — one logical entry or N? | **D11** — one logical entry per canonical model; resolver dispatches |
+| Q2 | Telemetry — and what shape? | **D12 + §14** — opt-in aggregate beacon, default off |
+| Q3 | Quota visibility — separate command? | **D13** — surfaced via `freeride status` |
+| Q4 | Anthropic Messages API surface — when? | **D14** — deferred until ≥2 real clients ask |
 
-2. **Telemetry.** Now that the gateway sees real traffic, should it record (locally, opt-in) per-provider success / 429 / latency stats so users can see "your free AI saved you N requests this week"? Useful UX; not a privacy concern if local-only and aggregate.
+If new design questions surface during Phase 1–2, they land here and get resolved before code lands on `main`.
 
-3. **Quota visibility.** From accumulated request history per key, the gateway can compute "you have ~120 requests left today on this key." Surface where? `freeride status` extension; not a separate command.
+## 14. Telemetry — what gets sent, what doesn't
 
-4. **Anthropic Messages API surface.** Phase 6 question. Decision criterion: if ≥ 2 real Anthropic-API-shaped clients show up wanting it, do it. Otherwise hold.
+### Why this section exists
+Two requirements that pull in opposite directions:
+- **The user-visible promise** — FreeRide runs entirely on the user's machine. Prompts and completions never touch any FreeRide-operated infrastructure.
+- **The project-visibility need** — knowing how many people use FreeRide and how many tokens we serve, in aggregate, to understand impact and prioritize work.
 
-## 14. Out of scope (explicit non-goals — supersedes PLAN.md §10)
+Both are met by an **opt-in, aggregate-only beacon**. Everything below documents exactly what that means so there's no daylight between the privacy promise and the implementation.
+
+### Default state
+**OFF.** A fresh install sends nothing. Opt-in is explicit:
+```bash
+freeride telemetry on    # writes {telemetry: true} to ~/.freeride/config.json
+freeride telemetry off   # reverses it
+freeride telemetry       # shows current state + the most recent payload, verbatim
+```
+
+The `freeride telemetry` no-arg command exists so the user can audit exactly what we'd send before deciding.
+
+### What gets sent (when enabled)
+Hourly POST to a single static FreeRide-operated endpoint while the gateway is running:
+
+```json
+{
+  "installation_id": "uuid-v4-generated-on-first-run",
+  "version": "0.3.0",
+  "os": "darwin",
+  "tokens_served": 412034,
+  "request_count": 187,
+  "providers_active": ["openrouter", "nvidia_nim"],
+  "uptime_hours": 8
+}
+```
+
+`installation_id` is a random UUID generated on first run, persisted to `~/.freeride/installation_id`. Not derivable from the user's identity, hostname, MAC, or anything else. Resettable by deleting the file.
+
+`providers_active` is included so we can see "X% of free-tier traffic flows through OpenRouter, Y% through NIM" at the project level. It does not name keys, models, or any per-request data.
+
+### What never gets sent
+- Prompt content (input messages)
+- Completion content (output messages)
+- API keys
+- Model IDs (would leak which models a user prefers)
+- Per-request data — only hour-aggregated counts
+- Hostname / username / IP (the HTTPS request reveals an IP at the network layer; the FreeRide endpoint discards it server-side)
+
+### Failure mode
+Beacon failures are silent. They never block real inference traffic, never retry beyond the next hourly tick, and never surface as errors to the user.
+
+### Local stats (always on, no opt-in needed)
+Independent of the beacon, FreeRide tracks the same counters locally for the user's own consumption:
+
+```bash
+freeride status
+# ...
+# Tokens served this week:    412,034
+# Requests:                   187
+# Top provider (uptime %):    OpenRouter (94%)
+```
+
+This data lives only on the user's machine (`~/.freeride/stats.json`) and is never transmitted unless the user has telemetry on, in which case the hour-aggregates are sent per the beacon spec above.
+
+## 15. Out of scope (explicit non-goals)
 
 - **Paid models, ever.**
 - **Auto-installing services.** No `launchd` plists, `systemd` units, cron entries, shell-profile edits. Documented `nohup` / `launchd` patterns only.
-- **Hosted/multi-tenant gateway.** Local-first is the value prop and the privacy story. No SaaS version.
+- **Hosted/multi-tenant gateway.** Local-first is the value prop and the privacy story. No SaaS version. **The FreeRide-the-project does not operate any data-plane infrastructure** — your prompts and completions never touch a FreeRide-owned server, by design. The only thing FreeRide-the-project hosts is the optional telemetry beacon endpoint (§14), which receives aggregate counts and never request content.
+- **Sending prompt or completion content off-device, ever.** Even with telemetry enabled. See §14.
 - **Image-gen, audio-gen, embeddings (initially).** Chat-shaped models only for v3.0. Embeddings = Phase 6 maybe.
 - **Rate-limit prediction / quota arbitrage.** We probe and react. We don't model provider rate limits in advance.
 - **Local-only consumers (llama.cpp, LM Studio).** They don't need a gateway — they have local inference. Not the user we're serving.
 
-## 15. Glossary
+## 16. Glossary
 
 - **Provider** — a source of free AI models (OpenRouter, NVIDIA NIM, …).
 - **Client** — anything that sends requests to the gateway (an agent like OpenClaw, an SDK, a `curl` script). Replaces "Consumer" from the old plan.
@@ -270,7 +338,7 @@ Most of `PLAN.md` §9 is resolved by the decisions in §9.D1–D10 above. What r
 - **Live probe** — real `chat/completions` request with `max_tokens: 5` to verify availability.
 - **Failover** — switching to a different `(provider, model, key)` on error, transparently to the client.
 
-## 16. References
+## 17. References
 
 ### v2 carry-forward principles (project memory)
 - `project_free_only.md` — free-models-only, no paid models.
