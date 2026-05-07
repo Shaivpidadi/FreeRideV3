@@ -123,6 +123,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Gateway base URL (default: http://localhost:11343/v1)",
     )
 
+    p_upgrade = sub.add_parser(
+        "upgrade",
+        help="Bump installed freeride-gateway to the latest PyPI release",
+    )
+    p_upgrade.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the command that would run, don't execute it",
+    )
+
     return parser
 
 
@@ -183,6 +193,11 @@ def main(argv: list[str] | None = None) -> int:
         from freeride.cli.cmd_reload import cmd_reload
 
         return cmd_reload(args)
+
+    if args.command == "upgrade":
+        from freeride.cli.cmd_upgrade import cmd_upgrade
+
+        return cmd_upgrade(args)
 
     parser.print_help()
     return 1
