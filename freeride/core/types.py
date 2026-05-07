@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from freeride.core.errors import ErrorKind
+
 
 @dataclass(frozen=True, slots=True)
 class Model:
@@ -37,11 +39,11 @@ class Model:
 class ProbeResult:
     """Outcome of a single ``Provider.probe`` call.
 
-    ``error`` is None on success and an :class:`~freeride.core.errors.ErrorKind`
-    on failure. We deliberately avoid exposing raw HTTP responses here —
-    that's the provider's job to classify.
+    ``error`` is None on success and an :class:`ErrorKind` on failure.
+    We deliberately avoid exposing raw HTTP responses here — that's the
+    provider's job to classify.
     """
 
     ok: bool
-    error: Any | None = None  # ErrorKind, but kept Any to avoid circular import
+    error: ErrorKind | None = None
     latency_ms: int = 0
