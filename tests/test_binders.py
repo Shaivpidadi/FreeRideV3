@@ -26,14 +26,21 @@ def tmpdir() -> Path:
 
 
 class TestOpenClawBinder:
-    def test_writes_auth_profile_and_primary(self, tmpdir):
+    def test_writes_provider_and_primary(self, tmpdir):
         p = tmpdir / "openclaw.json"
         p.write_text("{}")
         openclaw.bind("http://x:1/v1", config_path=p)
         cfg = json.loads(p.read_text())
-        assert cfg["auth"]["profiles"]["freeride:default"]["base_url"] == "http://x:1/v1"
-        assert cfg["auth"]["profiles"]["freeride:default"]["api_key"] == "any"
-        assert cfg["auth"]["profiles"]["freeride:default"]["provider"] == "openai"
+        # Custom model provider — schema requires baseUrl (camelCase)
+        prov = cfg["models"]["providers"]["freeride"]
+        assert prov["baseUrl"] == "http://x:1/v1"
+        assert prov["apiKey"] == "any"
+        assert prov["auth"] == "api-key"
+        assert isinstance(prov["models"], list) and prov["models"]
+        # Auth profile pointer — schema permits only {provider, mode, email}
+        prof = cfg["auth"]["profiles"]["freeride:default"]
+        assert prof == {"provider": "freeride", "mode": "api_key"}
+        # Primary
         assert cfg["agents"]["defaults"]["model"]["primary"] == "freeride/free"
 
     def test_preserves_unrelated_top_level_keys(self, tmpdir):
@@ -54,7 +61,9 @@ class TestOpenClawBinder:
         openclaw.bind("http://x:1/v1", config_path=p)
         cfg = json.loads(p.read_text())
         assert cfg["auth"]["profiles"]["some-other:profile"] == {"keep": True}
-        assert cfg["auth"]["profiles"]["freeride:default"]["base_url"] == "http://x:1/v1"
+        assert cfg["auth"]["profiles"]["freeride:default"]["provider"] == "freeride"
+        # The gateway URL lives under models.providers, not the auth profile
+        assert cfg["models"]["providers"]["freeride"]["baseUrl"] == "http://x:1/v1"
 
     def test_idempotent(self, tmpdir):
         p = tmpdir / "openclaw.json"
@@ -62,8 +71,9 @@ class TestOpenClawBinder:
         openclaw.bind("http://x:1/v1", config_path=p)
         openclaw.bind("http://x:1/v1", config_path=p)  # second run
         cfg = json.loads(p.read_text())
-        # Still exactly one freeride profile, exactly one freeride/free entry
+        # Still exactly one freeride profile + one freeride provider + one freeride/free entry
         assert list(cfg["auth"]["profiles"].keys()) == ["freeride:default"]
+        assert list(cfg["models"]["providers"].keys()) == ["freeride"]
         assert "freeride/free" in cfg["agents"]["defaults"]["models"]
 
 
