@@ -29,3 +29,7 @@ htmlcov/
 # FreeRide local state (must NEVER be committed)
 .freeride/
 freeride.egg-info/
+
+# wrangler / Cloudflare Workers local caches and state — must never be committed
+.wrangler/
+.dev.vars
