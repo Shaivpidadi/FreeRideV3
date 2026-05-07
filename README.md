@@ -24,11 +24,13 @@ Crucially:
 ## Install
 
 ```bash
-pip install -e .
-# (PyPI release pending; for now install from source.)
+pip install free-ride            # latest stable (after 0.3.0 final)
+pip install --pre free-ride      # alpha / pre-release (current)
 ```
 
-You'll need Python ≥ 3.10.
+The PyPI distribution is named `free-ride`; the CLI binary it installs is `freeride`. Python ≥ 3.10.
+
+For local development, clone and `pip install -e .` from the repo root.
 
 ## Quick start
 
