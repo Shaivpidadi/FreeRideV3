@@ -35,6 +35,8 @@ def _env_var_for(provider_name: str) -> str:
         "openrouter": "OPENROUTER_API_KEY",
         "nvidia_nim": "NVIDIA_API_KEY",
         "groq": "GROQ_API_KEY",
+        "cloudflare_wai": "CLOUDFLARE_API_TOKEN",
+        "huggingface": "HF_TOKEN",
     }.get(provider_name, f"{provider_name.upper()}_API_KEY")
 
 

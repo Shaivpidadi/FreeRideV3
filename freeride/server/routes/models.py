@@ -50,15 +50,13 @@ def _key_for(provider: Provider) -> str | None:
     keys currently in cooldown. Centralized here so the resolver and the
     models endpoint pick keys the same way.
     """
-    env_var = (
-        "OPENROUTER_API_KEY"
-        if provider.name == "openrouter"
-        else "NVIDIA_API_KEY"
-        if provider.name == "nvidia_nim"
-        else "GROQ_API_KEY"
-        if provider.name == "groq"
-        else f"{provider.name.upper()}_API_KEY"
-    )
+    env_var = {
+        "openrouter": "OPENROUTER_API_KEY",
+        "nvidia_nim": "NVIDIA_API_KEY",
+        "groq": "GROQ_API_KEY",
+        "cloudflare_wai": "CLOUDFLARE_API_TOKEN",
+        "huggingface": "HF_TOKEN",
+    }.get(provider.name, f"{provider.name.upper()}_API_KEY")
     raw = os.environ.get(env_var, "")
     if not raw:
         return None

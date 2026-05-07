@@ -20,7 +20,9 @@ import sys
 
 import uvicorn
 
+from freeride.providers.cloudflare_wai import CloudflareWAIProvider
 from freeride.providers.groq import GroqProvider
+from freeride.providers.huggingface import HuggingFaceProvider
 from freeride.providers.nvidia_nim import NVIDIANIMProvider
 from freeride.providers.openrouter import OpenRouterProvider
 from freeride.server.app import create_app
@@ -51,6 +53,10 @@ def _build_provider_registry() -> list:
         providers.append(NVIDIANIMProvider())
     if os.environ.get("GROQ_API_KEY"):
         providers.append(GroqProvider())
+    if os.environ.get("CLOUDFLARE_API_TOKEN") and os.environ.get("CLOUDFLARE_ACCOUNT_ID"):
+        providers.append(CloudflareWAIProvider())
+    if os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_API_KEY"):
+        providers.append(HuggingFaceProvider())
     return providers
 
 

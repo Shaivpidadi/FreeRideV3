@@ -6,6 +6,39 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+## [0.3.0a7] — 2026-05-07
+
+### Added
+- **Cloudflare Workers AI provider** (`freeride/providers/cloudflare_wai.py`).
+  OpenAI-compatible at `api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1/`.
+  Account ID is part of the URL (not the key) — provider reads
+  `CLOUDFLARE_ACCOUNT_ID` env var at construction time and fails loudly if
+  missing. Curated free-tier allowlist of cheap-per-neuron chat models in
+  `cloudflare_wai_model_metadata.py` (IBM Granite, Llama 3.x, Gemma 3,
+  Qwen 2.5 Coder, Mistral Small 3.1); `CF_WAI_FREE_MODELS_OVERRIDE` env
+  var lets paid-plan users expand it. Classifier handles CF's `success: false`
+  envelope shape and maps 403 to AUTH (CF returns 403 when the token
+  doesn't have AI permission). Auto-loaded by `freeride serve` when both
+  `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are set.
+- **HuggingFace Inference Providers plugin** (`freeride/providers/huggingface.py`).
+  OpenAI-compatible at `router.huggingface.co/v1`. HF's free tier is a
+  monthly credit budget ($0.10 Free / $2 PRO), not per-model — full catalog
+  passes through; classifier maps 402 Payment Required to QUOTA_EXHAUSTED
+  so the resolver advances to a different provider. Optional
+  `X-HF-Bill-To` org-billing header opt-in via `HUGGINGFACE_BILL_TO`
+  env var. Routing-policy suffixes (`:fastest`, `:cheapest`, `:<provider>`)
+  on model ids round-trip transparently. Auto-loaded by `freeride serve`
+  when `HF_TOKEN` (or `HUGGINGFACE_API_KEY`) is set.
+- Both new providers registered in the conformance suite; 263 unit tests
+  pass (up from 206).
+
+### Changed
+- **README rewritten** in less AI-flavored voice — leads with the demo,
+  trims bullet-heavy "Crucially:" sections, replaces design-doc-style
+  prose. ASCII demo block replaces the missing gif.
+- **Provider env-var maps** in `server/routes/chat.py` and
+  `server/routes/models.py` updated for the two new providers.
+
 ## [0.3.0a6] — 2026-05-07
 
 ### Added
@@ -119,7 +152,8 @@ First public release. Distributable name on PyPI: `freeride-gateway`.
   "Connection reset by peer" before TLS handshake completes. This is a
   Daytona network-policy restriction, not a FreeRide bug.
 
-[Unreleased]: https://github.com/Shaivpidadi/FreeRideV3/compare/v0.3.0a6...HEAD
+[Unreleased]: https://github.com/Shaivpidadi/FreeRideV3/compare/v0.3.0a7...HEAD
+[0.3.0a7]: https://github.com/Shaivpidadi/FreeRideV3/releases/tag/v0.3.0a7
 [0.3.0a6]: https://github.com/Shaivpidadi/FreeRideV3/releases/tag/v0.3.0a6
 [0.3.0a5]: https://github.com/Shaivpidadi/FreeRideV3/releases/tag/v0.3.0a5
 [0.3.0a4]: https://github.com/Shaivpidadi/FreeRideV3/releases/tag/v0.3.0a4

@@ -18,7 +18,9 @@ from typing import Any
 import pytest
 
 from freeride.core.provider import PROVIDER_API_VERSION, Provider
+from freeride.providers.cloudflare_wai import CloudflareWAIProvider
 from freeride.providers.groq import GroqProvider
+from freeride.providers.huggingface import HuggingFaceProvider
 from freeride.providers.nvidia_nim import NVIDIANIMProvider
 from freeride.providers.openrouter import OpenRouterProvider
 from tests.fixtures.noop_provider import NoopProvider
@@ -30,7 +32,16 @@ CONFORMANT_PROVIDERS: list[type] = [
     OpenRouterProvider,
     NVIDIANIMProvider,
     GroqProvider,
+    CloudflareWAIProvider,
+    HuggingFaceProvider,
 ]
+
+
+# Some providers need extra constructor args. Register them here so the
+# generic fixture can build them without per-class branching.
+PROVIDER_KWARGS: dict[type, dict[str, Any]] = {
+    CloudflareWAIProvider: {"account_id": "00000000000000000000000000000000"},
+}
 
 
 @pytest.fixture(params=CONFORMANT_PROVIDERS, ids=lambda cls: cls.__name__)
@@ -40,7 +51,7 @@ def provider_class(request: pytest.FixtureRequest) -> type:
 
 @pytest.fixture
 def provider(provider_class: type) -> Any:
-    return provider_class()
+    return provider_class(**PROVIDER_KWARGS.get(provider_class, {}))
 
 
 @pytest.fixture(autouse=True)
