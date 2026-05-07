@@ -60,9 +60,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_serve.add_argument("--host", default="127.0.0.1")
     p_serve.add_argument("--verbose", action="store_true")
 
-    p_bind = sub.add_parser("bind", help="Configure an agent to use the gateway (Phase 4)")
+    p_bind = sub.add_parser("bind", help="Configure an agent to use the gateway")
     p_bind.add_argument("agent", choices=["openclaw", "aider", "continue", "hermes", "opencode"])
     p_bind.add_argument("--gateway-url", default="http://localhost:11343/v1")
+    p_bind.add_argument(
+        "--scope",
+        choices=["home", "cwd", "git"],
+        default="home",
+        help="Aider only: which config-file scope to write (default: home)",
+    )
 
     p_tel = sub.add_parser("telemetry", help="Manage telemetry beacon (Phase 5)")
     p_tel.add_argument("state", nargs="?", choices=["on", "off"])
@@ -91,10 +97,14 @@ def main(argv: list[str] | None = None) -> int:
 
         return cmd_serve(args)
 
-    # Gateway / future commands not yet implemented
-    if args.command in {"bind", "telemetry"}:
-        phase = {"bind": "Phase 4", "telemetry": "Phase 5"}[args.command]
-        print(f"freeride {__version__}: '{args.command}' lands in {phase}.")
+    if args.command == "bind":
+        from freeride.cli.cmd_bind import cmd_bind
+
+        return cmd_bind(args)
+
+    # telemetry lands in Phase 5
+    if args.command == "telemetry":
+        print(f"freeride {__version__}: 'telemetry' lands in Phase 5.")
         return 0
 
     parser.print_help()
