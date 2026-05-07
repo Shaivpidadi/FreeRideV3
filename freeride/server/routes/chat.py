@@ -87,7 +87,10 @@ async def _try_stream_with_failover(
     """
     last_error: ErrorKind | None = None
     for provider, keys in chain:
+        provider_done = False  # set True on MODEL_NOT_FOUND to advance providers
         for key in keys:
+            if provider_done:
+                break
             gen = provider.forward_chat_stream(body, body.model, key)
             try:
                 first = await gen.__anext__()
@@ -95,9 +98,17 @@ async def _try_stream_with_failover(
                 last_error = ErrorKind.UNKNOWN
                 continue
             except httpx.HTTPStatusError as e:
+                # Read the streaming body before classifying so message
+                # patterns (model_not_found, etc.) are visible.
+                try:
+                    await e.response.aread()
+                except Exception:
+                    pass
                 kind = provider.classify_error(e.response)
                 if kind in (ErrorKind.RATE_LIMIT, ErrorKind.AUTH):
                     cooldown.mark_rate_limited(provider.name, key)
+                if kind == ErrorKind.MODEL_NOT_FOUND:
+                    provider_done = True
                 last_error = kind
                 continue
             except httpx.HTTPError as e:

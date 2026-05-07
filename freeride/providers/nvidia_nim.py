@@ -171,10 +171,12 @@ class NVIDIANIMProvider:
             if ct.startswith("text/plain"):
                 return ErrorKind.MODEL_NOT_FOUND
 
-        # 4xx fallback: try JSON body
+        # 4xx fallback: try JSON body. Streaming responses raise
+        # ResponseNotRead unless aread() called first; treat as
+        # "nothing to inspect" and fall through to UNKNOWN.
         try:
             body = resp.json()
-        except (ValueError, AttributeError):
+        except Exception:
             return ErrorKind.UNKNOWN
         if isinstance(body, dict):
             err = body.get("error", body)

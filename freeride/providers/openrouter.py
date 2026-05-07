@@ -193,10 +193,14 @@ class OpenRouterProvider:
         if 500 <= status < 600:
             return ErrorKind.UNAVAILABLE
 
-        # 4xx (other): inspect body for model_not_found
+        # 4xx (other): inspect body for model_not_found.
+        # Streaming responses raise httpx.ResponseNotRead unless aread()
+        # was called first; we treat that as "no body to inspect" and
+        # fall through to UNKNOWN. The streaming caller is responsible
+        # for reading before classify if it wants body-pattern matching.
         try:
             body = resp.json()
-        except (ValueError, AttributeError):
+        except Exception:
             return ErrorKind.UNKNOWN
         err = body.get("error") if isinstance(body, dict) else None
         if isinstance(err, dict):
