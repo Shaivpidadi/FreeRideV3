@@ -7,6 +7,13 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 ## [Unreleased]
 
 ### Added
+- **`freeride providers` CLI** — pretty-printed live health from a
+  running gateway. Hits `/v1/_freeride/providers` and renders a table:
+  per-provider attempt count, success rate, p50 latency, computed
+  health score, embeddings-supported flag. Cold rows (below the
+  health min-N threshold) are dimmed and tagged `(cold)`. Footer
+  picks the healthiest warm provider as the operational answer to
+  "who's actually serving requests well right now?".
 - **Hot-reload of provider registry** without restart.
   `POST /v1/_freeride/reload` rebuilds `app.state.providers` from the
   current env vars by re-running the build-registry factory.

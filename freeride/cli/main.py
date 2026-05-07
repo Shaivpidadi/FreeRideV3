@@ -123,6 +123,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Gateway base URL (default: http://localhost:11343/v1)",
     )
 
+    p_providers = sub.add_parser(
+        "providers",
+        help="Show live provider health from a running gateway",
+    )
+    p_providers.add_argument(
+        "--url",
+        default="http://localhost:11343/v1",
+        help="Gateway base URL (default: http://localhost:11343/v1)",
+    )
+    p_providers.add_argument("--no-color", action="store_true")
+
     return parser
 
 
@@ -183,6 +194,11 @@ def main(argv: list[str] | None = None) -> int:
         from freeride.cli.cmd_reload import cmd_reload
 
         return cmd_reload(args)
+
+    if args.command == "providers":
+        from freeride.cli.cmd_providers import cmd_providers
+
+        return cmd_providers(args)
 
     parser.print_help()
     return 1
