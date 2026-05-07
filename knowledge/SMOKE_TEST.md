@@ -22,7 +22,15 @@ pip install --pre freeride-gateway
 freeride --version
 ```
 
-**Expected:** `freeride 0.3.0a2` (or higher). Anything else, **report**.
+**Expected:** `freeride 0.3.0a4` (or higher). Anything else, **report**.
+
+**If you see `freeride: command not found`:** the venv probably isn't activated. Either re-run `source .venv/bin/activate` and retry, or use the always-works fallback:
+
+```bash
+python -m freeride --version
+```
+
+`python -m freeride` works regardless of PATH or venv-activation state. Use it everywhere `freeride` appears in the rest of this doc if needed.
 
 ## 2. First-run telemetry banner
 
