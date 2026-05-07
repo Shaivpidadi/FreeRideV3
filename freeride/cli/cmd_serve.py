@@ -42,12 +42,13 @@ def _port_in_use(host: str, port: int) -> bool:
         return False
 
 
-def _build_provider_registry() -> list:
-    """Pick up provider plugins based on what env vars are set.
+def build_provider_registry() -> list:
+    """Pick up provider plugins based on what env vars are CURRENTLY set.
 
-    OpenRouter is always-on (it's our primary). NIM is added if
-    NVIDIA_API_KEY is present — the actual class lands in Phase 3, so
-    for now this is just OpenRouter.
+    OpenRouter is always-on (it's our primary). The remaining providers
+    are added when their respective env vars are set. This function is
+    pure — re-running it after env-var changes returns a fresh registry,
+    which is what the hot-reload endpoint relies on.
     """
     providers: list = [OpenRouterProvider()]
     if os.environ.get("NVIDIA_API_KEY"):
@@ -63,6 +64,10 @@ def _build_provider_registry() -> list:
     return providers
 
 
+# Backwards-compat alias for any existing imports.
+_build_provider_registry = build_provider_registry
+
+
 def cmd_serve(args) -> int:
     host = args.host
     port = args.port
@@ -75,8 +80,14 @@ def cmd_serve(args) -> int:
         )
         return 1
 
-    providers = _build_provider_registry()
-    app = create_app(providers=providers, verbose=args.verbose)
+    providers = build_provider_registry()
+    # Pass the factory so POST /v1/_freeride/reload can rebuild the
+    # registry when env vars change without a process restart.
+    app = create_app(
+        providers=providers,
+        verbose=args.verbose,
+        provider_factory=build_provider_registry,
+    )
 
     print(f"freeride gateway listening on http://{host}:{port}")
     print(f"  providers: {', '.join(p.name for p in providers)}")

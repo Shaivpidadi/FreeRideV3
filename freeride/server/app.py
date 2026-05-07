@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from fastapi import FastAPI
 
@@ -87,6 +87,7 @@ def create_app(
     *,
     providers: Sequence[Provider] | None = None,
     verbose: bool = False,
+    provider_factory: "Callable[[], list[Provider]] | None" = None,
 ) -> FastAPI:
     """Build a fresh FastAPI app instance.
 
@@ -94,12 +95,15 @@ def create_app(
     ----------
     providers
         The Provider plugins this server will route to. Empty for tests
-        that only exercise the framework. The CLI wires the real
-        OpenRouterProvider (and later NIM) here.
+        that only exercise the framework.
     verbose
-        If True, set logging to INFO. Otherwise WARNING. Body-content
-        logging is off in both cases for v3.0; will be opt-in only in
-        Phase 5 telemetry work.
+        If True, set logging to INFO. Otherwise WARNING.
+    provider_factory
+        Optional zero-arg callable that returns a fresh provider list.
+        When provided, ``POST /v1/_freeride/reload`` rebuilds
+        ``app.state.providers`` by calling it — useful for picking up
+        new env vars without restarting the gateway. ``None`` (the
+        default) makes the reload endpoint return 501.
     """
     _configure_logging(verbose=verbose)
 
@@ -111,6 +115,7 @@ def create_app(
     )
     app.state.providers = list(providers or [])
     app.state.verbose = verbose
+    app.state.provider_factory = provider_factory
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
@@ -118,6 +123,46 @@ def create_app(
             "ok": True,
             "version": __version__,
             "providers": [p.name for p in app.state.providers],
+        }
+
+    @app.post("/v1/_freeride/reload")
+    async def freeride_reload() -> dict[str, Any]:
+        """Re-build the provider registry from the current process env.
+
+        Useful when adding a new provider key (e.g., ``GROQ_API_KEY``)
+        without restarting the gateway. Atomically replaces
+        ``app.state.providers`` so in-flight requests holding their own
+        snapshot of the list don't see partial state.
+
+        Returns 501 when the server was started without a
+        ``provider_factory`` (e.g., a test app pinned to a fixed list).
+        Returns the before/after provider names so the caller can see
+        what changed.
+        """
+        factory = app.state.provider_factory
+        if factory is None:
+            return {
+                "ok": False,
+                "error": "reload_not_enabled",
+                "message": "Server was started without a provider_factory; restart `freeride serve` to pick up new env vars.",
+            }
+        before = [p.name for p in app.state.providers]
+        try:
+            new_providers = list(factory())
+        except Exception as e:
+            return {
+                "ok": False,
+                "error": "factory_failed",
+                "message": f"provider_factory raised: {e!s}",
+            }
+        app.state.providers = new_providers
+        after = [p.name for p in new_providers]
+        return {
+            "ok": True,
+            "before": before,
+            "after": after,
+            "added": [n for n in after if n not in before],
+            "removed": [n for n in before if n not in after],
         }
 
     @app.get("/v1/_freeride/providers")

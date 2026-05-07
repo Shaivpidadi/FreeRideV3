@@ -113,6 +113,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_bench.add_argument("--no-color", action="store_true")
 
+    p_reload = sub.add_parser(
+        "reload",
+        help="Reload providers from env vars on a running gateway (no restart)",
+    )
+    p_reload.add_argument(
+        "--url",
+        default="http://localhost:11343/v1",
+        help="Gateway base URL (default: http://localhost:11343/v1)",
+    )
+
     return parser
 
 
@@ -168,6 +178,11 @@ def main(argv: list[str] | None = None) -> int:
         from freeride.cli.cmd_bench import cmd_bench
 
         return cmd_bench(args)
+
+    if args.command == "reload":
+        from freeride.cli.cmd_reload import cmd_reload
+
+        return cmd_reload(args)
 
     parser.print_help()
     return 1

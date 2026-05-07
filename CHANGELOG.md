@@ -7,6 +7,15 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 ## [Unreleased]
 
 ### Added
+- **Hot-reload of provider registry** without restart.
+  `POST /v1/_freeride/reload` rebuilds `app.state.providers` from the
+  current env vars by re-running the build-registry factory.
+  `freeride reload` CLI POSTs to that endpoint and prints
+  before/after/added/removed. Atomic swap: in-flight requests already
+  holding their own snapshot of the provider list aren't affected.
+  Useful for the common "I forgot to set GROQ_API_KEY before starting
+  serve" case. Returns `reload_not_enabled` (ok=false) when the server
+  was started without a `provider_factory` (test apps pin a fixed list).
 - **Ollama provider** (`freeride/providers/ollama.py`). Local Ollama
   daemon as a first-class FreeRide provider — same Provider Protocol,
   same failover chain, same `freeride watch` integration. Lets users
