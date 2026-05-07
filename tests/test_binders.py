@@ -159,15 +159,19 @@ class TestContinueBinder:
 
 class TestHermesBinder:
     def test_creates_new_config(self, tmpdir):
-        p = tmpdir / "cli-config.yaml"
-        hermes.bind("http://x:1/v1", config_path=p)
+        p = tmpdir / "config.yaml"
+        env_p = tmpdir / ".env"
+        hermes.bind("http://x:1/v1", config_path=p, env_path=env_p)
         text = p.read_text()
         assert 'provider: "custom"' in text
         assert 'base_url: "http://x:1/v1"' in text
         assert 'api_key: "any"' in text
+        # .env was created with LM_API_KEY (since no key was pre-set)
+        assert "LM_API_KEY=any" in env_p.read_text()
 
     def test_preserves_user_comments_and_other_keys(self, tmpdir):
-        p = tmpdir / "cli-config.yaml"
+        p = tmpdir / "config.yaml"
+        env_p = tmpdir / ".env"
         p.write_text(
             "# user comment\n"
             "model:\n"
@@ -175,25 +179,36 @@ class TestHermesBinder:
             "logging:\n"
             '  level: "info"\n'
         )
-        hermes.bind("http://x:1/v1", config_path=p)
+        hermes.bind("http://x:1/v1", config_path=p, env_path=env_p)
         text = p.read_text()
         assert "# user comment" in text
-        # logging block preserved
         assert 'level: "info"' in text
-        # provider was added under model:
         assert 'provider: "custom"' in text
-        # base_url was set
         assert 'base_url: "http://x:1/v1"' in text
 
     def test_replaces_existing_provider(self, tmpdir):
-        p = tmpdir / "cli-config.yaml"
+        p = tmpdir / "config.yaml"
+        env_p = tmpdir / ".env"
         p.write_text(
             "model:\n"
             '  provider: "openrouter"\n'
             '  base_url: "https://openrouter.ai/api/v1"\n'
         )
-        hermes.bind("http://x:1/v1", config_path=p)
+        hermes.bind("http://x:1/v1", config_path=p, env_path=env_p)
         text = p.read_text()
         assert 'provider: "openrouter"' not in text
         assert 'provider: "custom"' in text
         assert 'base_url: "http://x:1/v1"' in text
+
+    def test_does_not_clobber_existing_user_keys_in_env(self, tmpdir):
+        p = tmpdir / "config.yaml"
+        env_p = tmpdir / ".env"
+        env_p.write_text("OPENROUTER_API_KEY=sk-real-key\nOTHER_VAR=foo\n")
+        hermes.bind("http://x:1/v1", config_path=p, env_path=env_p)
+        env_text = env_p.read_text()
+        # User's real key is preserved
+        assert "OPENROUTER_API_KEY=sk-real-key" in env_text
+        # Unrelated env vars preserved
+        assert "OTHER_VAR=foo" in env_text
+        # LM_API_KEY NOT added since user already has a real key
+        assert "LM_API_KEY" not in env_text

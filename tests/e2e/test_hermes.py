@@ -28,22 +28,20 @@ pytestmark = [pytest.mark.e2e, pytest.mark.timeout(120)]
 def test_hermes_one_shot_through_gateway(gateway_url: str, tmp_path: Path):
     require_hermes()
 
-    # Use an isolated config in tmp so we don't touch the user's real
-    # ~/.hermes/cli-config.yaml.
-    cfg_path = tmp_path / "cli-config.yaml"
-    hermes_binder.bind(gateway_url, api_key="any", config_path=cfg_path)
+    # Use an isolated HOME so we don't touch the developer's real
+    # ~/.hermes/. The binder writes to $HOME/.hermes/config.yaml +
+    # $HOME/.hermes/.env.
+    fake_home = tmp_path
+    hermes_dir = fake_home / ".hermes"
+    hermes_dir.mkdir(parents=True, exist_ok=True)
+    hermes_binder.bind(
+        gateway_url,
+        api_key="any",
+        config_path=hermes_dir / "config.yaml",
+        env_path=hermes_dir / ".env",
+    )
 
-    env = {
-        **os.environ,
-        # Hermes reads its config relative to HOME by default; point HOME
-        # at our tmp so it picks up the one we just wrote.
-        "HOME": str(tmp_path.parent if (tmp_path / ".hermes").exists() else tmp_path),
-    }
-    # Explicit copy under .hermes/ for HOME-relative discovery
-    hermes_dir = tmp_path / ".hermes"
-    hermes_dir.mkdir(exist_ok=True)
-    (hermes_dir / "cli-config.yaml").write_text(cfg_path.read_text())
-    env["HOME"] = str(tmp_path)
+    env = {**os.environ, "HOME": str(fake_home)}
 
     result = subprocess.run(
         [
