@@ -266,23 +266,57 @@ class TestRetryAfterHint:
         assert provider.retry_after_hint(FakeResp()) == 30
 
 
-# ---- forward_chat stubs raise --------------------------------------------
+# ---- forward_chat / forward_chat_stream (mocked round-trips) -------------
 
 
-class TestForwardChatStubs:
+class TestForwardChat:
     @pytest.mark.asyncio
-    async def test_forward_chat_raises(self, provider):
+    async def test_forward_chat_passes_through(self, provider, httpx_mock):
         from freeride.core.chat_schema import ChatRequest
 
-        req = ChatRequest(model="m", messages=[{"role": "user", "content": "hi"}])
-        with pytest.raises(NotImplementedError):
-            await provider.forward_chat(req, "m", "k")
+        httpx_mock.add_response(
+            url=OPENROUTER_CHAT_URL,
+            json={
+                "id": "chatcmpl-x",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "qwen/qwen3:free",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        )
+        req = ChatRequest(model="qwen/qwen3:free", messages=[{"role": "user", "content": "hi"}])
+        resp = await provider.forward_chat(req, "qwen/qwen3:free", "k")
+        assert resp.choices[0].message.content == "ok"
+        assert resp.usage is not None and resp.usage.total_tokens == 2
 
     @pytest.mark.asyncio
-    async def test_forward_chat_stream_raises(self, provider):
+    async def test_forward_chat_stream_yields_events(self, provider, httpx_mock):
         from freeride.core.chat_schema import ChatRequest
 
-        req = ChatRequest(model="m", messages=[{"role": "user", "content": "hi"}])
-        with pytest.raises(NotImplementedError):
-            async for _ in provider.forward_chat_stream(req, "m", "k"):
-                pass
+        sse_body = (
+            'data: {"id":"x","object":"chat.completion.chunk","created":1,"model":"m",'
+            '"choices":[{"index":0,"delta":{"role":"assistant","content":"hi"}}]}\n\n'
+            'data: {"id":"x","object":"chat.completion.chunk","created":1,"model":"m",'
+            '"choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}]}\n\n'
+            "data: [DONE]\n\n"
+        ).encode()
+        httpx_mock.add_response(
+            url=OPENROUTER_CHAT_URL,
+            content=sse_body,
+            headers={"content-type": "text/event-stream"},
+        )
+        req = ChatRequest(model="m", messages=[{"role": "user", "content": "hi"}], stream=True)
+        events = []
+        async for evt in provider.forward_chat_stream(req, "m", "k"):
+            events.append(evt)
+        # Two SSE events — [DONE] is swallowed
+        assert len(events) == 2
+        assert events[0].choices[0].delta.content == "hi"
+        assert events[1].choices[0].finish_reason == "stop"
