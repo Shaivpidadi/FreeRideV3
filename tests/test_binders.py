@@ -38,9 +38,10 @@ class TestOpenClawBinder:
         assert prov["auth"] == "api-key"
         assert isinstance(prov["models"], list) and prov["models"]
         # `api` lives on the model definition (NOT the provider — schema
-        # rejects it there at runtime). Required for pi-ai library to
-        # resolve the correct client class.
-        assert prov["models"][0]["api"] == "openai"
+        # rejects it there at runtime). The valid value for an OpenAI-
+        # compatible /v1/chat/completions endpoint is "openai-completions"
+        # (per dist/config/types.models.d.ts ModelApi enum).
+        assert prov["models"][0]["api"] == "openai-completions"
         # Auth profile pointer — schema permits only {provider, mode, email}
         prof = cfg["auth"]["profiles"]["freeride:default"]
         assert prof == {"provider": "freeride", "mode": "api_key"}

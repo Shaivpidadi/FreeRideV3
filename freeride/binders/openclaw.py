@@ -39,7 +39,11 @@ from freeride.v2compat.openclaw import (
 _FREE_MODEL_DEFINITION: dict = {
     "id": "free",
     "name": "FreeRide free-tier router",
-    "api": "openai",  # tells pi-ai to use the OpenAI-compatible client class
+    # ModelApi enum (per dist/config/types.models.d.ts):
+    #   openai-completions, openai-responses, anthropic-messages,
+    #   google-generative-ai, github-copilot, bedrock-converse-stream
+    # We expose OpenAI-compatible /v1/chat/completions, so this is the right one.
+    "api": "openai-completions",
     "reasoning": False,
     "input": ["text", "image"],
     "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
