@@ -20,6 +20,7 @@ import sys
 
 import uvicorn
 
+from freeride.providers.nvidia_nim import NVIDIANIMProvider
 from freeride.providers.openrouter import OpenRouterProvider
 from freeride.server.app import create_app
 
@@ -44,8 +45,9 @@ def _build_provider_registry() -> list:
     NVIDIA_API_KEY is present — the actual class lands in Phase 3, so
     for now this is just OpenRouter.
     """
-    providers = [OpenRouterProvider()]
-    # Phase 3.3 adds NVIDIANIMProvider() here when NVIDIA_API_KEY set.
+    providers: list = [OpenRouterProvider()]
+    if os.environ.get("NVIDIA_API_KEY"):
+        providers.append(NVIDIANIMProvider())
     return providers
 
 
