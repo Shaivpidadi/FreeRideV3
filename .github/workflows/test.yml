@@ -58,3 +58,45 @@ jobs:
 
       - name: Run ruff
         run: ruff check freeride/ tests/
+
+  e2e:
+    # Only runs when at least one provider key is present in repo secrets.
+    # Forks won't have access — this lane is opt-in for the maintainer.
+    name: e2e (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.repository == 'Shaivpidadi/FreeRideV3'
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [providers, agents]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package + dev + e2e extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,e2e]"
+
+      - name: Run e2e tests
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          FREERIDE_E2E: "1"
+        # Each shard hits a disjoint slice. providers/ is the per-provider
+        # matrix (5 providers × 4 tests); agents/ is the agent integration
+        # tests (Aider/Continue/Hermes/OpenClaw/openai-python).
+        run: |
+          if [ "${{ matrix.shard }}" = "providers" ]; then
+            pytest -m e2e tests/e2e/test_providers.py -v
+          else
+            pytest -m e2e --ignore=tests/e2e/test_providers.py tests/e2e/ -v
+          fi

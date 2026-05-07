@@ -60,8 +60,26 @@ def gateway_url() -> Generator[str, None, None]:
     gateway can technically start without keys but every e2e test needs
     real providers.
     """
-    if not (os.environ.get("OPENROUTER_API_KEY") or os.environ.get("NVIDIA_API_KEY")):
-        pytest.skip("no provider API key set (OPENROUTER_API_KEY or NVIDIA_API_KEY)")
+    # At least one provider key must be set for any agent e2e to do anything
+    # useful — the gateway can technically start without keys but every
+    # downstream agent test will then fail on the first chat completion.
+    any_key = any(
+        os.environ.get(k)
+        for k in (
+            "OPENROUTER_API_KEY",
+            "NVIDIA_API_KEY",
+            "GROQ_API_KEY",
+            "CLOUDFLARE_API_TOKEN",
+            "HF_TOKEN",
+            "HUGGINGFACE_API_KEY",
+        )
+    )
+    if not any_key:
+        pytest.skip(
+            "no provider API key set "
+            "(set one of OPENROUTER_API_KEY, GROQ_API_KEY, NVIDIA_API_KEY, "
+            "CLOUDFLARE_API_TOKEN+CLOUDFLARE_ACCOUNT_ID, HF_TOKEN)"
+        )
 
     if not GATEWAY_BIN.exists():
         pytest.skip(f"gateway binary missing at {GATEWAY_BIN} (run `pip install -e .`)")

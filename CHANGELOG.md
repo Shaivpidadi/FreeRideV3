@@ -7,6 +7,18 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 ## [Unreleased]
 
 ### Added
+- **Per-provider e2e test matrix** (`tests/e2e/test_providers.py`).
+  Each of the 5 providers gets its own subprocess gateway with ONLY
+  that provider's env var(s) set, then exercises `GET /v1/models`,
+  non-streaming chat completion, streaming chat completion, and
+  request-id header presence. Skips cleanly when keys aren't set.
+  CI runs them in a separate `e2e` job that's gated on the maintainer
+  repo so forks don't try to use missing secrets.
+- **Windows installer (`install.ps1`).** PowerShell mirror of
+  `install.sh` — same `uv tool install` flow, drops `freeride.exe`
+  in `%USERPROFILE%\.local\bin`. Served at
+  `https://api.free-ride.xyz/install.ps1`. README install section
+  now has both POSIX and PowerShell one-liners.
 - **`freeride watch` — live failover stream.** Tails a JSONL event log
   written by the gateway (`~/.freeride/events.jsonl`) and pretty-prints
   every request, provider attempt, response, and completion in real

@@ -45,11 +45,19 @@ So you sign up for all of them and now you've got five API keys, five SDKs, and 
 
 ## Install
 
+**macOS / Linux:**
+
 ```bash
 curl -sSL https://api.free-ride.xyz/install.sh | sh
 ```
 
-The installer bootstraps `uv` if missing, then `uv tool install`s `freeride-gateway`. Binary lands at `~/.local/bin/freeride`. Same shape as the bun.sh and astral.sh installers.
+**Windows (PowerShell):**
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://api.free-ride.xyz/install.ps1 | iex"
+```
+
+The installer bootstraps `uv` if missing, then `uv tool install`s `freeride-gateway`. Binary lands at `~/.local/bin/freeride` (Linux/macOS) or `%USERPROFILE%\.local\bin\freeride.exe` (Windows). Same shape as the bun.sh and astral.sh installers.
 
 <details>
 <summary>Or install manually</summary>
