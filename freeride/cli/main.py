@@ -86,9 +86,14 @@ def main(argv: list[str] | None = None) -> int:
         handler(args)
         return 0
 
-    # Gateway / future commands
-    if args.command in {"serve", "bind", "telemetry"}:
-        phase = {"serve": "Phase 2", "bind": "Phase 4", "telemetry": "Phase 5"}[args.command]
+    if args.command == "serve":
+        from freeride.cli.cmd_serve import cmd_serve
+
+        return cmd_serve(args)
+
+    # Gateway / future commands not yet implemented
+    if args.command in {"bind", "telemetry"}:
+        phase = {"bind": "Phase 4", "telemetry": "Phase 5"}[args.command]
         print(f"freeride {__version__}: '{args.command}' lands in {phase}.")
         return 0
 
