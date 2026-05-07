@@ -77,17 +77,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-
-    # Print the telemetry disclosure banner once if it's still pending
-    # — but skip when the user is running `telemetry` itself (they're
-    # already managing it) and when the command is None (just printing
-    # help; banner would be confusing).
-    if args.command not in (None, "telemetry"):
+    # Show the telemetry disclosure banner BEFORE argparse runs.
+    # argparse handles `--help` and `--version` by writing to stdout and
+    # calling sys.exit() — anything we do after parse_args() never runs
+    # for those flag invocations. So the banner check must happen up
+    # front, gated only on "is the user explicitly managing telemetry?"
+    # which we detect from argv directly.
+    raw_argv = argv if argv is not None else sys.argv[1:]
+    if not (raw_argv and raw_argv[0] == "telemetry"):
         from freeride.core.telemetry import show_disclosure_banner_once
 
         show_disclosure_banner_once()
+
+    parser = build_parser()
+    args = parser.parse_args(argv)
 
     if args.command is None:
         parser.print_help()
