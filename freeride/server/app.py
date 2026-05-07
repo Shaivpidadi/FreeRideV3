@@ -82,4 +82,9 @@ def create_app(
             "providers": [p.name for p in app.state.providers],
         }
 
+    # Route modules attach via APIRouter so the app stays composable.
+    from freeride.server.routes import models as models_route
+
+    app.include_router(models_route.router)
+
     return app
