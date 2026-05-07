@@ -262,13 +262,45 @@ class OpenRouterProvider:
     async def forward_chat_stream(
         self, request: ChatRequest, model_id: str, key: str
     ) -> AsyncIterator[ChatStreamEvent]:
-        """Streaming chat completion. Real implementation lands in Phase 3
-        (Task 3.1.1). Async generator stub — must yield to be a generator.
+        """Streaming chat completion. Forward as SSE; yield each parsed
+        :class:`ChatStreamEvent`. Swallows the ``data: [DONE]`` sentinel
+        so consumers see clean iteration ending.
+
+        OpenRouter sends standard OpenAI-compatible SSE: lines prefixed
+        ``data: `` with JSON payloads, terminated by ``data: [DONE]``.
+        Permissive parsing (``extra='allow'``) means provider extensions
+        round-trip untouched.
         """
-        raise NotImplementedError("OpenRouterProvider.forward_chat_stream lands in Phase 3.1.1")
-        # Unreachable but required to make this an async generator function
-        # rather than a coroutine returning an awaitable.
-        yield  # type: ignore[unreachable]
+        import json as _json
+
+        payload = request.model_dump(exclude_none=True)
+        payload["model"] = model_id
+        payload["stream"] = True
+
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            async with client.stream(
+                "POST",
+                OPENROUTER_CHAT_URL,
+                headers=self._outbound_headers(key, json_content=True),
+                json=payload,
+            ) as resp:
+                resp.raise_for_status()
+                async for raw_line in resp.aiter_lines():
+                    if not raw_line:
+                        continue
+                    if not raw_line.startswith("data:"):
+                        # Some providers send comments (lines starting with ":")
+                        # for keepalive — ignore.
+                        continue
+                    data_str = raw_line[len("data:"):].strip()
+                    if data_str == "[DONE]":
+                        return
+                    try:
+                        obj = _json.loads(data_str)
+                    except _json.JSONDecodeError:
+                        # Malformed line — skip, keep streaming.
+                        continue
+                    yield ChatStreamEvent.model_validate(obj)
 
     # ----- probing --------------------------------------------------------
     def probe(self, model_id: str, key: str) -> ProbeResult:

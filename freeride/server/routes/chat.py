@@ -1,22 +1,26 @@
 """``POST /v1/chat/completions`` — OpenAI-compatible chat completions.
 
-Phase 2 (this commit): single-provider path with one retry on 429 / AUTH
-across keys. Streaming and full multi-provider failover land in Phase 3.
+Phase 2: single-provider non-streaming with per-key retry on RATE_LIMIT/AUTH.
+Phase 3: streaming with buffer-first-chunk failover (this commit).
 
-Resolver and retry logic live inline here for simplicity until they grow
-big enough to warrant their own modules (Phase 2.6).
+The streaming failover policy is described in PLAN_GATEWAY.md §8.1: hold
+the first chunk until upstream confirms 200 + first SSE event. If the
+upstream fails before the first chunk, retry on next key. Once the
+first chunk has shipped to the client, errors propagate.
 """
 
 from __future__ import annotations
 
+import json as _json
 import logging
 import os
-from typing import Any
+from typing import Any, AsyncIterator
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 
-from freeride.core.chat_schema import ChatRequest, ChatResponse
+from freeride.core.chat_schema import ChatRequest, ChatResponse, ChatStreamEvent
 from freeride.core.cooldown import KeyCooldown
 from freeride.core.errors import ErrorKind
 from freeride.core.provider import Provider
@@ -61,16 +65,84 @@ def _pick_provider_for_model(providers: list[Provider], model_id: str) -> Provid
     return None
 
 
-@router.post("/v1/chat/completions")
-async def chat_completions(request: Request, body: ChatRequest) -> dict[str, Any]:
-    if body.is_streaming():
-        # Phase 3 implements streaming; for now refuse loudly so clients
-        # get a clear signal rather than a silent non-stream response.
-        raise HTTPException(
-            status_code=501,
-            detail="Streaming responses land in Phase 3. Set stream=false for now.",
-        )
+async def _try_stream_with_failover(
+    provider: Provider,
+    body: ChatRequest,
+    keys: list[str],
+    cooldown: KeyCooldown,
+) -> tuple[ChatStreamEvent, AsyncIterator[ChatStreamEvent]] | tuple[None, ErrorKind]:
+    """Buffer-first-chunk failover.
 
+    Returns ``(first_event, rest_iterator)`` if any key produced a first
+    event before erroring. Returns ``(None, last_error_kind)`` if all keys
+    failed before producing one. The caller streams ``first_event`` plus
+    everything from ``rest_iterator`` to the client; once the first chunk
+    has shipped, mid-stream errors surface as a truncated stream (PLAN
+    §8.1 known-limitation).
+    """
+    last_error: ErrorKind | None = None
+    for key in keys:
+        gen = provider.forward_chat_stream(body, body.model, key)
+        try:
+            first = await gen.__anext__()
+        except StopAsyncIteration:
+            # Empty stream — count as MODEL_NOT_FOUND-ish unknown
+            last_error = ErrorKind.UNKNOWN
+            continue
+        except httpx.HTTPStatusError as e:
+            kind = provider.classify_error(e.response)
+            if kind in (ErrorKind.RATE_LIMIT, ErrorKind.AUTH):
+                cooldown.mark_rate_limited(provider.name, key)
+            last_error = kind
+            continue
+        except httpx.HTTPError as e:
+            last_error = provider.classify_error(e)
+            continue
+        # Got a first event — commit to this key for the rest of the stream
+        return first, gen
+    return None, last_error or ErrorKind.UNKNOWN
+
+
+def _format_sse(event: ChatStreamEvent) -> bytes:
+    return f"data: {event.model_dump_json(exclude_none=True)}\n\n".encode("utf-8")
+
+
+def _format_done() -> bytes:
+    return b"data: [DONE]\n\n"
+
+
+async def _build_stream_response(
+    provider: Provider,
+    body: ChatRequest,
+    cooldown: KeyCooldown,
+    keys: list[str],
+) -> StreamingResponse:
+    first_or_none, rest_or_err = await _try_stream_with_failover(provider, body, keys, cooldown)
+    if first_or_none is None:
+        kind = rest_or_err if isinstance(rest_or_err, ErrorKind) else ErrorKind.UNKNOWN
+        raise HTTPException(
+            status_code=503,
+            detail=f"All keys for {provider.name} failed before first chunk; last error: {kind.value}",
+        )
+    first_event = first_or_none
+    rest = rest_or_err  # type: ignore[assignment]
+
+    async def emit() -> AsyncIterator[bytes]:
+        yield _format_sse(first_event)
+        try:
+            async for evt in rest:
+                yield _format_sse(evt)
+        except Exception as e:
+            # Mid-stream error: client already has bytes — best we can
+            # do is end the stream. Log loudly for the operator.
+            logger.warning("mid-stream upstream error after first chunk shipped: %s", e)
+        yield _format_done()
+
+    return StreamingResponse(emit(), media_type="text/event-stream")
+
+
+@router.post("/v1/chat/completions")
+async def chat_completions(request: Request, body: ChatRequest):
     providers: list[Provider] = list(request.app.state.providers)
     if not providers:
         raise HTTPException(status_code=503, detail="No providers configured.")
@@ -86,14 +158,15 @@ async def chat_completions(request: Request, body: ChatRequest) -> dict[str, Any
     cooldown = KeyCooldown()
     available = cooldown.available_keys(provider.name, keys)
     if not available:
-        # All keys cooling — let the client retry later.
         raise HTTPException(
             status_code=429,
             detail="All API keys for the chosen provider are in cooldown. Try again shortly.",
         )
 
-    # Try each available key in turn. Mark RATE_LIMIT/AUTH keys cooling
-    # and advance; bail with a clean error if all fail.
+    if body.is_streaming():
+        return await _build_stream_response(provider, body, cooldown, available)
+
+    # Non-streaming path (Phase 2 behavior, unchanged)
     last_error: ErrorKind | None = None
     for key in available:
         try:
@@ -109,10 +182,8 @@ async def chat_completions(request: Request, body: ChatRequest) -> dict[str, Any
             kind = provider.classify_error(e)
             last_error = kind
             continue
-        # Success path
         return response.model_dump(exclude_none=False)
 
-    # All keys exhausted
     detail = (
         f"All keys for {provider.name} failed; last error kind: "
         f"{last_error.value if last_error else 'unknown'}"
