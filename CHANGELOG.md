@@ -21,6 +21,14 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
   `port 11343 free` or `gateway already running on it`. Returns 1
   on hard errors, 0 on warnings or all-green. Color-coded glyphs
   (✓ / ! / ✗ / ·).
+- **`freeride upgrade` CLI** — bump the installed package to the latest
+  PyPI release. Detects how FreeRide was installed (uv tool /
+  pipx / pip) and runs the right upgrade command, then re-imports in a
+  subprocess to confirm the new version. Exits non-zero if the upgrade
+  subprocess fails. `--dry-run` prints what would run without
+  executing. Friendly nudge: "restart `freeride serve` to pick up the
+  new version" if a gateway is running. The `uv` strategy ships with
+  `--prerelease=allow` so 0.x alphas keep flowing through.
 - **Hot-reload of provider registry** without restart.
   `POST /v1/_freeride/reload` rebuilds `app.state.providers` from the
   current env vars by re-running the build-registry factory.
