@@ -1,0 +1,66 @@
+name: release
+
+# Triggered by pushing a version tag like v0.3.0 or v0.3.0a6.
+# Builds wheel + sdist, publishes to PyPI via Trusted Publishing
+# (OIDC) — no PyPI token stored in GitHub secrets.
+#
+# One-time setup required on PyPI before this workflow can succeed:
+#   https://pypi.org/manage/project/freeride-gateway/settings/publishing/
+#   Add a "pending publisher":
+#     PyPI Project Name: freeride-gateway
+#     Owner:             Shaivpidadi
+#     Repository:        FreeRideV3
+#     Workflow:          release.yml
+#     Environment:       pypi
+#
+# After that, releases are: bump __version__, git tag vX.Y.Z, git push --tags.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+      - "v*.*.*a*"
+      - "v*.*.*b*"
+      - "v*.*.*rc*"
+
+jobs:
+  build:
+    name: build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build deps
+        run: pip install --upgrade build
+
+      - name: Build wheel + sdist
+        run: python -m build
+
+      - name: Show artifacts
+        run: ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi          # must match the PyPI Trusted Publishing config
+    permissions:
+      id-token: write          # required for Trusted Publishing OIDC
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        # No `with: password:` — uses the OIDC token automatically.
+        uses: pypa/gh-action-pypi-publish@release/v1
