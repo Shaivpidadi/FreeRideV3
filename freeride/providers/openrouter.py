@@ -29,13 +29,14 @@ and keeps unknown shapes (the live probe catches false positives).
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import httpx
 
 from freeride.core.errors import ErrorKind
 from freeride.core.provider import PROVIDER_API_VERSION
-from freeride.core.types import Model
+from freeride.core.types import Model, ProbeResult
 
 OPENROUTER_API_BASE = "https://openrouter.ai/api/v1"
 OPENROUTER_MODELS_URL = f"{OPENROUTER_API_BASE}/models"
@@ -222,6 +223,39 @@ class OpenRouterProvider:
             return value if value >= 0 else None
         except (TypeError, ValueError):
             return None
+
+    # ----- probing --------------------------------------------------------
+    def probe(self, model_id: str, key: str) -> ProbeResult:
+        """Live-test ``model_id`` with a tiny chat completion (``max_tokens=5``).
+
+        Returns ``ok=True`` on 200, otherwise ``ok=False`` with the
+        :class:`ErrorKind` in ``error``. ``latency_ms`` is wall-clock from
+        request start to response (or exception). Direct port of v2
+        ``_test_model`` semantics.
+        """
+        payload = {
+            "model": model_id,
+            "messages": [{"role": "user", "content": "Hi"}],
+            "max_tokens": 5,
+            "stream": False,
+        }
+        started = time.perf_counter()
+        try:
+            with httpx.Client(timeout=self._timeout) as client:
+                resp = client.post(
+                    OPENROUTER_CHAT_URL,
+                    headers=self._outbound_headers(key, json_content=True),
+                    json=payload,
+                )
+        except httpx.TimeoutException as e:
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            return ProbeResult(ok=False, error=self.classify_error(e), latency_ms=elapsed_ms)
+        except httpx.RequestError as e:
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            return ProbeResult(ok=False, error=self.classify_error(e), latency_ms=elapsed_ms)
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        kind = self.classify_error(resp)
+        return ProbeResult(ok=(kind is ErrorKind.OK), error=None if kind is ErrorKind.OK else kind, latency_ms=elapsed_ms)
 
     # ----- discovery ------------------------------------------------------
     def list_free_models(self, key: str) -> list[Model]:
