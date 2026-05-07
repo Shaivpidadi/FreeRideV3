@@ -1,13 +1,19 @@
-// FreeRide telemetry beacon receiver — Cloudflare Worker + D1.
+// FreeRide site + telemetry beacon receiver — Cloudflare Worker + D1.
 //
-// Three routes, no auth (counters are public-by-design):
-//   POST /v1/beacon  — accept a beacon, write a row to `beacons`.
-//   GET  /v1/stats   — return aggregate counters across all beacons.
-//   GET  /health     — `{ok: true}` for monitoring.
+// Routes (no auth; counters and installer are public-by-design):
+//   GET  /             — minimal HTML homepage
+//   GET  /install.sh   — the curl|sh installer script
+//   POST /v1/beacon    — accept a beacon, write a row to `beacons`.
+//   GET  /v1/stats     — return aggregate counters across all beacons.
+//   GET  /health       — `{ok: true}` for monitoring.
 //
 // The worker explicitly does NOT log or store IPs / hostnames /
 // `cf-connecting-ip`. Inputs we accept are exactly the public spec
 // (PLAN_GATEWAY.md §14); anything else is dropped.
+//
+// The install.sh content is embedded in INSTALL_SH below — keep it
+// in sync with /install.sh at the repo root by hand. The repo file is
+// the source of truth; this is its public-facing copy.
 
 const ALLOWED_OS = new Set(["darwin", "linux", "windows", "other"]);
 
@@ -154,6 +160,144 @@ export default {
       }
     }
 
+    if (url.pathname === "/install.sh" && request.method === "GET") {
+      return new Response(INSTALL_SH, {
+        status: 200,
+        headers: { "content-type": "text/x-sh; charset=utf-8" },
+      });
+    }
+
+    if (url.pathname === "/" && request.method === "GET") {
+      return new Response(HOMEPAGE_HTML, {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    }
+
     return json({ ok: false, error: "not_found" }, 404);
   },
 };
+
+
+// ---------------------------------------------------------------------------
+// Embedded install.sh (KEEP IN SYNC with /install.sh in the repo root).
+// ---------------------------------------------------------------------------
+const INSTALL_SH = `#!/usr/bin/env sh
+# FreeRide installer. Run with:
+#
+#   curl -sSL https://free-ride.xyz/install.sh | sh
+#
+# What this does:
+#   1. Installs uv (Astral's Python package manager) if not already.
+#   2. Uses 'uv tool install' to put freeride-gateway in an isolated
+#      venv and symlink the freeride binary into ~/.local/bin (which
+#      uv puts on PATH).
+#   3. Verifies freeride --version works.
+
+set -e
+
+print() { printf '%s\\n' "$*"; }
+err() { printf 'error: %s\\n' "$*" >&2; exit 1; }
+
+print "FreeRide installer"
+print ""
+
+if ! command -v uv >/dev/null 2>&1; then
+    print "uv not found — installing it first..."
+    if command -v curl >/dev/null 2>&1; then
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO- https://astral.sh/uv/install.sh | sh
+    else
+        err "Need either curl or wget to install uv."
+    fi
+
+    if [ -f "$HOME/.local/bin/env" ]; then
+        # shellcheck source=/dev/null
+        . "$HOME/.local/bin/env"
+    fi
+
+    if ! command -v uv >/dev/null 2>&1; then
+        for cand in "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do
+            if [ -x "$cand" ]; then
+                PATH="$(dirname "$cand"):$PATH"
+                export PATH
+                break
+            fi
+        done
+    fi
+
+    if ! command -v uv >/dev/null 2>&1; then
+        err "uv installed but not on PATH. Restart your shell and re-run, or run: export PATH=\\"\\$HOME/.local/bin:\\$PATH\\""
+    fi
+fi
+
+print ""
+print "Installing freeride-gateway..."
+uv tool install --prerelease=allow freeride-gateway
+
+print ""
+print "Verifying..."
+if command -v freeride >/dev/null 2>&1; then
+    freeride --version
+elif [ -x "$HOME/.local/bin/freeride" ]; then
+    "$HOME/.local/bin/freeride" --version
+    print ""
+    print "Note: $HOME/.local/bin is not on your PATH yet. Run:"
+    print "  export PATH=\\"\\$HOME/.local/bin:\\$PATH\\""
+    print "Or add that line to your ~/.zshrc / ~/.bashrc."
+else
+    err "Install completed but the freeride binary couldn't be located. Try restarting your shell."
+fi
+
+print ""
+print "Done. Next:"
+print "  export OPENROUTER_API_KEY=sk-or-v1-...      # get a free one at https://openrouter.ai/keys"
+print "  freeride serve                              # start the gateway"
+print "  freeride bind aider                         # point your favorite agent at it"
+print ""
+`;
+
+
+// ---------------------------------------------------------------------------
+// Tiny homepage. Lists the install command + project links.
+// ---------------------------------------------------------------------------
+const HOMEPAGE_HTML = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FreeRide — free AI for everyone</title>
+<style>
+  body { font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+         max-width: 640px; margin: 4em auto; padding: 0 1.5em; color: #222; }
+  h1 { font-size: 2em; margin: 0 0 0.4em; }
+  h2 { margin-top: 2em; font-size: 1.15em; }
+  pre { background: #f4f4f4; padding: 1em; border-radius: 6px; overflow-x: auto;
+        font-size: 14px; line-height: 1.4; }
+  code { background: #f4f4f4; padding: 0.1em 0.3em; border-radius: 3px; font-size: 95%; }
+  a { color: #0a66c2; }
+  .tagline { color: #555; }
+</style>
+</head>
+<body>
+<h1>FreeRide</h1>
+<p class="tagline">Local OpenAI-compatible gateway. Free AI across providers, transparent failover, BYO keys.</p>
+
+<h2>Install</h2>
+<pre>curl -sSL https://free-ride.xyz/install.sh | sh</pre>
+
+<h2>Use</h2>
+<pre>export OPENROUTER_API_KEY=sk-or-v1-...
+freeride serve
+freeride bind aider     # or hermes, continue, openclaw</pre>
+
+<h2>Links</h2>
+<ul>
+  <li><a href="https://github.com/Shaivpidadi/FreeRideV3">GitHub repo</a></li>
+  <li><a href="https://pypi.org/project/freeride-gateway/">PyPI: freeride-gateway</a></li>
+  <li><a href="/v1/stats">/v1/stats</a> — public usage counters (opt-in telemetry)</li>
+</ul>
+</body>
+</html>
+`;

@@ -13,9 +13,15 @@ binding = "DB"                       # available as env.DB inside the worker
 database_name = "freeride-telemetry"
 database_id = "a2dcd6e7-6a86-40d1-b836-772965eab765"
 
-# Public custom domain — created via wrangler once free-ride.xyz is
-# active in Cloudflare. CF creates the DNS record automatically when
-# the route is bound.
+# Public custom domains. Both apex (free-ride.xyz) and subdomain
+# (telemetry.free-ride.xyz) point at this worker:
+# - free-ride.xyz/install.sh + /  ->  installer + homepage
+# - free-ride.xyz/v1/*            ->  telemetry beacon + stats (alias)
+# - telemetry.free-ride.xyz/v1/*  ->  same telemetry endpoints
 [[routes]]
 pattern = "telemetry.free-ride.xyz"
+custom_domain = true
+
+[[routes]]
+pattern = "free-ride.xyz"
 custom_domain = true
