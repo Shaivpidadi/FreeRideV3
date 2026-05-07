@@ -24,6 +24,7 @@ from freeride.providers.cloudflare_wai import CloudflareWAIProvider
 from freeride.providers.groq import GroqProvider
 from freeride.providers.huggingface import HuggingFaceProvider
 from freeride.providers.nvidia_nim import NVIDIANIMProvider
+from freeride.providers.ollama import OllamaProvider
 from freeride.providers.openrouter import OpenRouterProvider
 from freeride.server.app import create_app
 
@@ -57,6 +58,8 @@ def _build_provider_registry() -> list:
         providers.append(CloudflareWAIProvider())
     if os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_API_KEY"):
         providers.append(HuggingFaceProvider())
+    if ollama_url := os.environ.get("OLLAMA_BASE_URL"):
+        providers.append(OllamaProvider(base_url=ollama_url))
     return providers
 
 

@@ -22,6 +22,7 @@ from freeride.providers.cloudflare_wai import CloudflareWAIProvider
 from freeride.providers.groq import GroqProvider
 from freeride.providers.huggingface import HuggingFaceProvider
 from freeride.providers.nvidia_nim import NVIDIANIMProvider
+from freeride.providers.ollama import OllamaProvider
 from freeride.providers.openrouter import OpenRouterProvider
 from tests.fixtures.noop_provider import NoopProvider
 
@@ -34,6 +35,7 @@ CONFORMANT_PROVIDERS: list[type] = [
     GroqProvider,
     CloudflareWAIProvider,
     HuggingFaceProvider,
+    OllamaProvider,
 ]
 
 

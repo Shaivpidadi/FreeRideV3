@@ -58,6 +58,11 @@ def _env_var_for(provider_name: str) -> str:
         "groq": "GROQ_API_KEY",
         "cloudflare_wai": "CLOUDFLARE_API_TOKEN",
         "huggingface": "HF_TOKEN",
+        # Ollama is local and unauthenticated; we use the base URL as the
+        # "key" in the failover chain so the chain code's available_keys
+        # logic still applies (one URL = one "key", multiple URLs = JSON
+        # array for round-robin across multiple Ollama hosts).
+        "ollama": "OLLAMA_BASE_URL",
     }.get(provider_name, f"{provider_name.upper()}_API_KEY")
 
 

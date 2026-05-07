@@ -7,6 +7,17 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 ## [Unreleased]
 
 ### Added
+- **Ollama provider** (`freeride/providers/ollama.py`). Local Ollama
+  daemon as a first-class FreeRide provider — same Provider Protocol,
+  same failover chain, same `freeride watch` integration. Lets users
+  mix local models with remote free tiers (e.g., "try local Llama
+  3.1 first, fall back to OpenRouter if it's not loaded"). Opt in
+  via `OLLAMA_BASE_URL` (default `http://localhost:11434`).
+  No auth — Ollama is local. Embeddings supported (Ollama 0.1.40+).
+  Classifier maps `ConnectError` to UNAVAILABLE so the chain
+  advances cleanly when Ollama isn't running. The env var doubles as
+  the chain "key" — JSON-array form lets one gateway target multiple
+  Ollama hosts. Full conformance + 8 unit tests.
 - **`freeride bench` CLI** — per-provider latency comparison.
   Uses `X-FreeRide-Force-Provider` to hit each registered provider
   with N tiny chat completions (default 3), times each, prints a

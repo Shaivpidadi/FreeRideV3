@@ -57,6 +57,15 @@ PROVIDER_MATRIX: list[dict] = [
         "skip_msg": "set OPENROUTER_API_KEY to run OpenRouter e2e",
     },
     {
+        "id": "ollama",
+        "key_env": ["OLLAMA_BASE_URL"],
+        # llama3.1:8b is a popular Ollama default; if not pulled, the
+        # request fails with model_not_found and the test is skipped.
+        "model": "llama3.1:8b",
+        "provider_name": "ollama",
+        "skip_msg": "set OLLAMA_BASE_URL (e.g. http://localhost:11434) and `ollama pull llama3.1:8b` first",
+    },
+    {
         "id": "groq",
         "key_env": ["GROQ_API_KEY"],
         "model": "llama-3.1-8b-instant",
@@ -278,6 +287,7 @@ EMBEDDING_MODELS: dict[str, str | None] = {
     "nvidia_nim": "nvidia/nv-embedqa-e5-v5",
     "cloudflare_wai": "@cf/baai/bge-base-en-v1.5",
     "huggingface": "BAAI/bge-base-en-v1.5",
+    "ollama": "nomic-embed-text",  # most-pulled Ollama embedding model
     "groq": None,  # not supported
 }
 
