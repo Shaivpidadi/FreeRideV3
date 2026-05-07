@@ -21,7 +21,12 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-    "httpx>=0.27",
+    # Pin httpx <1.0: the 1.0 dev releases dropped the full exception
+    # hierarchy (HTTPStatusError, TimeoutException, RequestError).
+    # We can move to >=1 once it stabilizes AND we update the
+    # error-classification paths in providers/openrouter.py and
+    # providers/nvidia_nim.py.
+    "httpx>=0.27,<1",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "pydantic>=2.7",
