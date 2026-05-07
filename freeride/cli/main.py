@@ -123,6 +123,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Gateway base URL (default: http://localhost:11343/v1)",
     )
 
+    p_doctor = sub.add_parser(
+        "doctor",
+        help="Diagnose common setup issues (env vars, PATH, port, gateway reachability)",
+    )
+    p_doctor.add_argument("--no-color", action="store_true")
+
     return parser
 
 
@@ -183,6 +189,11 @@ def main(argv: list[str] | None = None) -> int:
         from freeride.cli.cmd_reload import cmd_reload
 
         return cmd_reload(args)
+
+    if args.command == "doctor":
+        from freeride.cli.cmd_doctor import cmd_doctor
+
+        return cmd_doctor(args)
 
     parser.print_help()
     return 1

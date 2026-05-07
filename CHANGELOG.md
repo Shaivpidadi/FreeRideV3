@@ -7,6 +7,13 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 ## [Unreleased]
 
 ### Added
+- **`freeride doctor` CLI** — one-command diagnostics for the most-asked
+  "why isn't this working?" cases. Walks Python version, `freeride`
+  on PATH, `~/.freeride/` writability, every provider env var (with
+  partial-config warnings for CF and either-or HF), and either
+  `port 11343 free` or `gateway already running on it`. Returns 1
+  on hard errors, 0 on warnings or all-green. Color-coded glyphs
+  (✓ / ! / ✗ / ·).
 - **Hot-reload of provider registry** without restart.
   `POST /v1/_freeride/reload` rebuilds `app.state.providers` from the
   current env vars by re-running the build-registry factory.
