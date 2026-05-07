@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "free-ride"
+name = "freeride-gateway"
 dynamic = ["version"]
 description = "Free-AI gateway: OpenAI-compatible local proxy that orchestrates free-tier inference across multiple providers"
 readme = "README.md"
