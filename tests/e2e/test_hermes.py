@@ -46,7 +46,13 @@ def test_hermes_one_shot_through_gateway(gateway_url: str, tmp_path: Path):
     env["HOME"] = str(tmp_path)
 
     result = subprocess.run(
-        ["hermes", "-p", "Reply with one word: ok"],
+        [
+            "hermes",
+            "-z",
+            "Reply with one word: ok",
+            "--ignore-user-config",  # don't read the developer's real config
+            "--yolo",  # no confirmation prompts; fits a non-tty subprocess
+        ],
         cwd=tmp_path,
         env=env,
         capture_output=True,
