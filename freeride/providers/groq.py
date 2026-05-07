@@ -66,6 +66,8 @@ class GroqProvider:
 
     name: str = "groq"
     api_version: int = PROVIDER_API_VERSION
+    # Groq does not currently offer embedding endpoints — chat-only.
+    embeddings_supported: bool = False
 
     def __init__(self, *, http_timeout: float = 30.0) -> None:
         self._timeout = http_timeout

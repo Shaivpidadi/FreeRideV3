@@ -34,6 +34,7 @@ from typing import Any, AsyncIterator
 import httpx
 
 from freeride.core.chat_schema import ChatRequest, ChatResponse, ChatStreamEvent
+from freeride.core.embedding_schema import EmbeddingRequest, EmbeddingResponse
 from freeride.core.errors import ErrorKind
 from freeride.core.provider import PROVIDER_API_VERSION
 from freeride.core.types import Model, ProbeResult
@@ -41,6 +42,7 @@ from freeride.core.types import Model, ProbeResult
 OPENROUTER_API_BASE = "https://openrouter.ai/api/v1"
 OPENROUTER_MODELS_URL = f"{OPENROUTER_API_BASE}/models"
 OPENROUTER_CHAT_URL = f"{OPENROUTER_API_BASE}/chat/completions"
+OPENROUTER_EMBEDDINGS_URL = f"{OPENROUTER_API_BASE}/embeddings"
 
 # Attribution stamped on every outbound request so all FreeRide traffic
 # rolls up under one identity on OpenRouter's App Activity page.
@@ -131,6 +133,7 @@ class OpenRouterProvider:
 
     name: str = "openrouter"
     api_version: int = PROVIDER_API_VERSION
+    embeddings_supported: bool = True
 
     def __init__(self, *, http_timeout: float = 30.0) -> None:
         self._timeout = http_timeout
@@ -304,6 +307,27 @@ class OpenRouterProvider:
                         # Malformed line — skip, keep streaming.
                         continue
                     yield ChatStreamEvent.model_validate(obj)
+
+    # ----- embeddings -----------------------------------------------------
+    async def forward_embeddings(
+        self, request: EmbeddingRequest, model_id: str, key: str
+    ) -> EmbeddingResponse:
+        """OpenAI-shape /v1/embeddings forward. Same pattern as forward_chat:
+        copy the inbound request, override the model, POST upstream,
+        validate the response. Permissive parsing keeps provider extensions
+        passing through.
+        """
+        payload = request.model_dump(exclude_none=True)
+        payload["model"] = model_id
+
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.post(
+                OPENROUTER_EMBEDDINGS_URL,
+                headers=self._outbound_headers(key, json_content=True),
+                json=payload,
+            )
+        resp.raise_for_status()
+        return EmbeddingResponse.model_validate(resp.json())
 
     # ----- probing --------------------------------------------------------
     def probe(self, model_id: str, key: str) -> ProbeResult:

@@ -7,6 +7,16 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 ## [Unreleased]
 
 ### Added
+- **`POST /v1/embeddings` endpoint** — OpenAI-compatible embeddings
+  with cross-provider failover. Implemented on OpenRouter, NVIDIA NIM,
+  Cloudflare Workers AI, and HuggingFace. Groq is excluded (chat-only
+  provider, no embedding endpoint). Providers opt in via
+  `embeddings_supported = True` class attr; the route filters to
+  capable providers before walking the failover chain. Same event-emit
+  + structured-503 contract as `/v1/chat/completions`. Conformance
+  suite enforces that any provider declaring support also implements
+  `forward_embeddings` as `async def`. Added 6 hermetic route tests
+  + 1 e2e test slot per embedding-capable provider in the matrix.
 - **Per-provider e2e test matrix** (`tests/e2e/test_providers.py`).
   Each of the 5 providers gets its own subprocess gateway with ONLY
   that provider's env var(s) set, then exercises `GET /v1/models`,

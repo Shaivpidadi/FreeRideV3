@@ -157,6 +157,20 @@ freeride telemetry off    # turn it off
 freeride telemetry        # show what would be sent
 ```
 
+## Embeddings
+
+Same endpoint shape as OpenAI's `/v1/embeddings`. Failover across the
+4 providers that support embeddings (Groq doesn't):
+
+```bash
+curl http://localhost:11343/v1/embeddings \
+  -H 'Content-Type: application/json' \
+  -d '{"model": "text-embedding-3-small", "input": "hello world"}'
+```
+
+The same `X-FreeRide-Provider` header tells you which provider served
+the embedding. Same multi-key rotation, same per-provider failover.
+
 ## See what FreeRide is doing
 
 ```bash

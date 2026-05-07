@@ -269,3 +269,42 @@ def test_request_id_header_present(provider_gateway: tuple[str, dict]) -> None:
                     f"upstream may be rate-limited right now")
     rid = r.headers.get("X-FreeRide-Request-ID")
     assert rid and rid.startswith("req_"), f"{entry['id']}: bad request id: {rid!r}"
+
+
+# Per-provider embedding model that's known to be available on the free
+# tier. Groq is excluded since it has no embedding endpoint.
+EMBEDDING_MODELS: dict[str, str | None] = {
+    "openrouter": "text-embedding-3-small",
+    "nvidia_nim": "nvidia/nv-embedqa-e5-v5",
+    "cloudflare_wai": "@cf/baai/bge-base-en-v1.5",
+    "huggingface": "BAAI/bge-base-en-v1.5",
+    "groq": None,  # not supported
+}
+
+
+def test_embeddings_endpoint(provider_gateway: tuple[str, dict]) -> None:
+    """Each embedding-capable provider should round-trip through /v1/embeddings."""
+    base, entry = provider_gateway
+    model = EMBEDDING_MODELS.get(entry["id"])
+    if model is None:
+        pytest.skip(f"{entry['id']} does not support embeddings")
+
+    r = httpx.post(
+        f"{base}/embeddings",
+        json={"model": model, "input": "hello world"},
+        headers={"Authorization": "Bearer any"},
+        timeout=30.0,
+    )
+    if r.status_code != 200:
+        pytest.skip(
+            f"{entry['id']} embeddings call didn't succeed (status {r.status_code}); "
+            f"upstream may be rate-limited or model id may have rotated. body: {r.text[:200]}"
+        )
+    body = r.json()
+    assert body["object"] == "list"
+    assert isinstance(body["data"], list) and body["data"], (
+        f"{entry['id']}: empty embeddings data"
+    )
+    assert "embedding" in body["data"][0]
+    assert body["_freeride_provider"] == entry["provider_name"]
+    assert r.headers["X-FreeRide-Provider"] == entry["provider_name"]

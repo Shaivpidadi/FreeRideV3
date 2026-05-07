@@ -148,3 +148,19 @@ class TestProviderConformance:
         assert inspect.isasyncgenfunction(method), (
             f"{provider_class.__name__}.forward_chat_stream must be an async generator"
         )
+
+    def test_embeddings_optin_is_consistent(self, provider_class: type):
+        """If a provider declares ``embeddings_supported = True``, it must
+        also implement ``forward_embeddings`` as an async coroutine.
+        ``False`` (or the missing-attribute default) means no embedding
+        support and ``forward_embeddings`` may be absent.
+        """
+        if getattr(provider_class, "embeddings_supported", False):
+            method = getattr(provider_class, "forward_embeddings", None)
+            assert method is not None, (
+                f"{provider_class.__name__}.embeddings_supported = True but "
+                "no forward_embeddings method defined"
+            )
+            assert inspect.iscoroutinefunction(method), (
+                f"{provider_class.__name__}.forward_embeddings must be `async def`"
+            )

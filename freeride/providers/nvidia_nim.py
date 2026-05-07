@@ -31,6 +31,7 @@ from typing import Any, AsyncIterator
 import httpx
 
 from freeride.core.chat_schema import ChatRequest, ChatResponse, ChatStreamEvent
+from freeride.core.embedding_schema import EmbeddingRequest, EmbeddingResponse
 from freeride.core.errors import ErrorKind
 from freeride.core.provider import PROVIDER_API_VERSION
 from freeride.core.types import Model, ProbeResult
@@ -40,6 +41,7 @@ from freeride.providers.nim_model_metadata import lookup as _lookup_meta
 NIM_API_BASE = "https://integrate.api.nvidia.com/v1"
 NIM_MODELS_URL = f"{NIM_API_BASE}/models"
 NIM_CHAT_URL = f"{NIM_API_BASE}/chat/completions"
+NIM_EMBEDDINGS_URL = f"{NIM_API_BASE}/embeddings"
 
 
 # Free-tier allowlist — see nim_model_metadata.py. We match exact ids
@@ -112,6 +114,7 @@ class NVIDIANIMProvider:
 
     name: str = "nvidia_nim"
     api_version: int = PROVIDER_API_VERSION
+    embeddings_supported: bool = True
 
     def __init__(self, *, http_timeout: float = 30.0) -> None:
         self._timeout = http_timeout
@@ -313,3 +316,21 @@ class NVIDIANIMProvider:
                         continue
                     obj = _strip_nim_extensions(obj)
                     yield ChatStreamEvent.model_validate(obj)
+
+    # ----- embeddings -----------------------------------------------------
+    async def forward_embeddings(
+        self, request: EmbeddingRequest, model_id: str, key: str
+    ) -> EmbeddingResponse:
+        """OpenAI-shape /v1/embeddings forward to NVIDIA NIM."""
+        payload = request.model_dump(exclude_none=True)
+        payload["model"] = model_id
+        payload.pop("nvext", None)
+
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.post(
+                NIM_EMBEDDINGS_URL,
+                headers=self._outbound_headers(key, json_content=True),
+                json=payload,
+            )
+        resp.raise_for_status()
+        return EmbeddingResponse.model_validate(resp.json())

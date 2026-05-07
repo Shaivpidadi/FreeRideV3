@@ -30,6 +30,7 @@ from typing import Any, AsyncIterator
 import httpx
 
 from freeride.core.chat_schema import ChatRequest, ChatResponse, ChatStreamEvent
+from freeride.core.embedding_schema import EmbeddingRequest, EmbeddingResponse
 from freeride.core.errors import ErrorKind
 from freeride.core.provider import PROVIDER_API_VERSION
 from freeride.core.types import Model, ProbeResult
@@ -55,6 +56,7 @@ class CloudflareWAIProvider:
 
     name: str = "cloudflare_wai"
     api_version: int = PROVIDER_API_VERSION
+    embeddings_supported: bool = True
 
     def __init__(
         self,
@@ -75,6 +77,7 @@ class CloudflareWAIProvider:
         self._base = CF_API_BASE_TEMPLATE.format(account_id=self._account_id)
         self._models_url = f"{self._base}/models"
         self._chat_url = f"{self._base}/chat/completions"
+        self._embeddings_url = f"{self._base}/embeddings"
 
     # ----- request stamping ----------------------------------------------
     def auth_header(self, key: str) -> dict[str, str]:
@@ -266,3 +269,20 @@ class CloudflareWAIProvider:
                     except _json.JSONDecodeError:
                         continue
                     yield ChatStreamEvent.model_validate(obj)
+
+    # ----- embeddings -----------------------------------------------------
+    async def forward_embeddings(
+        self, request: EmbeddingRequest, model_id: str, key: str
+    ) -> EmbeddingResponse:
+        """OpenAI-shape /v1/embeddings forward to Cloudflare Workers AI."""
+        payload = request.model_dump(exclude_none=True)
+        payload["model"] = model_id
+
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.post(
+                self._embeddings_url,
+                headers=self._outbound_headers(key, json_content=True),
+                json=payload,
+            )
+        resp.raise_for_status()
+        return EmbeddingResponse.model_validate(resp.json())

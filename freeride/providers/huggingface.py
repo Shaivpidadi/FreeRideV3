@@ -33,6 +33,7 @@ from typing import Any, AsyncIterator
 import httpx
 
 from freeride.core.chat_schema import ChatRequest, ChatResponse, ChatStreamEvent
+from freeride.core.embedding_schema import EmbeddingRequest, EmbeddingResponse
 from freeride.core.errors import ErrorKind
 from freeride.core.provider import PROVIDER_API_VERSION
 from freeride.core.types import Model, ProbeResult
@@ -41,6 +42,7 @@ from freeride.core.types import Model, ProbeResult
 HF_API_BASE = "https://router.huggingface.co/v1"
 HF_MODELS_URL = f"{HF_API_BASE}/models"
 HF_CHAT_URL = f"{HF_API_BASE}/chat/completions"
+HF_EMBEDDINGS_URL = f"{HF_API_BASE}/embeddings"
 
 
 def _bill_to() -> str | None:
@@ -52,6 +54,7 @@ class HuggingFaceProvider:
 
     name: str = "huggingface"
     api_version: int = PROVIDER_API_VERSION
+    embeddings_supported: bool = True
 
     def __init__(self, *, http_timeout: float = 30.0) -> None:
         self._timeout = http_timeout
@@ -243,3 +246,20 @@ class HuggingFaceProvider:
                     except _json.JSONDecodeError:
                         continue
                     yield ChatStreamEvent.model_validate(obj)
+
+    # ----- embeddings -----------------------------------------------------
+    async def forward_embeddings(
+        self, request: EmbeddingRequest, model_id: str, key: str
+    ) -> EmbeddingResponse:
+        """OpenAI-shape /v1/embeddings forward to HuggingFace router."""
+        payload = request.model_dump(exclude_none=True)
+        payload["model"] = model_id
+
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.post(
+                HF_EMBEDDINGS_URL,
+                headers=self._outbound_headers(key, json_content=True),
+                json=payload,
+            )
+        resp.raise_for_status()
+        return EmbeddingResponse.model_validate(resp.json())
