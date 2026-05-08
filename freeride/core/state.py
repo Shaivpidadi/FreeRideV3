@@ -18,17 +18,31 @@ from pathlib import Path
 from typing import Any
 
 
-def atomic_write(path: Path | str, content: str) -> None:
+def atomic_write(path: Path | str, content: str, *, mode: int | None = 0o600) -> None:
     """Write ``content`` to ``path`` atomically via temp + ``os.replace``.
 
     The replace is POSIX-atomic on the same filesystem, so a reader that
     opens ``path`` either sees the old version or the new — never a
     partial write. Creates parent directories as needed.
+
+    File mode defaults to ``0o600`` — owner read/write only. Files we
+    write under ``~/.freeride/`` (cooldown.json, config.json, .env from
+    `freeride init`, etc.) frequently contain provider API keys; world-
+    or group-readable would leak them on multi-user systems. Pass
+    ``mode=None`` to skip the chmod (useful for tests on Windows where
+    POSIX modes don't apply meaningfully).
     """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(p.suffix + ".tmp")
     tmp.write_text(content)
+    if mode is not None:
+        try:
+            os.chmod(tmp, mode)
+        except (OSError, NotImplementedError):
+            # Windows or non-POSIX FS — chmod best-effort; the rename
+            # below is what actually matters for atomicity.
+            pass
     os.replace(tmp, p)
 
 

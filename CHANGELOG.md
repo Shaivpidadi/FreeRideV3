@@ -6,7 +6,27 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+### Security
+- **All on-disk secrets now mode 0o600 (owner read/write only).**
+  `core.state.atomic_write()` now chmods every file it writes to
+  `0o600` by default. Files that contain or could contain provider
+  API keys — `~/.freeride/cooldown.json` (keys live as JSON object
+  keys), `~/.freeride/.env` written by `freeride init`, any future
+  state file routed through `atomic_write` — automatically inherit
+  this. Pre-existing world-readable files get tightened on the next
+  write. Windows / non-POSIX FS chmod is best-effort and logged.
+
 ### Added
+- **Third-party provider plugin discovery** via Python entry points.
+  Distributors of FreeRide-compatible provider plugins ship them as
+  separate pip packages and register the class under the
+  `freeride.providers` entry-point group. At `freeride serve` startup,
+  `discover_third_party_providers()` iterates the entry points, loads
+  each class, and instantiates it. Construction failures (missing env
+  vars, etc.) are logged and skipped — one bad plugin can't prevent
+  the gateway from starting. Plugins on a different `api_version` are
+  skipped with a version-mismatch warning. 7 hermetic tests covering
+  the load / construction-fail / api-version-mismatch paths.
 - **Cerebras provider** (`freeride/providers/cerebras.py`).
   OpenAI-compatible at `api.cerebras.ai/v1`. Adds a 7th free-tier
   provider — Cerebras has the fastest Llama / Qwen inference of any

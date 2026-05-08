@@ -64,6 +64,13 @@ def build_provider_registry() -> list:
         providers.append(OllamaProvider(base_url=ollama_url))
     if os.environ.get("CEREBRAS_API_KEY"):
         providers.append(CerebrasProvider())
+
+    # Third-party plugins registered under the freeride.providers entry
+    # point group. Each one constructed by the registry helper so a
+    # broken plugin can't prevent serve startup.
+    from freeride.core.registry import discover_third_party_providers
+
+    providers.extend(discover_third_party_providers())
     return providers
 
 
