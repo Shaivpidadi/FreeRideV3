@@ -6,6 +6,18 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+## [0.4.0a2] — 2026-05-08
+
+Operator-experience release. New diagnostic CLIs (`doctor`, `keys`,
+`providers`, `bench`, `init`, `upgrade`, `reload`), security tightening
+(0o600 mode for on-disk secrets), per-key health tracking, third-party
+provider plugin discovery via Python entry points, and a 7th provider
+(Cerebras). Real-network e2e validated against 5 providers
+(OpenRouter, Groq, NVIDIA NIM, HuggingFace, Cerebras) — 21 tests
+passing, 0 failures. Two real bugs caught and fixed by the e2e run:
+HuggingFace router's missing `/embeddings` endpoint and NVIDIA NIM's
+required `input_type` field.
+
 ### Changed
 - **`freeride serve` and `freeride doctor` auto-load `~/.freeride/.env`**
   at startup. The `freeride init && freeride serve` flow now works
@@ -406,7 +418,8 @@ First public release. Distributable name on PyPI: `freeride-gateway`.
   "Connection reset by peer" before TLS handshake completes. This is a
   Daytona network-policy restriction, not a FreeRide bug.
 
-[Unreleased]: https://github.com/Shaivpidadi/FreeRideV3/compare/v0.4.0a1...HEAD
+[Unreleased]: https://github.com/Shaivpidadi/FreeRideV3/compare/v0.4.0a2...HEAD
+[0.4.0a2]: https://github.com/Shaivpidadi/FreeRideV3/releases/tag/v0.4.0a2
 [0.4.0a1]: https://github.com/Shaivpidadi/FreeRideV3/releases/tag/v0.4.0a1
 [0.3.0a8]: https://github.com/Shaivpidadi/FreeRideV3/releases/tag/v0.3.0a8
 [0.3.0a7]: https://github.com/Shaivpidadi/FreeRideV3/releases/tag/v0.3.0a7
