@@ -7,6 +7,16 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 ## [Unreleased]
 
 ### Changed
+- **`freeride serve` and `freeride doctor` auto-load `~/.freeride/.env`**
+  at startup. The `freeride init && freeride serve` flow now works
+  without a manual `source` step. `build_provider_registry()` re-loads
+  the dotenv on every call, so `freeride reload` after editing the
+  file picks up newly-added provider keys. OS env vars always win
+  over `.env` — explicit shell exports remain stronger than a stale
+  file. Pure-python parser at `freeride/core/dotenv.py` (no new pip
+  dep). 16 unit tests covering the parser, env-merge contract, OS-env-wins
+  guarantee, malformed-file silent-fallback, and integration with
+  `build_provider_registry()`.
 - **`freeride bench` probes providers in parallel by default.** With
   7 providers × 3 requests × ~500ms each, sequential bench took ~10s
   wall clock. Parallel cuts to ~max(provider_times) ≈ 1.5s. Pass

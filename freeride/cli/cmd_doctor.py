@@ -199,6 +199,13 @@ def _format_check(c: _Check, *, no_color: bool) -> str:
 
 
 def run_checks() -> list[_Check]:
+    # Mirror what `freeride serve` does — load ~/.freeride/.env BEFORE
+    # checking provider env vars so doctor agrees with the gateway's
+    # view of the world. OS env wins; we only fill gaps.
+    from freeride.core.dotenv import load_dotenv_into_environ
+
+    load_dotenv_into_environ()
+
     checks: list[_Check] = []
     checks.append(_check_python_version())
     checks.append(_check_freeride_on_path())

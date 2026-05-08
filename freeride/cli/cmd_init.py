@@ -176,12 +176,16 @@ def cmd_init(args, *, _input: Callable = input, _open_browser: Callable = webbro
     if any_set_this_run:
         print()
         print("next steps:")
-        print(f"  source {out_path}")
-        print("  freeride serve")
+        print("  freeride serve     # gateway auto-loads ~/.freeride/.env at startup")
         print()
         print("then in another terminal:")
         print("  freeride doctor    # confirm everything's wired up")
         print("  freeride bench     # latency comparison across providers")
+        # Note: only print the `source` hint if the user wrote elsewhere.
+        if str(out_path) != str(_DEFAULT_OUT):
+            print()
+            print(f"(non-default output path — also `source {out_path}` "
+                  "for shell sessions outside the gateway.)")
     else:
         print("(no new values entered — file unchanged from existing keys.)")
     return 0

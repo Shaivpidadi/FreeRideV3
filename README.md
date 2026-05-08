@@ -95,6 +95,8 @@ PyPI distribution: `freeride-gateway`. CLI: `freeride`. Python ≥ 3.10.
 
 Set whichever you have, then `freeride serve`. The gateway picks them up and rotates between them.
 
+Or use the wizard: `freeride init` writes `~/.freeride/.env` for you. The gateway auto-loads that file at startup — no manual `source` needed.
+
 ## Wire your agent
 
 The fastest way is a binder:

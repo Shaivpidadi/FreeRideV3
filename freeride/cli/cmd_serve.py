@@ -50,7 +50,17 @@ def build_provider_registry() -> list:
     are added when their respective env vars are set. This function is
     pure — re-running it after env-var changes returns a fresh registry,
     which is what the hot-reload endpoint relies on.
+
+    Also re-loads ``~/.freeride/.env`` into ``os.environ`` (OS env wins,
+    so this only fills GAPS — nothing already exported gets overwritten).
+    Means ``freeride init && freeride serve`` works without a manual
+    ``source``, and ``freeride reload`` after editing ``.env`` picks up
+    any newly-added provider keys.
     """
+    from freeride.core.dotenv import load_dotenv_into_environ
+
+    load_dotenv_into_environ()
+
     providers: list = [OpenRouterProvider()]
     if os.environ.get("NVIDIA_API_KEY"):
         providers.append(NVIDIANIMProvider())
