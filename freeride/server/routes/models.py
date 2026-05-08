@@ -138,6 +138,37 @@ async def _aggregate_models(
     return list(groups.values())
 
 
+async def get_or_fetch_catalog(
+    providers: list[Provider], *, group: bool = True, refresh: bool = False
+) -> list[dict[str, Any]]:
+    """Return the cached catalog (one entry per logical model when
+    ``group=True``), refreshing it if missing or if ``refresh=True``.
+
+    Public helper so non-route callers — chat.py's auto-model resolver
+    in particular — can read the same source of truth as ``GET
+    /v1/models`` without re-implementing aggregation.
+    """
+    cache_key = f"{_CACHE_KEY}.grouped" if group else f"{_CACHE_KEY}.ungrouped"
+    if not refresh:
+        cached = _CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+
+    data = await _aggregate_models(providers, group=group)
+    _CACHE.set(cache_key, data)
+    return data
+
+
+def invalidate_catalog() -> None:
+    """Drop the catalog cache so the next request rebuilds it from
+    providers' live ``list_free_models`` output. Called from chat.py
+    on MODEL_NOT_FOUND so a provider quietly retiring a model can't
+    keep us routing requests to the dead id.
+    """
+    _CACHE.invalidate(f"{_CACHE_KEY}.grouped")
+    _CACHE.invalidate(f"{_CACHE_KEY}.ungrouped")
+
+
 @router.get("/v1/models")
 async def list_models(
     request: Request,
@@ -152,13 +183,6 @@ async def list_models(
         ),
     ),
 ) -> dict[str, Any]:
-    cache_key = f"{_CACHE_KEY}.grouped" if group else f"{_CACHE_KEY}.ungrouped"
-    if not refresh:
-        cached = _CACHE.get(cache_key)
-        if cached is not None:
-            return {"object": "list", "data": cached}
-
     providers: list[Provider] = list(request.app.state.providers)
-    data = await _aggregate_models(providers, group=group)
-    _CACHE.set(cache_key, data)
+    data = await get_or_fetch_catalog(providers, group=group, refresh=refresh)
     return {"object": "list", "data": data}

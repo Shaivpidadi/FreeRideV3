@@ -30,6 +30,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from freeride.core.auto_model import is_auto_model, resolve_auto_model
 from freeride.core.chat_schema import ChatRequest, ChatResponse, ChatStreamEvent
 from freeride.core.cooldown import KeyCooldown
 from freeride.core.errors import ErrorKind
@@ -37,6 +38,7 @@ from freeride.core.events import emit as emit_event
 from freeride.core.events import new_request_id
 from freeride.core.health import ProviderHealth, sort_by_health, sort_keys_by_health
 from freeride.core.provider import Provider
+from freeride.server.routes.models import get_or_fetch_catalog, invalidate_catalog
 
 
 def _record_health(
@@ -249,6 +251,12 @@ async def _try_stream_with_failover(
                     cooldown.mark_rate_limited(provider.name, key)
                 if kind == ErrorKind.MODEL_NOT_FOUND or kind == ErrorKind.QUOTA_EXHAUSTED:
                     provider_done = True
+                if kind == ErrorKind.MODEL_NOT_FOUND:
+                    # Provider claims the model is gone. Drop the cached
+                    # catalog so the next /v1/models or auto-resolve
+                    # rebuilds against the current upstream catalog
+                    # rather than handing out the dead id again.
+                    invalidate_catalog()
                 summary.last_error = kind
                 if kind == ErrorKind.RATE_LIMIT:
                     summary.retry_after_s = provider.retry_after_hint(e.response)
@@ -433,6 +441,39 @@ async def chat_completions(request: Request, body: ChatRequest):
             },
         )
 
+    # If the request asked for "auto" (or sent no model id at all),
+    # turn that into a concrete provider-specific id from the live
+    # catalog. Mutating body.model in place lets every downstream
+    # call site — non-streaming loop, streaming loop, observability
+    # events — keep treating model as a plain string.
+    if is_auto_model(body.model):
+        catalog = await get_or_fetch_catalog(providers, group=True)
+        resolved_id, resolved_provider = resolve_auto_model(providers, catalog)
+        if resolved_id is None:
+            emit_event(
+                "request_failed",
+                request_id=ctx.request_id,
+                phase="auto_resolution_failed",
+            )
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": {
+                        "type": "no_model_available",
+                        "message": "model='auto' was requested but no provider has a usable model + key right now.",
+                        "request_id": ctx.request_id,
+                        "suggestion": "Run `freeride list` to see the catalog and `freeride keys` to see cooldowns.",
+                    }
+                },
+            )
+        body.model = resolved_id
+        emit_event(
+            "auto_model_resolved",
+            request_id=ctx.request_id,
+            resolved_model=resolved_id,
+            resolved_provider=resolved_provider,
+        )
+
     if body.is_streaming():
         return await _build_stream_response(chain, body, cooldown, ctx)
 
@@ -477,6 +518,11 @@ async def chat_completions(request: Request, body: ChatRequest):
                     ),
                 )
                 _record_health(provider.name, ok=False, duration_ms=duration_ms, key=key)
+                if kind == ErrorKind.MODEL_NOT_FOUND:
+                    # See invalidate_catalog() comment in
+                    # _try_stream_with_failover for rationale — same
+                    # situation, non-streaming path.
+                    invalidate_catalog()
                 if kind in (ErrorKind.MODEL_NOT_FOUND, ErrorKind.QUOTA_EXHAUSTED):
                     break
                 continue
