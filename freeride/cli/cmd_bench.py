@@ -9,6 +9,13 @@ second. Useful for:
 - "Is OpenRouter actually slower than Groq for this account?"
 - Picking which to set as primary in a config file
 
+Probes every provider in parallel by default — wall-clock time is
+``max(provider_times)`` instead of ``sum(provider_times)``. With 7
+providers × 3 requests × ~500ms, that's roughly 1.5s instead of ~10s.
+Pass ``--sequential`` for the old serial behavior — useful for getting
+clean per-provider latency measurements without contention from
+concurrent requests on shared local resources (sockets, CPU).
+
 Burns real tokens (it's a real chat completion). Default is 3 requests
 per provider × however many are registered, with ``max_tokens=10`` per
 call — typically <200 tokens total. Override with ``--n``.
@@ -19,6 +26,7 @@ on the gateway.
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import sys
 import time
@@ -196,24 +204,40 @@ def cmd_bench(args) -> int:
         print("error: gateway has no registered providers. Set at least one provider env var (e.g. OPENROUTER_API_KEY).", file=sys.stderr)
         return 1
 
+    sequential = bool(getattr(args, "sequential", False))
+    mode_label = "sequential" if sequential else "parallel"
     print(
         f"Benchmarking {len(provider_objs)} provider"
         f"{'s' if len(provider_objs) != 1 else ''}, "
-        f"{args.n} request{'s' if args.n != 1 else ''} each via {gateway_url}…\n",
+        f"{args.n} request{'s' if args.n != 1 else ''} each via "
+        f"{gateway_url} ({mode_label})…\n",
         file=sys.stderr,
     )
 
-    rows: list[dict[str, Any]] = []
-    for p in provider_objs:
-        rows.append(
-            _bench_one(
-                gateway_url=gateway_url,
-                provider=p["name"],
-                model=args.model,
-                prompt=args.prompt or _BENCH_PROMPT_DEFAULT,
-                n=args.n,
-            )
+    prompt = args.prompt or _BENCH_PROMPT_DEFAULT
+
+    def _probe(p: dict) -> dict[str, Any]:
+        return _bench_one(
+            gateway_url=gateway_url,
+            provider=p["name"],
+            model=args.model,
+            prompt=prompt,
+            n=args.n,
         )
+
+    rows: list[dict[str, Any]]
+    if sequential:
+        rows = [_probe(p) for p in provider_objs]
+    else:
+        # ThreadPoolExecutor because httpx (sync) blocks the calling
+        # thread; threads give us trivial parallelism without needing
+        # an event loop. Order results by registration so the
+        # post-sort table comparison stays deterministic.
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=len(provider_objs)
+        ) as pool:
+            futures = [pool.submit(_probe, p) for p in provider_objs]
+            rows = [f.result() for f in futures]
 
     print(_format_table(rows, no_color=no_color))
     return 0

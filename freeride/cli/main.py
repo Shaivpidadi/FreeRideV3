@@ -111,6 +111,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override the test prompt (default: 'Reply with exactly one word: hi.')",
     )
+    p_bench.add_argument(
+        "--sequential",
+        action="store_true",
+        help=(
+            "Probe providers serially instead of in parallel. Slower but "
+            "isolates per-provider latency from local-resource contention."
+        ),
+    )
     p_bench.add_argument("--no-color", action="store_true")
 
     p_reload = sub.add_parser(

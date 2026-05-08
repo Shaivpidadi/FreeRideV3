@@ -6,6 +6,15 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+### Changed
+- **`freeride bench` probes providers in parallel by default.** With
+  7 providers × 3 requests × ~500ms each, sequential bench took ~10s
+  wall clock. Parallel cuts to ~max(provider_times) ≈ 1.5s. Pass
+  `--sequential` for the old behavior — useful for clean per-provider
+  latency measurements without local-resource contention from
+  concurrent requests. Uses `concurrent.futures.ThreadPoolExecutor`;
+  no event loop needed since httpx is sync inside the bench runner.
+
 ### Security
 - **All on-disk secrets now mode 0o600 (owner read/write only).**
   `core.state.atomic_write()` now chmods every file it writes to
