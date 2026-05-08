@@ -110,6 +110,67 @@ error classification, streaming, capabilities, attribution, and any
 OpenAI-compat deltas. The NIM and OpenRouter docs in there are good
 templates.
 
+## Shipping a provider as a separate pip package
+
+In-tree providers (the six that live in `freeride/providers/`) cover the
+big free tiers. If you want to ship a provider for something else without
+contributing to FreeRide directly, package it as its own pip distribution
+and register the class via Python entry points — FreeRide auto-discovers
+them at startup.
+
+### Minimal third-party plugin
+
+```python
+# my_freeride_plugin/awesome.py
+from freeride.core.provider import PROVIDER_API_VERSION
+
+class AwesomeProvider:
+    name = "awesome"
+    api_version = PROVIDER_API_VERSION
+    embeddings_supported = False  # or True if you implement forward_embeddings
+
+    def __init__(self):
+        # Raise ValueError when required env vars are missing — FreeRide's
+        # registry treats this as "I'm not configured, skip me" and logs at
+        # INFO. The gateway keeps starting with the remaining providers.
+        import os
+        api_key = os.environ.get("AWESOME_API_KEY")
+        if not api_key:
+            raise ValueError("AwesomeProvider requires AWESOME_API_KEY")
+
+    # ... implement the rest of the Provider Protocol ...
+```
+
+```toml
+# my_freeride_plugin/pyproject.toml
+[project]
+name = "freeride-awesome-provider"
+version = "0.1.0"
+dependencies = ["freeride-gateway>=0.4.0a1", "httpx>=0.27,<1"]
+
+[project.entry-points."freeride.providers"]
+awesome = "my_freeride_plugin.awesome:AwesomeProvider"
+```
+
+After `pip install freeride-awesome-provider`, the plugin is discovered
+automatically by `freeride serve`. Wire it the same way as any built-in
+provider — set `AWESOME_API_KEY` in env and run.
+
+### Trust model
+
+Plugins run in-process — no sandbox. Users opt in by `pip install`-ing
+your package, which is the same trust model as any Python dependency.
+Document any side effects, network calls, or filesystem touches in your
+plugin's README so users can audit before installing.
+
+### Compatibility
+
+Plugins MUST declare `api_version = PROVIDER_API_VERSION` from
+`freeride.core.provider`. The registry skips plugins on a different
+version with a warning so users can see they need to upgrade. Bumping
+the Provider Protocol is rare (it's been at 1 since 0.3.0); we'll
+announce in the CHANGELOG when it changes.
+
 ## Adding an agent binder
 
 Binders live in `freeride/binders/<agent>.py`. Each binder exposes one
