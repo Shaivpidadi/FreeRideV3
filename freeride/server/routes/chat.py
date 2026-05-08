@@ -121,23 +121,50 @@ class FailoverContext:
 
 
 def _suggestion(tried: list[AttemptSummary]) -> str:
-    """Pick the most actionable hint based on the failure mix."""
+    """Pick the most actionable hint based on the failure mix.
+
+    Each branch points at the CLI command that surfaces the most
+    relevant diagnostic info — ``freeride doctor`` for setup issues,
+    ``freeride keys`` for cooldown state, ``freeride watch`` for
+    real-time tracing, ``freeride list`` for the model catalog.
+    """
     if not tried:
-        return "No providers had usable keys. Set at least one provider env var (e.g. OPENROUTER_API_KEY)."
+        return (
+            "No providers had usable keys. Run `freeride doctor` to see "
+            "which env vars are set and what's missing."
+        )
     kinds = {t.last_error for t in tried if t.last_error is not None}
     cooling = [t for t in tried if t.retry_after_s]
     if kinds == {ErrorKind.RATE_LIMIT} and cooling:
         soonest = min(t.retry_after_s for t in cooling if t.retry_after_s)
-        return f"All providers rate-limited. Soonest retry-after: ~{soonest}s. Add a Groq or HF key for more failover headroom."
+        return (
+            f"All providers rate-limited. Soonest retry-after: ~{soonest}s. "
+            "Run `freeride keys` to see cooldown state across all providers, "
+            "or add another free-tier key for more failover headroom."
+        )
     if ErrorKind.AUTH in kinds:
         bad = [t.provider for t in tried if t.last_error == ErrorKind.AUTH]
         env_vars = ", ".join(_env_var_for(p) for p in bad)
-        return f"Auth failed on {', '.join(bad)}. Verify {env_vars} is set correctly."
+        return (
+            f"Auth failed on {', '.join(bad)}. Verify {env_vars} — "
+            "`freeride doctor` confirms which env vars are seen by the gateway."
+        )
     if ErrorKind.MODEL_NOT_FOUND in kinds:
-        return "Model not available on any provider. Run `freeride list` to see what's currently free."
+        return (
+            "Model not available on any provider. Run `freeride list` for the "
+            "current free catalog, or check `freeride providers` to see what "
+            "the gateway has registered."
+        )
     if ErrorKind.QUOTA_EXHAUSTED in kinds:
-        return "Free-tier budgets exhausted across providers. Wait for the next billing cycle, or add another provider's free key."
-    return "All providers failed. Run `freeride watch` in another terminal to see live transitions."
+        return (
+            "Free-tier budgets exhausted across providers. Wait for the next "
+            "billing cycle, add another provider's key, or run "
+            "`freeride keys` to see which provider is closest to recovering."
+        )
+    return (
+        "All providers failed. Run `freeride watch` in another terminal to "
+        "see live transitions, or `freeride providers` for current health stats."
+    )
 
 
 def _build_503_detail(ctx: FailoverContext) -> dict[str, Any]:
