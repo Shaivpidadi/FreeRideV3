@@ -29,3 +29,11 @@ custom_domain = true
 [[routes]]
 pattern = "telemetry.free-ride.xyz"
 custom_domain = true
+
+# Cron trigger: refresh the OpenRouter app-level token aggregate every 6
+# hours. The handler scrapes the public app activity pages for both V2
+# (Shaivpidadi/FreeRide) and V3 (Shaivpidadi/FreeRideV3) and stores the
+# combined total in the openrouter_aggregate D1 table for /v1/stats to
+# surface.
+[triggers]
+crons = ["0 */6 * * *"]

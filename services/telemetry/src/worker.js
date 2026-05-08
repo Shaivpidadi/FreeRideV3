@@ -121,6 +121,15 @@ async function handleStats(env) {
     .bind(Math.floor(Date.now() / 1000) - 24 * 3600)
     .first();
 
+  // Latest OpenRouter aggregate (refreshed by the scheduled handler).
+  // Surfaces the V2+V3 30-day token totals scraped from the public app
+  // pages so the marketing site can show one combined number.
+  const or = await env.DB.prepare(
+    `SELECT v1_tokens, v3_tokens, combined_tokens, fetched_at
+     FROM openrouter_aggregate
+     ORDER BY fetched_at DESC LIMIT 1`,
+  ).first();
+
   return json({
     object: "stats",
     as_of: new Date().toISOString(),
@@ -134,10 +143,103 @@ async function handleStats(env) {
       tokens_served: day?.tokens_served_24h ?? 0,
       request_count: day?.request_count_24h ?? 0,
     },
+    openrouter_30d: or
+      ? {
+          v1_tokens: or.v1_tokens,
+          v3_tokens: or.v3_tokens,
+          combined_tokens: or.combined_tokens,
+          fetched_at: or.fetched_at,
+        }
+      : null,
   });
 }
 
+// ---------------------------------------------------------------------------
+// OpenRouter app-stats refresh (cron-driven)
+// ---------------------------------------------------------------------------
+//
+// OpenRouter exposes per-app token totals via their public app activity
+// pages but has no programmatic API for it. The relevant page server-side
+// renders the data inline as JSON, so we fetch the HTML and pull the
+// `\\"totalTokens\\":N` integer with a regex. Two pages, one for each
+// referer (V2 and V3); we sum them so users see the combined community
+// total rather than a number split by version.
+//
+// Fired by the [triggers] crons entry in wrangler.toml. Idempotent —
+// each run inserts one row in openrouter_aggregate. No history pruning
+// (rows are tiny; ~50 bytes × ~4/day × ~365/year ≈ 73 KB/year).
+
+const OR_APP_URLS = [
+  {
+    slug: "v1",
+    url:
+      "https://openrouter.ai/apps?url=" +
+      encodeURIComponent("https://github.com/Shaivpidadi/FreeRide"),
+  },
+  {
+    slug: "v3",
+    url:
+      "https://openrouter.ai/apps?url=" +
+      encodeURIComponent("https://github.com/Shaivpidadi/FreeRideV3"),
+  },
+];
+
+async function fetchOpenRouterAppTokens(url) {
+  const resp = await fetch(url, {
+    cf: { cacheTtl: 0 },
+    headers: { "user-agent": "FreeRideTelemetryWorker/1.0" },
+  });
+  if (!resp.ok) {
+    throw new Error(`HTTP ${resp.status} for ${url}`);
+  }
+  const html = await resp.text();
+  // The SSR'd payload has `\"totalTokens\":NNNNNNNN` embedded as
+  // escaped JSON inside an RSC streaming chunk. Loose pattern so it
+  // survives benign formatting changes on OR's side.
+  const m = html.match(/\\"totalTokens\\":(\d+)/);
+  return m ? parseInt(m[1], 10) : 0;
+}
+
+async function refreshOpenRouterAggregate(env) {
+  const results = {};
+  for (const { slug, url } of OR_APP_URLS) {
+    try {
+      results[slug] = await fetchOpenRouterAppTokens(url);
+    } catch (e) {
+      console.error("openrouter scrape failed for", slug, e);
+      // Use the last known value as a fallback so a transient OR
+      // outage doesn't reset the displayed number to zero.
+      const prev = await env.DB.prepare(
+        `SELECT ${slug}_tokens AS t FROM openrouter_aggregate
+         ORDER BY fetched_at DESC LIMIT 1`,
+      ).first();
+      results[slug] = prev?.t ?? 0;
+    }
+  }
+  const v1 = results.v1 ?? 0;
+  const v3 = results.v3 ?? 0;
+  const combined = v1 + v3;
+  await env.DB.prepare(
+    `INSERT INTO openrouter_aggregate
+       (fetched_at, v1_tokens, v3_tokens, combined_tokens)
+     VALUES (?, ?, ?, ?)`,
+  )
+    .bind(Math.floor(Date.now() / 1000), v1, v3, combined)
+    .run();
+  return { v1, v3, combined };
+}
+
 export default {
+  // Cron-triggered: refresh the OR aggregate table every 6 hours per
+  // wrangler.toml [triggers].
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(
+      refreshOpenRouterAggregate(env).catch((e) =>
+        console.error("scheduled refresh failed:", e),
+      ),
+    );
+  },
+
   async fetch(request, env) {
     const url = new URL(request.url);
 
@@ -159,6 +261,24 @@ export default {
         return await handleStats(env);
       } catch (e) {
         return json({ ok: false, error: "internal" }, 500);
+      }
+    }
+
+    // Manual trigger for the OR aggregate refresh — useful for the
+    // first run (cron hasn't fired yet) or after a deploy when you
+    // want fresh numbers immediately. Public endpoint; idempotent
+    // and cheap (one HTTP fetch per app, one D1 INSERT). Returns the
+    // values just written.
+    if (
+      url.pathname === "/v1/_admin/refresh-openrouter" &&
+      request.method === "POST"
+    ) {
+      try {
+        const result = await refreshOpenRouterAggregate(env);
+        return json({ ok: true, ...result });
+      } catch (e) {
+        console.error("manual refresh failed:", e);
+        return json({ ok: false, error: "refresh_failed" }, 500);
       }
     }
 
