@@ -33,6 +33,7 @@ _PROVIDER_ENV_VARS: list[tuple[str, str]] = [
     ("nvidia_nim", "NVIDIA_API_KEY"),
     ("cloudflare_wai", "CLOUDFLARE_API_TOKEN"),
     ("huggingface", "HF_TOKEN"),  # HUGGINGFACE_API_KEY also accepted
+    ("cerebras", "CEREBRAS_API_KEY"),
     ("ollama", "OLLAMA_BASE_URL"),
 ]
 

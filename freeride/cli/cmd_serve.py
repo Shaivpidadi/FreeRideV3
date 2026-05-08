@@ -20,6 +20,7 @@ import sys
 
 import uvicorn
 
+from freeride.providers.cerebras import CerebrasProvider
 from freeride.providers.cloudflare_wai import CloudflareWAIProvider
 from freeride.providers.groq import GroqProvider
 from freeride.providers.huggingface import HuggingFaceProvider
@@ -61,6 +62,8 @@ def build_provider_registry() -> list:
         providers.append(HuggingFaceProvider())
     if ollama_url := os.environ.get("OLLAMA_BASE_URL"):
         providers.append(OllamaProvider(base_url=ollama_url))
+    if os.environ.get("CEREBRAS_API_KEY"):
+        providers.append(CerebrasProvider())
     return providers
 
 

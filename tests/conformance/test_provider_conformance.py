@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 
 from freeride.core.provider import PROVIDER_API_VERSION, Provider
+from freeride.providers.cerebras import CerebrasProvider
 from freeride.providers.cloudflare_wai import CloudflareWAIProvider
 from freeride.providers.groq import GroqProvider
 from freeride.providers.huggingface import HuggingFaceProvider
@@ -36,6 +37,7 @@ CONFORMANT_PROVIDERS: list[type] = [
     CloudflareWAIProvider,
     HuggingFaceProvider,
     OllamaProvider,
+    CerebrasProvider,
 ]
 
 

@@ -90,6 +90,7 @@ PyPI distribution: `freeride-gateway`. CLI: `freeride`. Python ≥ 3.10.
 | NVIDIA NIM | https://build.nvidia.com | `NVIDIA_API_KEY` |
 | Cloudflare Workers AI | https://dash.cloudflare.com/profile/api-tokens | `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` |
 | HuggingFace | https://huggingface.co/settings/tokens | `HF_TOKEN` |
+| Cerebras | https://cloud.cerebras.ai/platform | `CEREBRAS_API_KEY` |
 | Ollama (local) | https://ollama.com/download | `OLLAMA_BASE_URL=http://localhost:11434` |
 
 Set whichever you have, then `freeride serve`. The gateway picks them up and rotates between them.
@@ -245,6 +246,7 @@ The v2 commands keep working for existing OpenClaw users.
 | Groq | shipped | hardcoded allowlist (Llama 3.x, Gemma 2, Mixtral, DeepSeek-R1-distill); `GROQ_FREE_MODELS_OVERRIDE` to expand |
 | Cloudflare Workers AI | shipped | curated allowlist of cheap-per-neuron chat models; needs `CLOUDFLARE_ACCOUNT_ID` |
 | HuggingFace Inference | shipped | full HF router catalog; budget governs access ($0.10/mo Free, $2/mo PRO) |
+| Cerebras | shipped | fastest Llama / Qwen inference; chat-only (no embeddings). `CEREBRAS_FREE_MODELS_OVERRIDE` to restrict catalog. |
 | Ollama (local) | shipped | local-only; mix with remote providers in the same failover chain. Set `OLLAMA_BASE_URL` to opt in. |
 
 Adding a sixth: implement `freeride.core.provider.Provider` (`api_version=1`) in `freeride/providers/<name>.py`, register it in the conformance suite, done. See `CONTRIBUTING.md`.

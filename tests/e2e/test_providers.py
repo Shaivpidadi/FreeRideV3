@@ -93,6 +93,13 @@ PROVIDER_MATRIX: list[dict] = [
         "provider_name": "huggingface",
         "skip_msg": "set HF_TOKEN (or HUGGINGFACE_API_KEY) to run HuggingFace e2e",
     },
+    {
+        "id": "cerebras",
+        "key_env": ["CEREBRAS_API_KEY"],
+        "model": "llama3.1-8b",
+        "provider_name": "cerebras",
+        "skip_msg": "set CEREBRAS_API_KEY to run Cerebras e2e",
+    },
 ]
 
 

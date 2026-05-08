@@ -56,6 +56,12 @@ _PROVIDER_PROMPTS: list[tuple[str, list[str], str, str]] = [
         "HuggingFace — full router catalog, $0.10/mo Free or $2/mo PRO budget",
     ),
     (
+        "cerebras",
+        ["CEREBRAS_API_KEY"],
+        "https://cloud.cerebras.ai/platform",
+        "Cerebras — fastest Llama / Qwen inference. Free tier with RPM/TPM limits.",
+    ),
+    (
         "ollama",
         ["OLLAMA_BASE_URL"],
         "https://ollama.com/download",

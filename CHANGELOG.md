@@ -7,6 +7,18 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 ## [Unreleased]
 
 ### Added
+- **Cerebras provider** (`freeride/providers/cerebras.py`).
+  OpenAI-compatible at `api.cerebras.ai/v1`. Adds a 7th free-tier
+  provider — Cerebras has the fastest Llama / Qwen inference of any
+  remote free tier (~1k tokens/sec on llama3.1-8b). Chat-only, no
+  embeddings (`embeddings_supported = False` so the embeddings route
+  filter skips it). Classifier handles OpenAI-shape error envelope:
+  `code: model_not_found` → MODEL_NOT_FOUND, "quota exceeded" message
+  → QUOTA_EXHAUSTED. Auto-loaded by `freeride serve` when
+  `CEREBRAS_API_KEY` is set. `CEREBRAS_FREE_MODELS_OVERRIDE` env var
+  restricts the catalog if you have a paid plan with restricted access.
+  Wired into `freeride init`, `freeride doctor`, `freeride keys`,
+  e2e matrix, conformance suite. 14 unit tests.
 - **Per-key health tracking and ordering.** The health module now also
   tracks rolling success-rate + p50 latency per `(provider, key_hash)`
   in addition to the per-provider rollup. The chat and embeddings

@@ -57,6 +57,7 @@ def _key_for(provider: Provider) -> str | None:
         "groq": "GROQ_API_KEY",
         "cloudflare_wai": "CLOUDFLARE_API_TOKEN",
         "huggingface": "HF_TOKEN",
+        "cerebras": "CEREBRAS_API_KEY",
         "ollama": "OLLAMA_BASE_URL",
     }.get(provider.name, f"{provider.name.upper()}_API_KEY")
     raw = os.environ.get(env_var, "")
