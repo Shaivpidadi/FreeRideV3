@@ -22,7 +22,14 @@ const ALLOWED_OS = new Set(["darwin", "linux", "windows", "other"]);
 const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      // Worker is fully anonymous — no auth, no cookies — so wildcard
+      // CORS is safe and necessary so the marketing site (hosted on
+      // a different origin) can client-fetch /v1/stats for the live
+      // counter.
+      "access-control-allow-origin": "*",
+    },
   });
 
 function clampInt(value, max = 1_000_000_000) {
