@@ -1,5 +1,5 @@
 ---
-description: Use this skill when the user has FreeRide installed (binary at ~/.local/bin/freeride, gateway on http://localhost:11343) or asks how to route their AI workloads across free-tier providers (OpenRouter, Groq, NVIDIA NIM, Cloudflare Workers AI, HuggingFace). FreeRide is a local OpenAI-compatible gateway. Detect it via curl http://localhost:11343/health, then wire any OpenAI-shaped tool against base URL http://localhost:11343/v1 with API key "any". Failover across providers and keys is automatic.
+description: Use this skill when the user has FreeRide installed (binary at ~/.local/bin/freeride, gateway on http://localhost:11343) or asks how to route their AI workloads across free-tier providers. FreeRide is "Ollama for free cloud inference" — a local OpenAI-compatible gateway that routes across OpenRouter, Groq, NVIDIA NIM, Cloudflare Workers AI, HuggingFace, Cerebras, and Ollama. Detect it via curl http://localhost:11343/health, then wire any OpenAI-shaped tool against base URL http://localhost:11343/v1 with API key "any". Failover across providers and keys is automatic.
 ---
 
 # FreeRide

@@ -1,47 +1,8 @@
 # FreeRide
 
-One free AI endpoint. Five providers behind it. Your agents don't need to know.
+**Ollama for free cloud inference.**
 
-```
-$ curl -sSL https://api.free-ride.xyz/install.sh | sh
-$ export OPENROUTER_API_KEY=sk-or-v1-...
-$ freeride serve
-
-freeride gateway listening on http://127.0.0.1:11343
-  providers: openrouter        # add more by exporting their keys
-  point any OpenAI-compatible agent at:
-    OPENAI_API_BASE=http://127.0.0.1:11343/v1
-    OPENAI_API_KEY=any
-```
-
-That's it. Aider, Continue, OpenClaw, Hermes, the OpenAI Python SDK — anything that speaks OpenAI now speaks every free tier you have a key for.
-
-## Demo
-
-```
-┌─ your agent ─────────┐         ┌─ freeride (localhost) ─┐         ┌─ providers ─┐
-│                      │  POST   │                        │         │             │
-│  chat.completions    │────────▶│  pick provider         │────────▶│  OpenRouter │ 429
-│   .create(...)       │         │  pick key (not cooling)│  retry  │     ↓       │
-│                      │         │  forward request       │────────▶│  Groq       │ ✓
-│  ◀───────────────────│   200   │  ◀─────────────────────│         │             │
-│                      │         │                        │         │  NIM, CF,   │
-│                      │         │  X-FreeRide-Provider:  │         │  HF — only  │
-│                      │         │   groq                 │         │  if needed  │
-└──────────────────────┘         └────────────────────────┘         └─────────────┘
-```
-
-When OpenRouter rate-limits you, the next request goes to Groq. When Groq's daily token cap hits, the next goes to HuggingFace. Your agent never sees a 429.
-
-## Why this exists
-
-You can already get a free tier from OpenRouter. And NVIDIA. And Groq. And Cloudflare Workers AI. And HuggingFace. They all have different limits, different free-detection rules, different ways of saying "you're done for today."
-
-So you sign up for all of them and now you've got five API keys, five SDKs, and an agent that only knows about one. FreeRide is the small thing that sits between them and pretends to be one OpenAI endpoint.
-
-- **Local-first.** The gateway runs on your machine. Prompts and completions never touch a FreeRide server.
-- **BYO keys.** Bring your own free-tier keys. FreeRide doesn't issue any.
-- **Free-only.** No paid fallback. No upsell. If every provider is exhausted, the request fails — better that than a surprise bill.
+A local OpenAI-compatible gateway that routes across every free-tier provider you have a key for — OpenRouter, Groq, NVIDIA NIM, Cloudflare Workers AI, HuggingFace, Cerebras, and your own Ollama. Hits a rate limit, fails over. Your agent never knows.
 
 ## Install
 
@@ -56,6 +17,15 @@ curl -sSL https://api.free-ride.xyz/install.sh | sh
 ```powershell
 powershell -ExecutionPolicy ByPass -c "irm https://api.free-ride.xyz/install.ps1 | iex"
 ```
+
+Then:
+
+```bash
+freeride init           # interactive — collects keys, writes ~/.freeride/.env
+freeride serve          # gateway listens on localhost:11343
+```
+
+Point any OpenAI-shaped client at `http://localhost:11343/v1` with `OPENAI_API_KEY=any`. That's it.
 
 The installer bootstraps `uv` if missing, then `uv tool install`s `freeride-gateway`. Binary lands at `~/.local/bin/freeride` (Linux/macOS) or `%USERPROFILE%\.local\bin\freeride.exe` (Windows). Same shape as the bun.sh and astral.sh installers.
 

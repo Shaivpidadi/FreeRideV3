@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "freeride-gateway"
 dynamic = ["version"]
-description = "Local OpenAI-compatible gateway that routes across free-tier providers (OpenRouter, Groq, NVIDIA NIM, Cloudflare Workers AI, HuggingFace) with automatic failover."
+description = "Ollama for free cloud inference. Local OpenAI-compatible gateway routing across OpenRouter, Groq, NVIDIA NIM, Cloudflare Workers AI, HuggingFace, Cerebras, and your own Ollama with automatic failover."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
