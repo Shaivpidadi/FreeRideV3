@@ -321,10 +321,22 @@ class NVIDIANIMProvider:
     async def forward_embeddings(
         self, request: EmbeddingRequest, model_id: str, key: str
     ) -> EmbeddingResponse:
-        """OpenAI-shape /v1/embeddings forward to NVIDIA NIM."""
+        """OpenAI-shape /v1/embeddings forward to NVIDIA NIM.
+
+        NIM's embedding endpoint is OpenAI-shape *almost* — but it
+        REQUIRES an ``input_type`` field that vanilla OpenAI doesn't
+        have, returning HTTP 400 ``"'input_type' parameter is required
+        for asymmetric models"`` when missing. We default to
+        ``"query"`` so OpenAI-compat clients (which can't know about
+        NIM's quirk) just work. Users who want passage-side embeddings
+        for retrieval can pass ``input_type="passage"`` via the
+        permissive request body — pydantic ``extra='allow'`` lets it
+        round-trip.
+        """
         payload = request.model_dump(exclude_none=True)
         payload["model"] = model_id
         payload.pop("nvext", None)
+        payload.setdefault("input_type", "query")
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             resp = await client.post(

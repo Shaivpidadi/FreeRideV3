@@ -54,7 +54,14 @@ class HuggingFaceProvider:
 
     name: str = "huggingface"
     api_version: int = PROVIDER_API_VERSION
-    embeddings_supported: bool = True
+    # HF's OpenAI-compat router (router.huggingface.co/v1) does NOT
+    # expose /embeddings — that endpoint returns 404. Embedding
+    # inference goes through HF's older per-model Inference API
+    # (api-inference.huggingface.co/models/{id}), which has a
+    # different request shape. We don't bridge that here, so
+    # embeddings_supported = False and the embeddings route filter
+    # naturally skips this provider.
+    embeddings_supported: bool = False
 
     def __init__(self, *, http_timeout: float = 30.0) -> None:
         self._timeout = http_timeout

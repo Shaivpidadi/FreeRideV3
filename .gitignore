@@ -38,3 +38,4 @@ freeride.egg-info/
 # wrangler.example.toml is the committed placeholder; copy to wrangler.toml
 # locally and fill in your own values.
 services/telemetry/wrangler.toml
+/.env

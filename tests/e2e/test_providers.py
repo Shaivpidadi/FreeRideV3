@@ -293,7 +293,10 @@ EMBEDDING_MODELS: dict[str, str | None] = {
     "openrouter": "text-embedding-3-small",
     "nvidia_nim": "nvidia/nv-embedqa-e5-v5",
     "cloudflare_wai": "@cf/baai/bge-base-en-v1.5",
-    "huggingface": "BAAI/bge-base-en-v1.5",
+    # HuggingFace's OpenAI-compat router (router.huggingface.co/v1)
+    # does NOT have an /embeddings endpoint — provider's
+    # embeddings_supported = False, embeddings route filter skips it.
+    "huggingface": None,
     "ollama": "nomic-embed-text",  # most-pulled Ollama embedding model
     "groq": None,  # not supported
 }
