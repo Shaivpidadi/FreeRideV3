@@ -72,13 +72,16 @@ def gateway_url() -> Generator[str, None, None]:
             "CLOUDFLARE_API_TOKEN",
             "HF_TOKEN",
             "HUGGINGFACE_API_KEY",
+            "CEREBRAS_API_KEY",
+            "OLLAMA_BASE_URL",
         )
     )
     if not any_key:
         pytest.skip(
             "no provider API key set "
             "(set one of OPENROUTER_API_KEY, GROQ_API_KEY, NVIDIA_API_KEY, "
-            "CLOUDFLARE_API_TOKEN+CLOUDFLARE_ACCOUNT_ID, HF_TOKEN)"
+            "CLOUDFLARE_API_TOKEN+CLOUDFLARE_ACCOUNT_ID, HF_TOKEN, "
+            "CEREBRAS_API_KEY, or OLLAMA_BASE_URL)"
         )
 
     if not GATEWAY_BIN.exists():
