@@ -54,6 +54,26 @@ class TestListFreeModels:
         )
         assert len(provider.list_free_models("dummy")) == 1
 
+    def test_drops_known_broken_ids(self, provider, httpx_mock):
+        # Cerebras's /models endpoint advertises ids that the inference
+        # API itself rejects with model_not_found. These two were
+        # confirmed via the 2026-05-09 audit and are pinned in
+        # _CEREBRAS_KNOWN_BROKEN_IDS — make sure they never reach the
+        # /v1/models response no matter how Cerebras lists them.
+        catalog = {
+            "data": [
+                {"id": "llama3.1-8b", "context_length": 128_000},
+                {"id": "qwen-3-235b-a22b-instruct-2507", "context_length": 64_000},
+                {"id": "zai-glm-4.7", "context_length": 128_000},   # ghost
+                {"id": "gpt-oss-120b", "context_length": 128_000},  # ghost
+            ]
+        }
+        httpx_mock.add_response(url=CEREBRAS_MODELS_URL, json=catalog)
+        ids = {m.api_id for m in provider.list_free_models("dummy")}
+        assert ids == {"llama3.1-8b", "qwen-3-235b-a22b-instruct-2507"}
+        assert "zai-glm-4.7" not in ids
+        assert "gpt-oss-120b" not in ids
+
 
 # ---- error classification ------------------------------------------------
 

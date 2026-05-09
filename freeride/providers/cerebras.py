@@ -39,6 +39,25 @@ CEREBRAS_MODELS_URL = f"{CEREBRAS_API_BASE}/models"
 CEREBRAS_CHAT_URL = f"{CEREBRAS_API_BASE}/chat/completions"
 
 
+# Cerebras's /models endpoint advertises ids that the inference API
+# itself rejects with model_not_found. Confirmed via end-to-end audit
+# 2026-05-09 (see internal-docs / model-availability run): every probe
+# against these returns a 404, even though `freeride list` and
+# `/v1/models` would otherwise surface them as routable. Drop them
+# at catalog-construction time so the smart-routing resolver and the
+# /v1/models response never advertise a model that can't actually
+# serve a request.
+#
+# This is a maintenance-coupled list. To refresh it, re-run
+# burn-test/audit.py and add any newly-confirmed ghosts here.
+_CEREBRAS_KNOWN_BROKEN_IDS: frozenset[str] = frozenset(
+    {
+        "zai-glm-4.7",
+        "gpt-oss-120b",
+    }
+)
+
+
 def _free_model_set() -> frozenset[str] | None:
     """``None`` means "no allowlist, surface every model from the catalog".
     A non-None value means restrict to exactly that set.
@@ -130,7 +149,8 @@ class CerebrasProvider:
 
     # ----- discovery & probing -------------------------------------------
     def list_free_models(self, key: str) -> list[Model]:
-        """Hit /models, intersect with override allowlist if set."""
+        """Hit /models, drop known-broken ids, intersect with override
+        allowlist if set."""
         with httpx.Client(timeout=self._timeout) as client:
             resp = client.get(CEREBRAS_MODELS_URL, headers=self._outbound_headers(key))
         resp.raise_for_status()
@@ -142,6 +162,8 @@ class CerebrasProvider:
         for m in raw:
             mid = m.get("id", "")
             if not mid or mid in seen:
+                continue
+            if mid in _CEREBRAS_KNOWN_BROKEN_IDS:
                 continue
             if allow is not None and mid not in allow:
                 continue
