@@ -6,6 +6,62 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+## [0.4.0a3] — 2026-05-09
+
+Smart-routing release. The `model: "auto"` keyword now resolves to a
+concrete model picked by score, not just the first catalog entry that
+matches a usable provider — and a new persistent runtime health cache
+populated by `freeride audit-models` keeps known-broken / quota-
+exhausted / rate-limited models out of the resolution pool until they
+recover. Plus per-day per-model OR token attribution surfaced in
+`/v1/stats`, a clean SVG chart on the public `/models` leaderboard,
+and a confirmed-ghost prune on the Cerebras provider.
+
+### Added
+- **`model: "auto"` keyword in `/v1/chat/completions`.** Sentinel
+  set: `auto`, `default`, `freeride/auto`, `""`, `null`. Resolves
+  against the live `/v1/models` catalog before dispatch; emits an
+  `auto_model_resolved` event for `freeride watch`. Returns 503
+  `no_model_available` with a `freeride list` / `freeride keys`
+  suggestion when no resolvable model + key combination exists.
+- **Smart-routing scorer.** New `freeride/core/smart_routing.py`
+  weights each catalog entry by 10 × failover-headroom + log10(global
+  popularity + 1) × 5. Popularity sourced from the public
+  `api.free-ride.xyz/v1/stats` endpoint with on-disk cache (1h TTL,
+  graceful empty-fallback on network/SSL failure).
+- **`freeride audit-models` subcommand.** Probes every model in every
+  configured provider's catalog and persists a per-(provider, model)
+  health verdict to `~/.freeride/cache/model_health.json` (24h TTL).
+  `--workers N` for concurrency, `--provider X` to restrict, `--quiet`
+  for summary-only output. Smart-routing reads this cache and
+  zero-scores models flagged broken — auto-resolution skips them
+  entirely.
+- **Reactive catalog cache invalidation.** Both streaming and
+  non-streaming chat paths now call `invalidate_catalog()` when a
+  provider returns `MODEL_NOT_FOUND`, so the next `/v1/models` or
+  auto-resolve call rebuilds against current upstream catalogs.
+
+### Fixed
+- **Cerebras catalog drops two confirmed ghost ids.** `zai-glm-4.7`
+  and `gpt-oss-120b` are advertised by Cerebras's `/models` endpoint
+  but every chat completion against them returns `model_not_found`.
+  Filtered at `list_free_models()` time so the smart-routing resolver
+  and `/v1/models` response no longer hand out an id that can't
+  actually serve. Refresh the list by re-running
+  `freeride audit-models --provider cerebras`.
+
+### Telemetry / observability
+- **Per-day per-model OR breakdown.** The Cloudflare telemetry worker
+  (under `services/telemetry/`) now scrapes the OR app activity
+  page's daily series and upserts one row per (date, app, model_id)
+  into a new `openrouter_daily` D1 table. `/v1/stats` exposes
+  `openrouter_daily.last_7d` (date / tokens / models_count per day)
+  and `openrouter_daily.top_models_30d` (top 10 by tokens).
+- **`auto_model_resolved` event.** Emitted to
+  `~/.freeride/events.jsonl` for every `model: "auto"` request that
+  successfully resolves; carries `resolved_model` and
+  `resolved_provider`. Visible via `freeride watch`.
+
 ## [0.4.0a2] — 2026-05-08
 
 Operator-experience release. New diagnostic CLIs (`doctor`, `keys`,
