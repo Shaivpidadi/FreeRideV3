@@ -6,19 +6,12 @@ model id. The chat route turns that into a concrete provider-specific
 id by reading the catalog FreeRide already aggregates for ``GET
 /v1/models``.
 
-Selection policy is intentionally simple in v1:
-
-  1. Walk the catalog in its existing rank order (aggregator already
-     orders by health / provider preference).
-  2. Skip entries whose ``available_providers`` are all currently
-     missing keys or have all keys on cooldown.
-  3. Return the first matching entry's ``id`` plus the provider name
-     to attribute it to.
-
-If nothing matches, return ``(None, None)`` and let the caller surface
-a structured 503. We deliberately don't fall back to a hard-coded
-"default" model — those go stale, which is the very thing this
-subsystem exists to fix.
+The resolver now ranks the catalog by a smart score (see
+:mod:`freeride.core.smart_routing`) that combines failover headroom
+with a soft popularity signal pulled from the public ``/v1/stats``
+endpoint. If that endpoint is unreachable, the score falls back to
+provider-count-only — which is exactly the old naïve behavior, so
+smart routing is a strict superset, never a hard dependency.
 """
 
 from __future__ import annotations
@@ -28,6 +21,7 @@ import os
 from typing import TYPE_CHECKING, Any
 
 from freeride.core.cooldown import KeyCooldown
+from freeride.core.smart_routing import fetch_leaderboard, rank_catalog
 
 if TYPE_CHECKING:
     from freeride.core.provider import Provider
@@ -86,6 +80,8 @@ def _available_provider_names(providers: list[Provider]) -> set[str]:
 def resolve_auto_model(
     providers: list[Provider],
     catalog: list[dict[str, Any]] | None,
+    *,
+    leaderboard: dict[str, int] | None = None,
 ) -> tuple[str | None, str | None]:
     """Pick (model_id, provider_name) for an ``auto`` request.
 
@@ -93,6 +89,13 @@ def resolve_auto_model(
     :func:`freeride.server.routes.models.get_or_fetch_catalog`. Callers
     pass an empty list (not None) to signal "no catalog yet" so the
     resolver short-circuits cleanly without trying to iterate.
+
+    Ranking uses :func:`freeride.core.smart_routing.rank_catalog`,
+    which scores each entry by failover headroom + a soft global
+    popularity signal pulled from the public ``/v1/stats`` endpoint.
+    The leaderboard is fetched and cached transparently; pass
+    ``leaderboard=`` explicitly only in tests where you want a
+    deterministic input.
     """
     if not catalog:
         logger.info("auto-model: catalog empty, cannot resolve")
@@ -103,16 +106,25 @@ def resolve_auto_model(
         logger.info("auto-model: no providers have usable keys right now")
         return None, None
 
-    for entry in catalog:
-        entry_providers = entry.get("available_providers") or []
-        for prov in entry_providers:
-            if prov in available:
-                return entry["id"], prov
+    if leaderboard is None:
+        leaderboard = fetch_leaderboard()
 
-    logger.info(
-        "auto-model: catalog has %d entries but none overlap with available "
-        "providers %s",
-        len(catalog),
-        sorted(available),
+    ranked = rank_catalog(catalog, available, leaderboard)
+    if not ranked:
+        logger.info(
+            "auto-model: catalog has %d entries but none overlap with available "
+            "providers %s",
+            len(catalog),
+            sorted(available),
+        )
+        return None, None
+
+    entry, intersect, score = ranked[0]
+    logger.debug(
+        "auto-model: picked %s via %s (score=%.2f, %d candidates considered)",
+        entry["id"],
+        intersect[0],
+        score,
+        len(ranked),
     )
-    return None, None
+    return entry["id"], intersect[0]

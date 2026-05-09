@@ -125,9 +125,53 @@ def test_resolve_handles_missing_available_providers_field(
         {"id": "broken-row"},  # no available_providers
         {"id": "good-row", "available_providers": ["openrouter"]},
     ]
-    model_id, provider = resolve_auto_model([_StubProvider("openrouter")], catalog)
+    model_id, provider = resolve_auto_model(
+        [_StubProvider("openrouter")], catalog, leaderboard={}
+    )
     assert model_id == "good-row"
     assert provider == "openrouter"
+
+
+# ─── smart-routing integration ────────────────────────────────────
+
+
+def test_resolve_prefers_higher_scored_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Demonstrates that the resolver actually consults the score —
+    when the catalog order would pick A but the score sends B to the
+    top, B wins. This is the regression test for the smart-routing
+    upgrade: previously the first-listed entry always won."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-stub")
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-stub")
+    catalog: list[dict[str, Any]] = [
+        # Listed first but only 1 provider, no popularity → score 10.
+        {"id": "first-listed", "available_providers": ["openrouter"]},
+        # Listed second but 2 providers + leaderboard hit → score 20 + bonus.
+        {"id": "popular-and-redundant", "available_providers": ["openrouter", "groq"]},
+    ]
+    leaderboard = {"popular-and-redundant": 5_000_000}
+    model_id, provider = resolve_auto_model(
+        [_StubProvider("openrouter"), _StubProvider("groq")],
+        catalog,
+        leaderboard=leaderboard,
+    )
+    assert model_id == "popular-and-redundant"
+
+
+def test_resolve_falls_back_to_first_when_no_popularity_signal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty leaderboard + tied provider counts → catalog order wins
+    (stable sort), matching the pre-smart-routing behavior. Confirms
+    no regression when the leaderboard is unreachable."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-stub")
+    catalog: list[dict[str, Any]] = [
+        {"id": "first", "available_providers": ["openrouter"]},
+        {"id": "second", "available_providers": ["openrouter"]},
+    ]
+    model_id, _ = resolve_auto_model(
+        [_StubProvider("openrouter")], catalog, leaderboard={}
+    )
+    assert model_id == "first"
 
 
 # ─── invalidate_catalog ──────────────────────────────────────────
