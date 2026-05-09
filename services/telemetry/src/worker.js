@@ -137,6 +137,34 @@ async function handleStats(env) {
      ORDER BY fetched_at DESC LIMIT 1`,
   ).first();
 
+  // Per-day per-model breakdown derived from the same OR scrape.
+  // Two rollups for callers that don't want to slice the raw rows:
+  //
+  //   last_7d        — tokens / model count per day, descending date
+  //   top_models_30d — biggest 10 models across both apps, last 30d
+  //
+  // Both pull from openrouter_daily; missing data (e.g. before the
+  // scraper started landing rows) just yields empty arrays.
+  const last7d = await env.DB.prepare(
+    `SELECT date,
+            SUM(tokens) AS tokens,
+            COUNT(DISTINCT model_id) AS models_count
+     FROM openrouter_daily
+     WHERE date >= date('now', '-7 days')
+     GROUP BY date
+     ORDER BY date DESC`,
+  ).all();
+
+  const topModels = await env.DB.prepare(
+    `SELECT model_id,
+            SUM(tokens) AS tokens
+     FROM openrouter_daily
+     WHERE date >= date('now', '-30 days')
+     GROUP BY model_id
+     ORDER BY tokens DESC
+     LIMIT 10`,
+  ).all();
+
   return json({
     object: "stats",
     as_of: new Date().toISOString(),
@@ -158,6 +186,10 @@ async function handleStats(env) {
           fetched_at: or.fetched_at,
         }
       : null,
+    openrouter_daily: {
+      last_7d: last7d.results ?? [],
+      top_models_30d: topModels.results ?? [],
+    },
   });
 }
 
@@ -191,7 +223,7 @@ const OR_APP_URLS = [
   },
 ];
 
-async function fetchOpenRouterAppTokens(url) {
+async function fetchOpenRouterAppHtml(url) {
   const resp = await fetch(url, {
     cf: { cacheTtl: 0 },
     headers: { "user-agent": "FreeRideTelemetryWorker/1.0" },
@@ -199,7 +231,10 @@ async function fetchOpenRouterAppTokens(url) {
   if (!resp.ok) {
     throw new Error(`HTTP ${resp.status} for ${url}`);
   }
-  const html = await resp.text();
+  return resp.text();
+}
+
+function extractTotalTokens(html) {
   // The SSR'd payload has `\"totalTokens\":NNNNNNNN` embedded as
   // escaped JSON inside an RSC streaming chunk. Loose pattern so it
   // survives benign formatting changes on OR's side.
@@ -207,33 +242,91 @@ async function fetchOpenRouterAppTokens(url) {
   return m ? parseInt(m[1], 10) : 0;
 }
 
+// Pull the per-day per-model breakdown the OR app page embeds. Each
+// day appears as `\"x\":\"YYYY-MM-DD ...\",\"ys\":{model:N, model:N}`.
+// Returns a flat list of {date, model_id, tokens}; the caller keys
+// it by app slug. We only emit entries with positive token counts —
+// OR sometimes includes models with zero, no point storing those.
+function parseOpenRouterDailyBreakdown(html) {
+  const out = [];
+  const dayRe =
+    /\\"x\\":\\"(\d{4}-\d{2}-\d{2})[^\\]*\\",\\"ys\\":\{([^}]+)\}/g;
+  for (const dayMatch of html.matchAll(dayRe)) {
+    const date = dayMatch[1];
+    const ysRaw = dayMatch[2];
+    const pairRe = /\\"([^\\"]+)\\":(\d+)/g;
+    for (const pairMatch of ysRaw.matchAll(pairRe)) {
+      const tokens = parseInt(pairMatch[2], 10);
+      if (tokens > 0) {
+        out.push({ date, model_id: pairMatch[1], tokens });
+      }
+    }
+  }
+  return out;
+}
+
 async function refreshOpenRouterAggregate(env) {
   const results = {};
+  const breakdownByApp = {};
   for (const { slug, url } of OR_APP_URLS) {
     try {
-      results[slug] = await fetchOpenRouterAppTokens(url);
+      const html = await fetchOpenRouterAppHtml(url);
+      results[slug] = extractTotalTokens(html);
+      breakdownByApp[slug] = parseOpenRouterDailyBreakdown(html);
     } catch (e) {
       console.error("openrouter scrape failed for", slug, e);
       // Use the last known value as a fallback so a transient OR
-      // outage doesn't reset the displayed number to zero.
+      // outage doesn't reset the displayed number to zero. Daily
+      // breakdown skipped on this slug — the previously stored rows
+      // remain untouched, so the recent days we already have keep
+      // serving /v1/stats.
       const prev = await env.DB.prepare(
         `SELECT ${slug}_tokens AS t FROM openrouter_aggregate
          ORDER BY fetched_at DESC LIMIT 1`,
       ).first();
       results[slug] = prev?.t ?? 0;
+      breakdownByApp[slug] = [];
     }
   }
   const v1 = results.v1 ?? 0;
   const v3 = results.v3 ?? 0;
   const combined = v1 + v3;
+  const now = Math.floor(Date.now() / 1000);
+
   await env.DB.prepare(
     `INSERT INTO openrouter_aggregate
        (fetched_at, v1_tokens, v3_tokens, combined_tokens)
      VALUES (?, ?, ?, ?)`,
   )
-    .bind(Math.floor(Date.now() / 1000), v1, v3, combined)
+    .bind(now, v1, v3, combined)
     .run();
-  return { v1, v3, combined };
+
+  // Upsert per-day per-model rows. (date, app, model_id) PK means
+  // re-running for the same day replaces the previous tokens count
+  // — that's what we want, since OR's page is the source of truth
+  // and may revise yesterday's rollup mid-day. Single batch keeps
+  // the round-trip count small even with ~50 rows.
+  const upserts = [];
+  for (const [app, rows] of Object.entries(breakdownByApp)) {
+    for (const { date, model_id, tokens } of rows) {
+      upserts.push(
+        env.DB.prepare(
+          `INSERT INTO openrouter_daily (date, app, model_id, tokens, scraped_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(date, app, model_id) DO UPDATE SET
+             tokens = excluded.tokens,
+             scraped_at = excluded.scraped_at`,
+        ).bind(date, app, model_id, tokens, now),
+      );
+    }
+  }
+  let daily_rows_written = 0;
+  if (upserts.length > 0) {
+    await env.DB.batch(upserts);
+    daily_rows_written = upserts.length;
+  }
+
+  return { v1, v3, combined, daily_rows_written };
 }
 
 export default {

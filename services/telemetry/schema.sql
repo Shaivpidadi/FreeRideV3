@@ -31,3 +31,29 @@ CREATE TABLE IF NOT EXISTS openrouter_aggregate (
   v3_tokens         INTEGER NOT NULL,     -- 30-day token count for FreeRideV3
   combined_tokens   INTEGER NOT NULL      -- v1_tokens + v3_tokens
 );
+
+-- Per-day per-model breakdown of OR app activity. The same scraper
+-- that populates openrouter_aggregate now also extracts the
+-- `{"x":"YYYY-MM-DD ...","ys":{"model":N, ...}}` series the OR app
+-- page embeds, and upserts one row per (date, app, model) here.
+-- Lets us answer "which models drove this week's traffic", "what's
+-- our daily token series", etc. — both for BD pitch material and
+-- for showing a richer chart on the marketing site.
+--
+-- (date, app, model_id) PK means upserts replace existing values
+-- for that bucket on every cron, so the OR-side rolling 30-day
+-- window naturally falls off as old days stop appearing in the page.
+CREATE TABLE IF NOT EXISTS openrouter_daily (
+  date              TEXT NOT NULL,        -- YYYY-MM-DD (UTC, OR's bucket)
+  app               TEXT NOT NULL,        -- 'v1' or 'v3'
+  model_id          TEXT NOT NULL,        -- e.g. 'qwen/qwen3-8b-04-28'
+  tokens            INTEGER NOT NULL,
+  scraped_at        INTEGER NOT NULL,     -- unix epoch seconds, last refresh
+  PRIMARY KEY (date, app, model_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_or_daily_date
+  ON openrouter_daily(date);
+
+CREATE INDEX IF NOT EXISTS idx_or_daily_model
+  ON openrouter_daily(model_id);
