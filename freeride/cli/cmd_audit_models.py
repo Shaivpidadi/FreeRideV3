@@ -18,7 +18,6 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from typing import Any
 
 from freeride.core.model_health import (
     CACHE_PATH,
