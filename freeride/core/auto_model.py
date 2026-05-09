@@ -82,6 +82,7 @@ def resolve_auto_model(
     catalog: list[dict[str, Any]] | None,
     *,
     leaderboard: dict[str, int] | None = None,
+    health_cache: dict[str, Any] | None = None,
 ) -> tuple[str | None, str | None]:
     """Pick (model_id, provider_name) for an ``auto`` request.
 
@@ -92,10 +93,13 @@ def resolve_auto_model(
 
     Ranking uses :func:`freeride.core.smart_routing.rank_catalog`,
     which scores each entry by failover headroom + a soft global
-    popularity signal pulled from the public ``/v1/stats`` endpoint.
-    The leaderboard is fetched and cached transparently; pass
-    ``leaderboard=`` explicitly only in tests where you want a
-    deterministic input.
+    popularity signal pulled from the public ``/v1/stats`` endpoint,
+    and (when ``health_cache`` is non-empty) a per-(provider,model)
+    runtime-health filter populated by ``freeride audit-models``.
+
+    Pass ``leaderboard=`` and ``health_cache=`` explicitly only in
+    tests where you want deterministic inputs — production callers
+    can pass ``None`` and get the cache-loaded defaults.
     """
     if not catalog:
         logger.info("auto-model: catalog empty, cannot resolve")
@@ -109,7 +113,17 @@ def resolve_auto_model(
     if leaderboard is None:
         leaderboard = fetch_leaderboard()
 
-    ranked = rank_catalog(catalog, available, leaderboard)
+    if health_cache is None:
+        from freeride.core.model_health import load_cache
+
+        health_cache = load_cache()  # may be {} — that's fine, equivalent to no filter
+
+    ranked = rank_catalog(
+        catalog,
+        available,
+        leaderboard,
+        health_cache=health_cache or None,
+    )
     if not ranked:
         logger.info(
             "auto-model: catalog has %d entries but none overlap with available "

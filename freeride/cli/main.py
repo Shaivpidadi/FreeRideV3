@@ -148,6 +148,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_doctor.add_argument("--no-color", action="store_true")
 
+    p_audit = sub.add_parser(
+        "audit-models",
+        help="Probe every catalog model and persist a per-(provider, model) "
+             "health verdict — feeds smart-routing so model='auto' can skip "
+             "broken/exhausted ids without paying the failover cost",
+    )
+    p_audit.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="Probe concurrency (default: 4). Higher = faster, but may "
+             "trip per-provider rate limits.",
+    )
+    p_audit.add_argument(
+        "--provider",
+        default=None,
+        help="Restrict to a single provider name (e.g. cerebras). Default: "
+             "all configured providers. Existing cache for other providers "
+             "is preserved.",
+    )
+    p_audit.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Only print the final summary line; suppress per-model rows",
+    )
+    p_audit.add_argument("--no-color", action="store_true")
+
     p_upgrade = sub.add_parser(
         "upgrade",
         help="Bump installed freeride-gateway to the latest PyPI release",
@@ -255,6 +282,11 @@ def main(argv: list[str] | None = None) -> int:
         from freeride.cli.cmd_doctor import cmd_doctor
 
         return cmd_doctor(args)
+
+    if args.command == "audit-models":
+        from freeride.cli.cmd_audit_models import cmd_audit_models
+
+        return cmd_audit_models(args)
 
     if args.command == "upgrade":
         from freeride.cli.cmd_upgrade import cmd_upgrade

@@ -138,6 +138,8 @@ def score_model(
     entry: dict[str, Any],
     available_providers: list[str],
     leaderboard: dict[str, int],
+    *,
+    health_cache: "dict[str, Any] | None" = None,
 ) -> float:
     """Score one catalog entry. Higher = better.
 
@@ -150,20 +152,40 @@ def score_model(
       the caller so we don't redo the cooldown lookup per row.
     - ``leaderboard`` is ``{model_id: tokens_30d}`` from
       :func:`fetch_leaderboard`. May be empty.
+    - ``health_cache`` is the model-health verdict from
+      :func:`freeride.core.model_health.load_cache`. If provided,
+      providers known-broken for this model id (per the most recent
+      ``freeride audit-models`` run) are filtered before headroom
+      is computed. ``None`` = no health filter.
 
     Score components (chosen so each one's max contribution is the
     same order of magnitude — neither dominates the other):
 
-    - 10 points per available provider (failover headroom)
+    - 10 points per **healthy** available provider (failover headroom)
     - log10(popularity + 1) * 5 bonus from the leaderboard
 
     With current numbers (top model ~5M tokens, log10≈6.7), the
     popularity bonus tops out at ~33 — about the same weight as
     having 3 available providers. That's intentional: the
     leaderboard nudges, the topology decides.
+
+    A model whose every available provider is known-broken returns
+    score 0.0 — same as having no providers at all.
     """
     if not available_providers:
         return 0.0
+    if health_cache is not None:
+        from freeride.core.model_health import is_model_known_broken
+
+        mid = entry.get("id", "")
+        healthy = [
+            p
+            for p in available_providers
+            if not is_model_known_broken(p, mid, cache=health_cache)
+        ]
+        if not healthy:
+            return 0.0
+        available_providers = healthy
     headroom = 10.0 * len(available_providers)
     pop = leaderboard.get(entry.get("id", ""), 0)
     popularity = math.log10(pop + 1) * 5.0
@@ -174,6 +196,8 @@ def rank_catalog(
     catalog: list[dict[str, Any]],
     available_provider_names: set[str],
     leaderboard: dict[str, int],
+    *,
+    health_cache: "dict[str, Any] | None" = None,
 ) -> list[tuple[dict[str, Any], list[str], float]]:
     """Return ``[(entry, intersect, score), ...]`` sorted by score
     descending. Entries with no overlap between their
@@ -191,7 +215,8 @@ def rank_catalog(
         intersect = [p for p in ent_providers if p in available_provider_names]
         if not intersect:
             continue
-        scored.append((entry, intersect, score_model(entry, intersect, leaderboard)))
+        s = score_model(entry, intersect, leaderboard, health_cache=health_cache)
+        scored.append((entry, intersect, s))
     # Stable sort by negative score so the existing catalog order is the
     # implicit tiebreaker — same model class twice in the catalog
     # keeps its registration order on equal scores.
