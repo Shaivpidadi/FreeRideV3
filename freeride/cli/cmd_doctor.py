@@ -198,6 +198,47 @@ def _format_check(c: _Check, *, no_color: bool) -> str:
     return line
 
 
+def _check_telemetry() -> _Check:
+    """Surface telemetry status so users see what's being sent and can
+    confirm the install-event / hourly-beacon loop is working.
+
+    Reports: enabled/disabled, install_id (truncated to first 8 chars
+    for privacy in screenshots), and the path of the persisted id.
+    Errors here are non-fatal — telemetry is opt-in.
+    """
+    try:
+        from freeride.core import telemetry
+
+        enabled = telemetry.is_enabled()
+        if not enabled:
+            return _Check(
+                "info",
+                "telemetry: off",
+                "opted out via `freeride telemetry off`",
+            )
+        try:
+            iid = telemetry.installation_id()
+            short = iid[:8] if iid else "?"
+        except Exception as e:
+            return _Check(
+                "warn",
+                "telemetry: enabled but installation_id read failed",
+                f"{e}",
+            )
+        return _Check(
+            "ok",
+            f"telemetry: on  (install_id={short}…)",
+            f"endpoint {telemetry.beacon_url()} · "
+            f"audit: `freeride telemetry`",
+        )
+    except Exception as e:
+        return _Check(
+            "warn",
+            "telemetry: status check failed",
+            f"{e}",
+        )
+
+
 def run_checks() -> list[_Check]:
     # Mirror what `freeride serve` does — load ~/.freeride/.env BEFORE
     # checking provider env vars so doctor agrees with the gateway's
@@ -212,6 +253,7 @@ def run_checks() -> list[_Check]:
     checks.append(_check_freeride_dir())
     checks.extend(_check_provider_env_vars())
     checks.extend(_check_port_or_gateway())
+    checks.append(_check_telemetry())
     return checks
 
 

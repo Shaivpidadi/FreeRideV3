@@ -57,3 +57,26 @@ CREATE INDEX IF NOT EXISTS idx_or_daily_date
 
 CREATE INDEX IF NOT EXISTS idx_or_daily_model
   ON openrouter_daily(model_id);
+
+-- One row per install — fired by install.sh / install.ps1 right after
+-- the freeride binary is on PATH, BEFORE the user runs anything. This
+-- is the source of truth for adoption / install velocity, since the
+-- existing `beacons` table only sees CLIs that have actually run
+-- `freeride serve` for >1h with telemetry on (which most one-shot or
+-- short-session users never reach).
+--
+-- PRIMARY KEY (installation_id) + INSERT OR IGNORE means re-running
+-- the installer is idempotent — first-install timestamp wins and we
+-- don't double-count. The install_id is the SAME UUIDv4 the gateway
+-- later persists at ~/.freeride/installation_id, so beacon rows can
+-- be correlated to their original install event by the same id.
+CREATE TABLE IF NOT EXISTS install_events (
+  installation_id   TEXT PRIMARY KEY,    -- UUIDv4
+  version           TEXT,                -- freeride version at install time
+  os                TEXT,                -- 'darwin' | 'linux' | 'windows' | 'other'
+  install_method    TEXT,                -- 'curl-sh' | 'powershell'
+  installed_at      INTEGER NOT NULL     -- unix epoch seconds, server-set
+);
+
+CREATE INDEX IF NOT EXISTS idx_install_events_installed_at
+  ON install_events(installed_at);

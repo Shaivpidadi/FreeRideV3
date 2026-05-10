@@ -76,6 +76,58 @@ else
     err "Install completed but the freeride binary couldn't be located. Try restarting your shell."
 fi
 
+# ---------------------------------------------------------------------------
+# Install-event beacon — fires once per installation, before the user has
+# even run `freeride serve`. Closes the gap where the existing hourly
+# beacon only sees CLIs that ran serve >1h with telemetry on.
+#
+# Best-effort: any failure is silent and never breaks the install.
+# Skipped entirely when --no-telemetry is passed or FREERIDE_TELEMETRY=off.
+# Reuses ~/.freeride/installation_id if present so re-installs don't
+# generate a new id (the gateway reads the same file at runtime, so
+# install events and beacons share the same UUID and can be correlated).
+# ---------------------------------------------------------------------------
+if [ "${FREERIDE_TELEMETRY:-on}" = "off" ] || [ "${1:-}" = "--no-telemetry" ]; then
+    :  # opted out — skip install-event
+else
+    INSTALL_ID_FILE="$HOME/.freeride/installation_id"
+    mkdir -p "$HOME/.freeride" 2>/dev/null || true
+
+    if [ -s "$INSTALL_ID_FILE" ]; then
+        INSTALL_ID="$(cat "$INSTALL_ID_FILE" 2>/dev/null | tr -d '[:space:]')"
+    else
+        if command -v uuidgen >/dev/null 2>&1; then
+            INSTALL_ID="$(uuidgen | tr 'A-Z' 'a-z')"
+        elif [ -r /proc/sys/kernel/random/uuid ]; then
+            INSTALL_ID="$(cat /proc/sys/kernel/random/uuid)"
+        else
+            INSTALL_ID="$(python3 -c "import uuid; print(uuid.uuid4())" 2>/dev/null || true)"
+        fi
+        if [ -n "$INSTALL_ID" ]; then
+            printf '%s' "$INSTALL_ID" > "$INSTALL_ID_FILE" 2>/dev/null || true
+            chmod 600 "$INSTALL_ID_FILE" 2>/dev/null || true
+        fi
+    fi
+
+    case "$(uname -s 2>/dev/null)" in
+        Darwin) OS_KIND="darwin" ;;
+        Linux)  OS_KIND="linux" ;;
+        *)      OS_KIND="other" ;;
+    esac
+
+    INSTALLED_VERSION="$(freeride --version 2>/dev/null \
+        | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[a-zA-Z0-9.+-]*' \
+        | head -1)"
+    INSTALLED_VERSION="${INSTALLED_VERSION:-unknown}"
+
+    if [ -n "$INSTALL_ID" ] && command -v curl >/dev/null 2>&1; then
+        curl -sS -m 5 -X POST https://api.free-ride.xyz/v1/install-event \
+            -H "content-type: application/json" \
+            -d "{\"installation_id\":\"$INSTALL_ID\",\"version\":\"$INSTALLED_VERSION\",\"os\":\"$OS_KIND\",\"install_method\":\"curl-sh\"}" \
+            >/dev/null 2>&1 || true
+    fi
+fi
+
 print ""
 print "Done. Next:"
 print " export OPENROUTER_API_KEY=sk-or-v1-... # get a free one at https://openrouter.ai/keys"

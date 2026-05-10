@@ -64,6 +64,52 @@ function sanitizeVersion(s) {
   return s;
 }
 
+// Allowed install methods. Anything else collapses to 'other' so we
+// keep the column tidy without rejecting otherwise-valid installs.
+const ALLOWED_INSTALL_METHODS = new Set(["curl-sh", "powershell", "other"]);
+
+async function handleInstallEvent(request, env) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ ok: false, error: "invalid_json" }, 400);
+  }
+  if (!body || typeof body !== "object") {
+    return json({ ok: false, error: "bad_payload" }, 400);
+  }
+
+  const installation_id = sanitizeUuid(body.installation_id);
+  if (!installation_id) {
+    return json({ ok: false, error: "invalid_installation_id" }, 400);
+  }
+
+  const os = ALLOWED_OS.has(body.os) ? body.os : "other";
+  const version = sanitizeVersion(body.version);
+  const install_method = ALLOWED_INSTALL_METHODS.has(body.install_method)
+    ? body.install_method
+    : "other";
+
+  // INSERT OR IGNORE: re-running the installer is idempotent. First
+  // install timestamp wins; we don't rewrite version on re-install
+  // (re-install would be a separate event type if we ever need it).
+  await env.DB.prepare(
+    `INSERT OR IGNORE INTO install_events
+       (installation_id, version, os, install_method, installed_at)
+     VALUES (?, ?, ?, ?, ?)`,
+  )
+    .bind(
+      installation_id,
+      version,
+      os,
+      install_method,
+      Math.floor(Date.now() / 1000),
+    )
+    .run();
+
+  return json({ ok: true });
+}
+
 async function handleBeacon(request, env) {
   let body;
   try {
@@ -165,6 +211,27 @@ async function handleStats(env) {
      LIMIT 10`,
   ).all();
 
+  // Install velocity from the install_events table (populated by
+  // install.sh / install.ps1, NOT by `freeride serve`). This is the
+  // honest install count — every CLI that ran the installer is here,
+  // regardless of whether the user later ran `freeride serve` long
+  // enough to fire a beacon.
+  const nowSec = Math.floor(Date.now() / 1000);
+  const installs = await env.DB.prepare(
+    `SELECT
+       COUNT(*) AS total,
+       COUNT(CASE WHEN installed_at > ? THEN 1 END) AS last_24h,
+       COUNT(CASE WHEN installed_at > ? THEN 1 END) AS last_7d,
+       COUNT(CASE WHEN installed_at > ? THEN 1 END) AS last_30d
+     FROM install_events`,
+  )
+    .bind(
+      nowSec - 24 * 3600,
+      nowSec - 7 * 24 * 3600,
+      nowSec - 30 * 24 * 3600,
+    )
+    .first();
+
   return json({
     object: "stats",
     as_of: new Date().toISOString(),
@@ -177,6 +244,12 @@ async function handleStats(env) {
       installations: day?.installations_24h ?? 0,
       tokens_served: day?.tokens_served_24h ?? 0,
       request_count: day?.request_count_24h ?? 0,
+    },
+    installs: {
+      total: installs?.total ?? 0,
+      last_24h: installs?.last_24h ?? 0,
+      last_7d: installs?.last_7d ?? 0,
+      last_30d: installs?.last_30d ?? 0,
     },
     openrouter_30d: or
       ? {
@@ -356,6 +429,14 @@ export default {
       }
     }
 
+    if (url.pathname === "/v1/install-event" && request.method === "POST") {
+      try {
+        return await handleInstallEvent(request, env);
+      } catch (e) {
+        return json({ ok: false, error: "internal" }, 500);
+      }
+    }
+
     if (url.pathname === "/v1/stats" && request.method === "GET") {
       try {
         return await handleStats(env);
@@ -477,6 +558,47 @@ elif [ -x "$HOME/.local/bin/freeride" ]; then
     print "Or add that line to your ~/.zshrc / ~/.bashrc."
 else
     err "Install completed but the freeride binary couldn't be located. Try restarting your shell."
+fi
+
+# ---------------------------------------------------------------------------
+# Install-event beacon — fires once per installation, before the user has
+# even run \`freeride serve\`. Closes the gap where the existing hourly
+# beacon only sees CLIs that ran serve >1h with telemetry on.
+# Best-effort: any failure is silent and never breaks the install.
+# ---------------------------------------------------------------------------
+if [ "\${FREERIDE_TELEMETRY:-on}" = "off" ] || [ "\${1:-}" = "--no-telemetry" ]; then
+    :
+else
+    INSTALL_ID_FILE="\$HOME/.freeride/installation_id"
+    mkdir -p "\$HOME/.freeride" 2>/dev/null || true
+    if [ -s "\$INSTALL_ID_FILE" ]; then
+        INSTALL_ID="\$(cat "\$INSTALL_ID_FILE" 2>/dev/null | tr -d '[:space:]')"
+    else
+        if command -v uuidgen >/dev/null 2>&1; then
+            INSTALL_ID="\$(uuidgen | tr 'A-Z' 'a-z')"
+        elif [ -r /proc/sys/kernel/random/uuid ]; then
+            INSTALL_ID="\$(cat /proc/sys/kernel/random/uuid)"
+        else
+            INSTALL_ID="\$(python3 -c "import uuid; print(uuid.uuid4())" 2>/dev/null || true)"
+        fi
+        if [ -n "\$INSTALL_ID" ]; then
+            printf '%s' "\$INSTALL_ID" > "\$INSTALL_ID_FILE" 2>/dev/null || true
+            chmod 600 "\$INSTALL_ID_FILE" 2>/dev/null || true
+        fi
+    fi
+    case "\$(uname -s 2>/dev/null)" in
+        Darwin) OS_KIND="darwin" ;;
+        Linux)  OS_KIND="linux" ;;
+        *)      OS_KIND="other" ;;
+    esac
+    INSTALLED_VERSION="\$(freeride --version 2>/dev/null | grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+[a-zA-Z0-9.+-]*' | head -1)"
+    INSTALLED_VERSION="\${INSTALLED_VERSION:-unknown}"
+    if [ -n "\$INSTALL_ID" ] && command -v curl >/dev/null 2>&1; then
+        curl -sS -m 5 -X POST https://api.free-ride.xyz/v1/install-event \\
+            -H "content-type: application/json" \\
+            -d "{\\"installation_id\\":\\"\$INSTALL_ID\\",\\"version\\":\\"\$INSTALLED_VERSION\\",\\"os\\":\\"\$OS_KIND\\",\\"install_method\\":\\"curl-sh\\"}" \\
+            >/dev/null 2>&1 || true
+    fi
 fi
 
 print ""
@@ -609,6 +731,52 @@ if ($freeride) {
     } else {
         Fail "Install completed but the freeride binary couldn't be located. Open a new PowerShell window and try again."
     }
+}
+
+# ---------------------------------------------------------------------------
+# Install-event beacon — fires once per installation, before the user has
+# even run \`freeride serve\`. Best-effort: any failure is silent and never
+# breaks the install.
+# ---------------------------------------------------------------------------
+$telemetryDisabled = (\$env:FREERIDE_TELEMETRY -eq "off")
+if (-not \$telemetryDisabled -and (\$args -contains "-NoTelemetry" -or \$args -contains "--no-telemetry")) {
+    \$telemetryDisabled = \$true
+}
+if (-not \$telemetryDisabled) {
+    try {
+        \$freerideDir = Join-Path \$env:USERPROFILE ".freeride"
+        \$installIdFile = Join-Path \$freerideDir "installation_id"
+        if (-not (Test-Path \$freerideDir)) {
+            New-Item -ItemType Directory -Path \$freerideDir -Force | Out-Null
+        }
+        if (Test-Path \$installIdFile) {
+            \$installId = (Get-Content \$installIdFile -ErrorAction SilentlyContinue).Trim()
+        }
+        if (-not \$installId) {
+            \$installId = ([guid]::NewGuid().ToString().ToLower())
+            Set-Content -Path \$installIdFile -Value \$installId -NoNewline -ErrorAction SilentlyContinue
+        }
+        \$installedVersion = "unknown"
+        try {
+            \$verLine = (& freeride --version 2>\$null) -join " "
+            if (\$verLine -match '(\\d+\\.\\d+\\.\\d+[a-zA-Z0-9.+-]*)') {
+                \$installedVersion = \$Matches[1]
+            }
+        } catch { }
+        \$payload = @{
+            installation_id = \$installId
+            version         = \$installedVersion
+            os              = "windows"
+            install_method  = "powershell"
+        } | ConvertTo-Json -Compress
+        Invoke-RestMethod \`
+            -Uri "https://api.free-ride.xyz/v1/install-event" \`
+            -Method POST \`
+            -ContentType "application/json" \`
+            -Body \$payload \`
+            -TimeoutSec 5 \`
+            -ErrorAction SilentlyContinue | Out-Null
+    } catch { }
 }
 
 Print ""

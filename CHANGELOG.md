@@ -6,6 +6,49 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+## [0.4.0a4] — 2026-05-10
+
+Adoption-tracking release. Closes the install-vs-token-served blind spot:
+the existing hourly beacon only sees CLIs that run `freeride serve` for
+>1h with telemetry on, so most one-shot or short-session users never
+report. We now fire a one-shot install event at install time and a
+startup beacon shortly after `serve` boots, so brief sessions are
+captured too.
+
+### Added
+- **One-shot install event from `install.sh` / `install.ps1`.** Runs
+  after the `freeride` binary is on PATH but before the user has
+  invoked anything; POSTs `{installation_id, version, os,
+  install_method}` to a new `POST /v1/install-event` endpoint on
+  api.free-ride.xyz, which writes one row to a new
+  `install_events` D1 table (PK `installation_id`, INSERT OR
+  IGNORE). Uses `~/.freeride/installation_id` as the source of
+  truth — same UUID the gateway later persists at runtime, so
+  install events and beacons share an id and can be correlated.
+  Best-effort; a failure of the POST never breaks the install.
+  Skipped when `--no-telemetry` is passed or `FREERIDE_TELEMETRY=off`.
+- **Startup beacon.** `freeride serve` now fires `ship_beacon()` once
+  about 30 seconds after lifespan startup, before entering the
+  hourly steady-state loop. Captures users who run the gateway for
+  less than an hour — previously invisible to adoption telemetry.
+- **`freeride doctor` surfaces telemetry status.** New row showing
+  on/off, install_id (truncated to 8 chars for screenshot privacy),
+  beacon endpoint, and the audit command. Honest disclosure of what
+  telemetry is sending.
+- **Install velocity in `/v1/stats`.** New `installs` block reports
+  `total`, `last_24h`, `last_7d`, `last_30d` from the
+  install_events table — independent of whether those CLIs ever
+  reached the beacon path. The marketing leaderboard and BD
+  pitches can now show "real installs" alongside "tokens served".
+
+### Internal
+- `services/telemetry/schema.sql`: new `install_events` table +
+  `idx_install_events_installed_at` index.
+- `services/telemetry/src/worker.js`: `handleInstallEvent`,
+  `/v1/install-event` route, `installs` block in `handleStats`,
+  embedded `INSTALL_SH` + `INSTALL_PS1` strings updated to match
+  the repo-root copies.
+
 ## [0.4.0a3] — 2026-05-09
 
 Smart-routing release. The `model: "auto"` keyword now resolves to a

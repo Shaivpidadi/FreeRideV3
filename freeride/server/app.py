@@ -26,6 +26,12 @@ from freeride.core.provider import Provider
 
 
 _TELEMETRY_INTERVAL_SECONDS = 3600  # hourly
+# Delay before firing the startup beacon. Long enough for the gateway
+# to settle past lifespan startup (provider registry, route mounting)
+# but short enough that even a 60-second `freeride serve` session
+# fires at least one beacon — closing the gap where users who run
+# serve briefly never report at all.
+_TELEMETRY_STARTUP_DELAY_SECONDS = 30
 
 
 logger = logging.getLogger("freeride.server")
@@ -45,22 +51,43 @@ def _configure_logging(*, verbose: bool) -> None:
 
 
 async def _telemetry_loop() -> None:
-    """Hourly opt-in beacon. Skips entirely while telemetry is disabled
-    (the user can flip it on/off without restarting the gateway —
-    ``is_enabled()`` re-reads ``~/.freeride/config.json`` each tick).
-    Errors are silent per spec.
+    """Opt-in beacon — fires once shortly after startup, then hourly.
+
+    The startup tick (after a 30-second settling delay) closes the gap
+    where short ``freeride serve`` sessions never run long enough to
+    hit the hourly tick. Without it, anyone who runs the gateway for
+    less than an hour is invisible to our adoption metrics.
+
+    Skips entirely while telemetry is disabled — ``is_enabled()`` re-
+    reads ``~/.freeride/config.json`` each tick, so the user can flip
+    it on/off without restarting the gateway. Errors are silent per
+    spec.
     """
-    while True:
+    try:
+        # Startup tick: settle, then fire once.
         try:
-            await asyncio.sleep(_TELEMETRY_INTERVAL_SECONDS)
+            await asyncio.sleep(_TELEMETRY_STARTUP_DELAY_SECONDS)
             if telemetry.is_enabled():
-                # Run the sync httpx call in a thread so we don't block
-                # the event loop on the network round-trip.
                 await asyncio.to_thread(telemetry.ship_beacon)
         except asyncio.CancelledError:
             return
         except Exception as e:
-            logger.debug("telemetry beacon failed: %s", e)
+            logger.debug("telemetry startup beacon failed: %s", e)
+
+        # Steady-state hourly loop.
+        while True:
+            try:
+                await asyncio.sleep(_TELEMETRY_INTERVAL_SECONDS)
+                if telemetry.is_enabled():
+                    # Run the sync httpx call in a thread so we don't block
+                    # the event loop on the network round-trip.
+                    await asyncio.to_thread(telemetry.ship_beacon)
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                logger.debug("telemetry beacon failed: %s", e)
+    except asyncio.CancelledError:
+        return
 
 
 @asynccontextmanager
