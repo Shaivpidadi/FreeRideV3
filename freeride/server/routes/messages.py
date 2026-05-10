@@ -1,0 +1,327 @@
+"""``POST /v1/messages`` — Anthropic Messages API compatibility shim.
+
+Lets Anthropic-format clients (Claude Code, ``@anthropic-ai/sdk``,
+LiteLLM with the Anthropic adapter, etc.) talk to FreeRide as if it
+were ``api.anthropic.com``. Internally we translate the request into
+OpenAI Chat Completions, dispatch it through the same provider
+failover machinery `/v1/chat/completions` uses, and translate the
+response back into Anthropic shape on the way out.
+
+**Phase 1 scope (this commit):**
+  - Non-streaming chat
+  - System prompt hoisting, text content blocks, stop_reason mapping,
+    usage mapping
+  - Tool definitions translate but tool_use is rejected with a clean
+    501 (deferred to Phase 3)
+  - Streaming is rejected with a clean 501 (deferred to Phase 2)
+
+The failover loop here mirrors `chat.py`'s non-streaming path. We
+inline rather than share to keep Phase 1 scope tight; a Phase 4
+cleanup will extract the loop into a shared helper so both routes
+stay in lockstep.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+
+import httpx
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
+
+from freeride.core.anthropic_schema import AnthropicMessagesRequest
+from freeride.core.anthropic_translate import (
+    UnsupportedContentBlock,
+    anthropic_to_openai_request,
+    openai_to_anthropic_response,
+    request_unsupported_for_phase_1,
+)
+from freeride.core.auto_model import is_auto_model, resolve_auto_model
+from freeride.core.cooldown import KeyCooldown
+from freeride.core.errors import ErrorKind
+from freeride.core.events import emit as emit_event
+from freeride.core.events import new_request_id
+from freeride.core.health import sort_by_health, sort_keys_by_health
+from freeride.core.provider import Provider
+from freeride.server.routes.chat import (
+    FailoverContext,
+    _apply_force_provider,
+    _build_503_detail,
+    _record_health,
+    _resolve_provider_chain,
+)
+from freeride.server.routes.models import get_or_fetch_catalog, invalidate_catalog
+
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+
+
+@router.post("/v1/messages")
+async def messages(request: Request, body: AnthropicMessagesRequest):
+    """Anthropic-format ``POST /v1/messages`` endpoint.
+
+    Phase 1: non-streaming, no tool_use, no images. Other shapes
+    return 501 Not Implemented with a message naming the future
+    phase that will support them.
+    """
+
+    # Phase-1 gate. Better to 501 cleanly than to half-implement and
+    # silently produce wrong output that Claude Code can't parse.
+    block_reason = request_unsupported_for_phase_1(body)
+    if block_reason is not None:
+        raise HTTPException(
+            status_code=501,
+            detail={
+                "type": "error",
+                "error": {
+                    "type": "not_implemented",
+                    "message": (
+                        f"FreeRide /v1/messages is in Phase 1 (non-streaming, "
+                        f"text-only chat). {block_reason}. Track Phase progress "
+                        f"at https://github.com/Shaivpidadi/FreeRideV3."
+                    ),
+                },
+            },
+        )
+
+    requested_model = body.model
+
+    # Translate to OpenAI shape. UnsupportedContentBlock surfaces as a
+    # 400 — caller sent a content type we can't handle.
+    try:
+        openai_request = anthropic_to_openai_request(body)
+    except UnsupportedContentBlock as e:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "type": "error",
+                "error": {"type": "invalid_request_error", "message": str(e)},
+            },
+        )
+
+    # ─── borrow the chat-route's failover plumbing ─────────────────
+    # Health-rank, force-provider override, build chain — all the
+    # same shape as /v1/chat/completions so smart-routing, cooldown,
+    # and per-key health all apply uniformly.
+    providers: list[Provider] = sort_by_health(list(request.app.state.providers))
+    providers, forced = _apply_force_provider(providers, request)
+    if forced is not None and not providers:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": (
+                        f"X-FreeRide-Force-Provider={forced!r} is not "
+                        "a registered provider."
+                    ),
+                    "registered": [p.name for p in request.app.state.providers],
+                },
+            },
+        )
+
+    ctx = FailoverContext(request_id=new_request_id())
+    emit_event(
+        "request_start",
+        request_id=ctx.request_id,
+        model=openai_request.model,
+        streaming=False,
+        endpoint="messages",
+    )
+
+    if not providers:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "type": "error",
+                "error": {
+                    "type": "api_error",
+                    "message": "No provider plugins registered.",
+                    "request_id": ctx.request_id,
+                },
+            },
+        )
+
+    cooldown = KeyCooldown()
+    chain = _resolve_provider_chain(providers)
+    if not chain:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "type": "error",
+                "error": {
+                    "type": "api_error",
+                    "message": (
+                        "No providers have usable (non-cooling) API keys "
+                        "for this request."
+                    ),
+                    "request_id": ctx.request_id,
+                    "suggestion": (
+                        "Set a provider env var (e.g. OPENROUTER_API_KEY) "
+                        "or wait for cooldowns to expire."
+                    ),
+                },
+            },
+        )
+
+    # auto-model resolution — same logic as the chat route.
+    if is_auto_model(openai_request.model):
+        catalog = await get_or_fetch_catalog(providers, group=True)
+        resolved_id, resolved_provider = resolve_auto_model(providers, catalog)
+        if resolved_id is None:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "type": "error",
+                    "error": {
+                        "type": "api_error",
+                        "message": (
+                            "model='auto' was requested but no provider has "
+                            "a usable model + key right now."
+                        ),
+                        "request_id": ctx.request_id,
+                    },
+                },
+            )
+        openai_request.model = resolved_id
+        emit_event(
+            "auto_model_resolved",
+            request_id=ctx.request_id,
+            resolved_model=resolved_id,
+            resolved_provider=resolved_provider,
+            endpoint="messages",
+        )
+
+    # ─── failover loop — non-streaming only in Phase 1 ─────────────
+    # Mirrors chat_completions(). Phase 4 will extract this into a
+    # shared helper.
+    chosen_provider: Provider | None = None
+    response_obj = None
+    for provider, keys in chain:
+        summary = ctx.attempt(provider.name)
+        ordered_keys = sort_keys_by_health(provider.name, keys)
+        for key_idx, key in enumerate(ordered_keys):
+            summary.keys_tried += 1
+            emit_event(
+                "provider_attempt",
+                request_id=ctx.request_id,
+                provider=provider.name,
+                key_index=key_idx,
+                model=openai_request.model,
+                streaming=False,
+                endpoint="messages",
+            )
+            t0 = time.perf_counter()
+            try:
+                response_obj = await provider.forward_chat(
+                    openai_request, openai_request.model, key
+                )
+            except httpx.HTTPStatusError as e:
+                duration_ms = int((time.perf_counter() - t0) * 1000)
+                kind = provider.classify_error(e.response)
+                if kind in (ErrorKind.RATE_LIMIT, ErrorKind.AUTH):
+                    cooldown.mark_rate_limited(provider.name, key)
+                summary.last_error = kind
+                if kind == ErrorKind.RATE_LIMIT:
+                    summary.retry_after_s = provider.retry_after_hint(e.response)
+                emit_event(
+                    "provider_response",
+                    request_id=ctx.request_id,
+                    provider=provider.name,
+                    key_index=key_idx,
+                    duration_ms=duration_ms,
+                    status=kind.value,
+                    endpoint="messages",
+                    **(
+                        {"retry_after_s": summary.retry_after_s}
+                        if summary.retry_after_s
+                        else {}
+                    ),
+                )
+                _record_health(
+                    provider.name, ok=False, duration_ms=duration_ms, key=key
+                )
+                if kind == ErrorKind.MODEL_NOT_FOUND:
+                    invalidate_catalog()
+                if kind in (ErrorKind.MODEL_NOT_FOUND, ErrorKind.QUOTA_EXHAUSTED):
+                    break
+                continue
+            except httpx.HTTPError as e:
+                duration_ms = int((time.perf_counter() - t0) * 1000)
+                summary.last_error = provider.classify_error(e)
+                emit_event(
+                    "provider_response",
+                    request_id=ctx.request_id,
+                    provider=provider.name,
+                    key_index=key_idx,
+                    duration_ms=duration_ms,
+                    status=summary.last_error.value,
+                    endpoint="messages",
+                )
+                _record_health(
+                    provider.name, ok=False, duration_ms=duration_ms, key=key
+                )
+                continue
+            except Exception as e:  # noqa: BLE001
+                duration_ms = int((time.perf_counter() - t0) * 1000)
+                logger.warning(
+                    "messages: provider %s raised %s", provider.name, e
+                )
+                summary.last_error = ErrorKind.UNKNOWN
+                _record_health(
+                    provider.name, ok=False, duration_ms=duration_ms, key=key
+                )
+                continue
+            duration_ms = int((time.perf_counter() - t0) * 1000)
+            emit_event(
+                "provider_response",
+                request_id=ctx.request_id,
+                provider=provider.name,
+                key_index=key_idx,
+                duration_ms=duration_ms,
+                status="ok",
+                endpoint="messages",
+            )
+            _record_health(
+                provider.name, ok=True, duration_ms=duration_ms, key=key
+            )
+            chosen_provider = provider
+            break
+        if response_obj is not None:
+            break
+
+    if response_obj is None or chosen_provider is None:
+        # Surface the 503 in Anthropic shape so SDK clients see a
+        # familiar error envelope.
+        raw = _build_503_detail(ctx)
+        raw_err = raw.get("error", {})
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "type": "error",
+                "error": {
+                    "type": "api_error",
+                    "message": raw_err.get("message", "All providers failed."),
+                    "request_id": ctx.request_id,
+                    "tried": raw_err.get("tried"),
+                    "suggestion": raw_err.get("suggestion"),
+                },
+            },
+        )
+
+    # Translate the response back into Anthropic shape. Echo the
+    # caller's requested model id (e.g. ``claude-sonnet-4-6``) so SDK
+    # clients see a familiar string; the actual routed provider is
+    # exposed via the ``X-FreeRide-Provider`` header.
+    anthropic_response = openai_to_anthropic_response(response_obj, requested_model)
+
+    return JSONResponse(
+        content=anthropic_response.model_dump(exclude_none=True),
+        headers={
+            "X-FreeRide-Provider": chosen_provider.name,
+            "X-FreeRide-Request-Id": ctx.request_id,
+        },
+    )
