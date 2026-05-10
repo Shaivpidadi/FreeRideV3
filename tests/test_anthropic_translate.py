@@ -409,18 +409,6 @@ def test_response_with_malformed_tool_args_yields_empty_input() -> None:
 # ─── Phase-1 unsupported-feature gate ────────────────────────────
 
 
-def test_streaming_request_blocked_in_phase_1() -> None:
-    req = AnthropicMessagesRequest(
-        model="claude-sonnet-4-6",
-        max_tokens=100,
-        messages=[{"role": "user", "content": "hi"}],
-        stream=True,
-    )
-    reason = request_unsupported_for_phase_1(req)
-    assert reason is not None
-    assert "stream" in reason.lower()
-
-
 def test_tool_request_blocked_in_phase_1() -> None:
     req = AnthropicMessagesRequest(
         model="claude-sonnet-4-6",
@@ -477,3 +465,254 @@ def test_plain_chat_passes_phase_1_gate() -> None:
         messages=[{"role": "user", "content": "hi"}],
     )
     assert request_unsupported_for_phase_1(req) is None
+
+
+def test_streaming_request_now_passes_phase_2_gate() -> None:
+    """Phase 2 ships streaming. The gate should now allow stream=true."""
+    req = AnthropicMessagesRequest(
+        model="claude-sonnet-4-6",
+        max_tokens=100,
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+    assert request_unsupported_for_phase_1(req) is None
+
+
+# ─── Phase 2: streaming SSE translation ──────────────────────────
+
+
+import json as _json  # noqa: E402
+
+from freeride.core.anthropic_translate import stream_openai_to_anthropic  # noqa: E402
+from freeride.core.chat_schema import (  # noqa: E402
+    ChatStreamEvent,
+    StreamChoice,
+    StreamDelta,
+)
+
+
+def _chunk(
+    *,
+    content: str | None = None,
+    finish_reason: str | None = None,
+    usage: Usage | None = None,
+    role_only: bool = False,
+) -> ChatStreamEvent:
+    """Build a synthetic OpenAI streaming chunk for the translator."""
+    delta = StreamDelta(role="assistant" if role_only else None, content=content)
+    return ChatStreamEvent(
+        id="chatcmpl-stub",
+        created=1234567890,
+        model="actual-resolved",
+        choices=[StreamChoice(index=0, delta=delta, finish_reason=finish_reason)],
+        usage=usage,
+    )
+
+
+async def _collect_sse_events(chunks_list: list[ChatStreamEvent], request_model: str = "claude-sonnet-4-6") -> list[tuple[str, dict]]:
+    """Run the translator over a list of synthetic chunks and return
+    [(event_name, payload_dict), ...] for assertion. Bytes are parsed
+    back so assertions are on semantic content, not wire bytes."""
+
+    async def chunks_iter():
+        for c in chunks_list:
+            yield c
+
+    parsed: list[tuple[str, dict]] = []
+    async for raw in stream_openai_to_anthropic(
+        chunks_iter(), request_model=request_model
+    ):
+        text = raw.decode("utf-8")
+        # Each emitted block is "event: <name>\ndata: <json>\n\n"
+        # so we pull both lines deterministically.
+        lines = text.strip().split("\n")
+        assert lines[0].startswith("event: "), f"bad SSE block: {text!r}"
+        assert lines[1].startswith("data: "), f"bad SSE block: {text!r}"
+        event_name = lines[0][len("event: "):]
+        data = _json.loads(lines[1][len("data: "):])
+        parsed.append((event_name, data))
+    return parsed
+
+
+@pytest.mark.asyncio
+async def test_stream_emits_correct_event_sequence() -> None:
+    """The minimum viable stream: role-only opener, two content
+    chunks, finish_reason on the third. Should emit:
+      message_start → content_block_start → content_block_delta(s)
+      → content_block_stop → message_delta → message_stop
+    """
+    chunks = [
+        _chunk(role_only=True),
+        _chunk(content="Hello"),
+        _chunk(content=" world"),
+        _chunk(content=None, finish_reason="stop"),
+    ]
+    events = await _collect_sse_events(chunks)
+    names = [e[0] for e in events]
+    assert names == [
+        "message_start",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_delta",
+        "content_block_stop",
+        "message_delta",
+        "message_stop",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stream_message_start_carries_request_model() -> None:
+    """The model echoed in message_start.message.model must be the
+    REQUESTED model (e.g. claude-sonnet-4-6), NOT the actual routed
+    free-tier model. SDK clients see a familiar string."""
+    chunks = [
+        _chunk(content="hi"),
+        _chunk(content=None, finish_reason="stop"),
+    ]
+    events = await _collect_sse_events(chunks, request_model="claude-sonnet-4-6")
+    name, payload = events[0]
+    assert name == "message_start"
+    assert payload["message"]["model"] == "claude-sonnet-4-6"
+    assert payload["message"]["id"].startswith("msg_")
+    assert payload["message"]["role"] == "assistant"
+    assert payload["message"]["type"] == "message"
+    assert payload["message"]["stop_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_stream_content_block_start_is_text_block_at_index_zero() -> None:
+    chunks = [
+        _chunk(content="x"),
+        _chunk(content=None, finish_reason="stop"),
+    ]
+    events = await _collect_sse_events(chunks)
+    name, payload = events[1]
+    assert name == "content_block_start"
+    assert payload == {
+        "type": "content_block_start",
+        "index": 0,
+        "content_block": {"type": "text", "text": ""},
+    }
+
+
+@pytest.mark.asyncio
+async def test_stream_content_deltas_are_text_delta_subtype() -> None:
+    chunks = [
+        _chunk(content="alpha"),
+        _chunk(content="beta"),
+        _chunk(content=None, finish_reason="stop"),
+    ]
+    events = await _collect_sse_events(chunks)
+    deltas = [e for e in events if e[0] == "content_block_delta"]
+    assert len(deltas) == 2
+    for _, payload in deltas:
+        assert payload["index"] == 0
+        assert payload["delta"]["type"] == "text_delta"
+    assert deltas[0][1]["delta"]["text"] == "alpha"
+    assert deltas[1][1]["delta"]["text"] == "beta"
+
+
+@pytest.mark.asyncio
+async def test_stream_message_delta_carries_stop_reason_and_usage() -> None:
+    chunks = [
+        _chunk(content="x"),
+        _chunk(content=None, finish_reason="stop"),
+        # NIM-style: usage on a final empty-choices chunk.
+        ChatStreamEvent(
+            id="x",
+            created=0,
+            model="m",
+            choices=[],
+            usage=Usage(prompt_tokens=12, completion_tokens=3, total_tokens=15),
+        ),
+    ]
+    events = await _collect_sse_events(chunks)
+    md = next(p for n, p in events if n == "message_delta")
+    assert md["delta"]["stop_reason"] == "end_turn"  # mapped from "stop"
+    assert md["usage"]["input_tokens"] == 12
+    assert md["usage"]["output_tokens"] == 3
+
+
+@pytest.mark.asyncio
+async def test_stream_max_tokens_finish_maps_correctly() -> None:
+    chunks = [
+        _chunk(content="truncated"),
+        _chunk(content=None, finish_reason="length"),
+    ]
+    events = await _collect_sse_events(chunks)
+    md = next(p for n, p in events if n == "message_delta")
+    assert md["delta"]["stop_reason"] == "max_tokens"
+
+
+@pytest.mark.asyncio
+async def test_stream_skips_role_only_chunks_without_emitting_empty_delta() -> None:
+    """A role-only opener (delta.role='assistant', no content) must
+    NOT emit a content_block_delta — that would be a zero-length
+    text_delta which Anthropic clients accept but is wasted bytes."""
+    chunks = [
+        _chunk(role_only=True),  # role only, no content
+        _chunk(content="real text"),
+        _chunk(content=None, finish_reason="stop"),
+    ]
+    events = await _collect_sse_events(chunks)
+    deltas = [e for e in events if e[0] == "content_block_delta"]
+    assert len(deltas) == 1
+    assert deltas[0][1]["delta"]["text"] == "real text"
+
+
+@pytest.mark.asyncio
+async def test_stream_handles_no_chunks_at_all() -> None:
+    """Edge case: provider returns zero useful chunks. We must still
+    emit the framing events so the client sees a complete (empty)
+    Anthropic message."""
+    events = await _collect_sse_events([])
+    names = [e[0] for e in events]
+    assert names == [
+        "message_start",
+        "content_block_start",
+        "content_block_stop",
+        "message_delta",
+        "message_stop",
+    ]
+    md = next(p for n, p in events if n == "message_delta")
+    assert md["delta"]["stop_reason"] == "end_turn"  # safe default
+
+
+@pytest.mark.asyncio
+async def test_stream_message_stop_is_terminal() -> None:
+    """No further events after message_stop. Anthropic's SSE format
+    relies on the client treating message_stop as the terminator
+    (no [DONE] sentinel like OpenAI)."""
+    chunks = [
+        _chunk(content="x"),
+        _chunk(content=None, finish_reason="stop"),
+    ]
+    events = await _collect_sse_events(chunks)
+    assert events[-1][0] == "message_stop"
+    assert events[-1][1] == {"type": "message_stop"}
+
+
+@pytest.mark.asyncio
+async def test_stream_event_format_has_event_and_data_lines() -> None:
+    """Verify wire bytes specifically — Anthropic's SSE format requires
+    BOTH 'event: <name>' AND 'data: <json>' on each event, separated
+    by '\\n\\n'. OpenAI's bare 'data:' lines are NOT what we emit."""
+
+    async def chunks_iter():
+        yield _chunk(content="hi")
+        yield _chunk(content=None, finish_reason="stop")
+
+    raw = b""
+    async for piece in stream_openai_to_anthropic(
+        chunks_iter(), request_model="claude-sonnet-4-6"
+    ):
+        raw += piece
+
+    text = raw.decode("utf-8")
+    # First event in the stream is message_start
+    assert text.startswith("event: message_start\n")
+    # Each event ends with two newlines
+    assert "\n\ndata:" not in text  # ensures every data: follows an event:
+    # The terminator is message_stop
+    assert "event: message_stop\ndata:" in text
+    assert text.rstrip().endswith('"type":"message_stop"}')

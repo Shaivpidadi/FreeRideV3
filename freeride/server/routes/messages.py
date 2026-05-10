@@ -7,18 +7,25 @@ OpenAI Chat Completions, dispatch it through the same provider
 failover machinery `/v1/chat/completions` uses, and translate the
 response back into Anthropic shape on the way out.
 
-**Phase 1 scope (this commit):**
-  - Non-streaming chat
-  - System prompt hoisting, text content blocks, stop_reason mapping,
-    usage mapping
-  - Tool definitions translate but tool_use is rejected with a clean
-    501 (deferred to Phase 3)
-  - Streaming is rejected with a clean 501 (deferred to Phase 2)
+**Phase 1 (shipped):** non-streaming chat, system prompt hoisting,
+text content blocks, stop_reason and usage mapping, tool-definition
+request-side translation.
 
-The failover loop here mirrors `chat.py`'s non-streaming path. We
-inline rather than share to keep Phase 1 scope tight; a Phase 4
-cleanup will extract the loop into a shared helper so both routes
-stay in lockstep.
+**Phase 2 (this commit):** streaming SSE. We pre-flight the first
+chunk through ``_try_stream_with_failover`` (same buffer-first-chunk
+guarantee the chat route uses), then a translator generator turns
+OpenAI streaming chunks into Anthropic SSE events
+(message_start / content_block_start / content_block_delta /
+content_block_stop / message_delta / message_stop). Text-only blocks
+in this phase; tool_use streaming lands in Phase 3.
+
+**Phase 3 (deferred):** tool_use blocks in messages, tool_result
+handling, the ``input_json_delta`` partial-JSON streaming state
+machine.
+
+The non-streaming failover loop is inlined to keep scope tight; a
+Phase 4 cleanup will extract the loop into a shared helper so both
+routes stay in lockstep.
 """
 
 from __future__ import annotations
@@ -26,9 +33,11 @@ from __future__ import annotations
 import logging
 import time
 
+from typing import AsyncIterator
+
 import httpx
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from freeride.core.anthropic_schema import AnthropicMessagesRequest
 from freeride.core.anthropic_translate import (
@@ -36,6 +45,7 @@ from freeride.core.anthropic_translate import (
     anthropic_to_openai_request,
     openai_to_anthropic_response,
     request_unsupported_for_phase_1,
+    stream_openai_to_anthropic,
 )
 from freeride.core.auto_model import is_auto_model, resolve_auto_model
 from freeride.core.cooldown import KeyCooldown
@@ -50,6 +60,7 @@ from freeride.server.routes.chat import (
     _build_503_detail,
     _record_health,
     _resolve_provider_chain,
+    _try_stream_with_failover,
 )
 from freeride.server.routes.models import get_or_fetch_catalog, invalidate_catalog
 
@@ -62,13 +73,12 @@ router = APIRouter()
 async def messages(request: Request, body: AnthropicMessagesRequest):
     """Anthropic-format ``POST /v1/messages`` endpoint.
 
-    Phase 1: non-streaming, no tool_use, no images. Other shapes
-    return 501 Not Implemented with a message naming the future
-    phase that will support them.
+    Phases 1+2: non-streaming and streaming chat (text-only blocks).
+    Tool use and images still gate to 501.
     """
 
-    # Phase-1 gate. Better to 501 cleanly than to half-implement and
-    # silently produce wrong output that Claude Code can't parse.
+    # Gate features we haven't shipped (tool_use, images). Streaming
+    # is now supported — Phase 2 just landed.
     block_reason = request_unsupported_for_phase_1(body)
     if block_reason is not None:
         raise HTTPException(
@@ -78,9 +88,8 @@ async def messages(request: Request, body: AnthropicMessagesRequest):
                 "error": {
                     "type": "not_implemented",
                     "message": (
-                        f"FreeRide /v1/messages is in Phase 1 (non-streaming, "
-                        f"text-only chat). {block_reason}. Track Phase progress "
-                        f"at https://github.com/Shaivpidadi/FreeRideV3."
+                        f"FreeRide /v1/messages: {block_reason}. Track Phase "
+                        f"progress at https://github.com/Shaivpidadi/FreeRideV3."
                     ),
                 },
             },
@@ -128,7 +137,7 @@ async def messages(request: Request, body: AnthropicMessagesRequest):
         "request_start",
         request_id=ctx.request_id,
         model=openai_request.model,
-        streaming=False,
+        streaming=body.stream,
         endpoint="messages",
     )
 
@@ -195,9 +204,23 @@ async def messages(request: Request, body: AnthropicMessagesRequest):
             endpoint="messages",
         )
 
-    # ─── failover loop — non-streaming only in Phase 1 ─────────────
+    # ─── streaming branch — Phase 2 ────────────────────────────────
+    # Reuses chat.py's _try_stream_with_failover for the
+    # buffer-first-chunk-then-fail-over guarantee. Translation is
+    # done by stream_openai_to_anthropic which consumes the
+    # ChatStreamEvent iterator and emits Anthropic-shape SSE events.
+    if body.stream:
+        return await _build_anthropic_stream_response(
+            chain=chain,
+            openai_request=openai_request,
+            cooldown=cooldown,
+            ctx=ctx,
+            requested_model=requested_model,
+        )
+
+    # ─── failover loop — non-streaming ─────────────────────────────
     # Mirrors chat_completions(). Phase 4 will extract this into a
-    # shared helper.
+    # shared helper so the chat and messages routes stay in lockstep.
     chosen_provider: Provider | None = None
     response_obj = None
     for provider, keys in chain:
@@ -323,5 +346,108 @@ async def messages(request: Request, body: AnthropicMessagesRequest):
         headers={
             "X-FreeRide-Provider": chosen_provider.name,
             "X-FreeRide-Request-Id": ctx.request_id,
+        },
+    )
+
+
+# ─── streaming response builder ────────────────────────────────────
+
+
+async def _build_anthropic_stream_response(
+    *,
+    chain: list,
+    openai_request,
+    cooldown: KeyCooldown,
+    ctx: FailoverContext,
+    requested_model: str,
+) -> StreamingResponse:
+    """Pre-flight first chunk through the chat-route's
+    ``_try_stream_with_failover``, then wrap the resulting
+    ChatStreamEvent iterator in a translator that emits Anthropic SSE.
+
+    The buffer-first-chunk semantics matter: if the first upstream
+    chunk fails, we can still failover to a different provider /
+    key. Once any byte has shipped to the client, we're committed —
+    a mid-stream upstream failure becomes a truncated stream from
+    the client's perspective (rare in practice; documented limit).
+    """
+    chosen, first_event, rest_or_err = await _try_stream_with_failover(
+        chain, openai_request, cooldown, ctx
+    )
+    if chosen is None:
+        # All providers failed before producing a first chunk.
+        emit_event(
+            "request_failed",
+            request_id=ctx.request_id,
+            phase="pre_first_chunk",
+            tried=[t.provider for t in ctx.tried],
+            endpoint="messages",
+        )
+        raw = _build_503_detail(ctx)
+        raw_err = raw.get("error", {})
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "type": "error",
+                "error": {
+                    "type": "api_error",
+                    "message": raw_err.get("message", "All providers failed."),
+                    "request_id": ctx.request_id,
+                    "tried": raw_err.get("tried"),
+                    "suggestion": raw_err.get("suggestion"),
+                },
+            },
+        )
+
+    rest_iter = rest_or_err  # AsyncIterator[ChatStreamEvent]
+
+    async def merged_chunks() -> AsyncIterator:
+        """Re-thread the first event back in front of the rest, so the
+        translator sees a single contiguous stream."""
+        yield first_event
+        try:
+            async for evt in rest_iter:
+                yield evt
+        except Exception as e:  # noqa: BLE001
+            # Mid-stream upstream error after the first chunk shipped.
+            # We can't undo bytes already on the wire, so we let the
+            # translator complete its event sequence (it'll emit a
+            # message_stop with whatever state it has) and log.
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "messages: mid-stream upstream error after first chunk: %s", e
+            )
+            emit_event(
+                "request_mid_stream_error",
+                request_id=ctx.request_id,
+                provider=chosen.name,
+                error=str(e)[:200],
+                endpoint="messages",
+            )
+
+    async def emit_anthropic_sse() -> AsyncIterator[bytes]:
+        async for byte_chunk in stream_openai_to_anthropic(
+            merged_chunks(), request_model=requested_model
+        ):
+            yield byte_chunk
+        emit_event(
+            "request_complete",
+            request_id=ctx.request_id,
+            provider=chosen.name,
+            streaming=True,
+            endpoint="messages",
+        )
+
+    return StreamingResponse(
+        emit_anthropic_sse(),
+        media_type="text/event-stream",
+        headers={
+            "X-FreeRide-Provider": chosen.name,
+            "X-FreeRide-Request-Id": ctx.request_id,
+            # Anthropic clients sometimes check for these — match the
+            # behavior of api.anthropic.com closely.
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
         },
     )
