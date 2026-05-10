@@ -409,19 +409,21 @@ def test_response_with_malformed_tool_args_yields_empty_input() -> None:
 # ─── Phase-1 unsupported-feature gate ────────────────────────────
 
 
-def test_tool_request_blocked_in_phase_1() -> None:
+def test_tool_request_passes_phase_3_gate() -> None:
+    """Phase 3 ships tool use — requests carrying a ``tools`` array
+    must no longer be rejected at the gate."""
     req = AnthropicMessagesRequest(
         model="claude-sonnet-4-6",
         max_tokens=100,
         messages=[{"role": "user", "content": "hi"}],
         tools=[{"name": "x", "input_schema": {}}],
     )
-    reason = request_unsupported_for_phase_1(req)
-    assert reason is not None
-    assert "tool" in reason.lower()
+    assert request_unsupported_for_phase_1(req) is None
 
 
-def test_tool_use_in_message_blocked_in_phase_1() -> None:
+def test_tool_use_in_message_passes_phase_3_gate() -> None:
+    """Phase 3: assistant messages with ``tool_use`` blocks must pass
+    the gate so they can be translated into OpenAI ``tool_calls``."""
     req = AnthropicMessagesRequest(
         model="claude-sonnet-4-6",
         max_tokens=100,
@@ -434,9 +436,7 @@ def test_tool_use_in_message_blocked_in_phase_1() -> None:
             }
         ],
     )
-    reason = request_unsupported_for_phase_1(req)
-    assert reason is not None
-    assert "tool" in reason.lower()
+    assert request_unsupported_for_phase_1(req) is None
 
 
 def test_image_in_message_blocked_in_phase_1() -> None:
@@ -716,3 +716,345 @@ async def test_stream_event_format_has_event_and_data_lines() -> None:
     # The terminator is message_stop
     assert "event: message_stop\ndata:" in text
     assert text.rstrip().endswith('"type":"message_stop"}')
+
+
+# ─── Phase 3: tool use translation ──────────────────────────────
+
+
+def test_translate_assistant_tool_use_becomes_openai_tool_calls() -> None:
+    """A single Anthropic assistant message carrying one ``tool_use``
+    block must translate to one OpenAI assistant message with one
+    ``tool_calls`` entry whose ``function.arguments`` is a JSON string
+    of the original ``input`` object."""
+    req = AnthropicMessagesRequest(
+        model="claude-sonnet-4-6",
+        max_tokens=100,
+        messages=[
+            {"role": "user", "content": "what's the weather in Berlin?"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "get_weather",
+                        "input": {"city": "Berlin", "units": "metric"},
+                    }
+                ],
+            },
+        ],
+    )
+    out = anthropic_to_openai_request(req)
+    assert len(out.messages) == 2
+    asst = out.messages[1]
+    assert asst.role == "assistant"
+    assert asst.tool_calls is not None
+    assert len(asst.tool_calls) == 1
+    tc = asst.tool_calls[0]
+    assert tc.id == "toolu_1"
+    assert tc.type == "function"
+    assert tc.function.name == "get_weather"
+    parsed = _json.loads(tc.function.arguments)
+    assert parsed == {"city": "Berlin", "units": "metric"}
+
+
+def test_translate_assistant_text_plus_tool_use_keeps_both() -> None:
+    """Assistant message that mixes a leading ``text`` block with a
+    trailing ``tool_use`` must become a single OpenAI message with both
+    ``content`` set and ``tool_calls`` populated — the OpenAI shape that
+    most providers expect for ``finish_reason=tool_calls``."""
+    req = AnthropicMessagesRequest(
+        model="claude-sonnet-4-6",
+        max_tokens=100,
+        messages=[
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Let me look that up."},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_a",
+                        "name": "search",
+                        "input": {"q": "freeride"},
+                    },
+                ],
+            }
+        ],
+    )
+    out = anthropic_to_openai_request(req)
+    assert len(out.messages) == 1
+    asst = out.messages[0]
+    assert asst.role == "assistant"
+    assert asst.content == "Let me look that up."
+    assert asst.tool_calls is not None and len(asst.tool_calls) == 1
+
+
+def test_translate_user_tool_result_becomes_role_tool_message() -> None:
+    """A user message with a single ``tool_result`` block must produce
+    one OpenAI ``role: tool`` message carrying the ``tool_use_id`` as
+    ``tool_call_id`` and the inner content as a string."""
+    req = AnthropicMessagesRequest(
+        model="claude-sonnet-4-6",
+        max_tokens=100,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_1",
+                        "content": "22°C, sunny",
+                    }
+                ],
+            }
+        ],
+    )
+    out = anthropic_to_openai_request(req)
+    assert len(out.messages) == 1
+    tool_msg = out.messages[0]
+    assert tool_msg.role == "tool"
+    assert tool_msg.tool_call_id == "toolu_1"
+    assert tool_msg.content == "22°C, sunny"
+
+
+def test_translate_user_tool_result_list_content_flattens_to_string() -> None:
+    """Anthropic accepts ``tool_result.content`` as a list of
+    ``{type:'text',text:...}`` blocks. The translator must flatten that
+    to a single string for OpenAI."""
+    req = AnthropicMessagesRequest(
+        model="claude-sonnet-4-6",
+        max_tokens=100,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_2",
+                        "content": [
+                            {"type": "text", "text": "line one"},
+                            {"type": "text", "text": "line two"},
+                        ],
+                    }
+                ],
+            }
+        ],
+    )
+    out = anthropic_to_openai_request(req)
+    assert out.messages[0].role == "tool"
+    assert out.messages[0].content == "line one\nline two"
+
+
+def test_translate_user_text_plus_tool_result_emits_two_messages_in_order() -> None:
+    """A user turn that carries BOTH a ``tool_result`` and follow-up
+    ``text`` must emit the tool message FIRST, then the user text —
+    OpenAI's chat history convention is that tool results precede the
+    next user turn so the model sees results before the question."""
+    req = AnthropicMessagesRequest(
+        model="claude-sonnet-4-6",
+        max_tokens=100,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_x",
+                        "content": "42",
+                    },
+                    {"type": "text", "text": "anything else?"},
+                ],
+            }
+        ],
+    )
+    out = anthropic_to_openai_request(req)
+    assert len(out.messages) == 2
+    assert out.messages[0].role == "tool"
+    assert out.messages[0].tool_call_id == "toolu_x"
+    assert out.messages[0].content == "42"
+    assert out.messages[1].role == "user"
+    assert out.messages[1].content == "anything else?"
+
+
+def test_translate_multiple_tool_results_one_message_per_id() -> None:
+    """Two ``tool_result`` blocks in one user message must expand to
+    two ``role:tool`` messages, one per ``tool_use_id``, in source
+    order."""
+    req = AnthropicMessagesRequest(
+        model="claude-sonnet-4-6",
+        max_tokens=100,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "id_a",
+                        "content": "result_a",
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "id_b",
+                        "content": "result_b",
+                    },
+                ],
+            }
+        ],
+    )
+    out = anthropic_to_openai_request(req)
+    assert len(out.messages) == 2
+    assert out.messages[0].tool_call_id == "id_a"
+    assert out.messages[0].content == "result_a"
+    assert out.messages[1].tool_call_id == "id_b"
+    assert out.messages[1].content == "result_b"
+
+
+# ─── Phase 3 streaming: tool_use block flow ─────────────────────
+
+
+def _tool_chunk(
+    *,
+    index: int = 0,
+    tc_id: str | None = None,
+    name: str | None = None,
+    args_piece: str | None = None,
+    finish_reason: str | None = None,
+) -> ChatStreamEvent:
+    """Build a synthetic OpenAI streaming chunk carrying a partial
+    tool_call delta (the way Groq/OR/NIM stream tool args)."""
+    tc: dict = {"index": index}
+    if tc_id is not None:
+        tc["id"] = tc_id
+    if name is not None or args_piece is not None:
+        tc["function"] = {}
+        if name is not None:
+            tc["function"]["name"] = name
+        if args_piece is not None:
+            tc["function"]["arguments"] = args_piece
+    delta = StreamDelta(tool_calls=[tc])
+    return ChatStreamEvent(
+        id="chatcmpl-stub",
+        created=0,
+        model="resolved-model",
+        choices=[StreamChoice(index=0, delta=delta, finish_reason=finish_reason)],
+    )
+
+
+@pytest.mark.asyncio
+async def test_stream_tool_call_emits_tool_use_block_and_input_json_delta() -> None:
+    """A streamed tool call must emit, in order:
+      content_block_start  (tool_use shell with id+name, input={})
+      content_block_delta  (input_json_delta, partial_json=<piece>) * N
+      content_block_stop
+    """
+    chunks = [
+        _tool_chunk(index=0, tc_id="toolu_1", name="get_weather", args_piece='{"city":'),
+        _tool_chunk(index=0, args_piece='"Berlin"}'),
+        _chunk(content=None, finish_reason="tool_calls"),
+    ]
+    events = await _collect_sse_events(chunks)
+    names = [n for n, _ in events]
+    assert names == [
+        "message_start",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_delta",
+        "content_block_stop",
+        "message_delta",
+        "message_stop",
+    ]
+    start = events[1][1]
+    assert start["index"] == 0
+    assert start["content_block"]["type"] == "tool_use"
+    assert start["content_block"]["id"] == "toolu_1"
+    assert start["content_block"]["name"] == "get_weather"
+    assert start["content_block"]["input"] == {}
+    d0 = events[2][1]
+    d1 = events[3][1]
+    assert d0["delta"]["type"] == "input_json_delta"
+    assert d0["delta"]["partial_json"] == '{"city":'
+    assert d1["delta"]["partial_json"] == '"Berlin"}'
+
+
+@pytest.mark.asyncio
+async def test_stream_tool_call_stop_reason_maps_to_tool_use() -> None:
+    """``finish_reason='tool_calls'`` must surface as
+    ``stop_reason='tool_use'`` in the message_delta."""
+    chunks = [
+        _tool_chunk(index=0, tc_id="t1", name="f", args_piece="{}"),
+        _chunk(content=None, finish_reason="tool_calls"),
+    ]
+    events = await _collect_sse_events(chunks)
+    md = next(p for n, p in events if n == "message_delta")
+    assert md["delta"]["stop_reason"] == "tool_use"
+
+
+@pytest.mark.asyncio
+async def test_stream_text_then_tool_use_transitions_block() -> None:
+    """Common shape: model emits a sentence, THEN a tool call. The
+    state machine must close the text block before opening the
+    tool_use block, and indices must advance monotonically."""
+    chunks = [
+        _chunk(content="Let me check."),
+        _tool_chunk(index=0, tc_id="t1", name="search", args_piece='{"q":"x"}'),
+        _chunk(content=None, finish_reason="tool_calls"),
+    ]
+    events = await _collect_sse_events(chunks)
+    names = [n for n, _ in events]
+    assert names == [
+        "message_start",
+        "content_block_start",   # text block, index 0
+        "content_block_delta",   # text_delta "Let me check."
+        "content_block_stop",    # close text
+        "content_block_start",   # tool_use block, index 1
+        "content_block_delta",   # input_json_delta
+        "content_block_stop",    # close tool_use
+        "message_delta",
+        "message_stop",
+    ]
+    text_start = events[1][1]
+    tool_start = events[4][1]
+    assert text_start["index"] == 0
+    assert text_start["content_block"]["type"] == "text"
+    assert tool_start["index"] == 1
+    assert tool_start["content_block"]["type"] == "tool_use"
+    assert tool_start["content_block"]["name"] == "search"
+
+
+@pytest.mark.asyncio
+async def test_stream_two_parallel_tool_calls_each_get_own_block() -> None:
+    """If the provider streams two parallel tool calls (indices 0 and
+    1), each must map to its own monotonic content-block index."""
+    chunks = [
+        _tool_chunk(index=0, tc_id="t0", name="a", args_piece='{"x":1}'),
+        _tool_chunk(index=1, tc_id="t1", name="b", args_piece='{"y":2}'),
+        _chunk(content=None, finish_reason="tool_calls"),
+    ]
+    events = await _collect_sse_events(chunks)
+    starts = [p for n, p in events if n == "content_block_start"]
+    assert len(starts) == 2
+    assert starts[0]["index"] == 0
+    assert starts[0]["content_block"]["name"] == "a"
+    assert starts[1]["index"] == 1
+    assert starts[1]["content_block"]["name"] == "b"
+    # Each tool block gets exactly one stop event
+    stops = [p for n, p in events if n == "content_block_stop"]
+    assert [s["index"] for s in stops] == [0, 1]
+
+
+@pytest.mark.asyncio
+async def test_stream_tool_call_with_no_args_piece_emits_no_input_delta() -> None:
+    """First chunk may carry id+name only (no arguments yet). The
+    translator must open the tool_use block but NOT emit a
+    zero-length input_json_delta — only emit deltas when there's
+    an actual argument fragment."""
+    chunks = [
+        _tool_chunk(index=0, tc_id="t1", name="f"),  # no args_piece
+        _tool_chunk(index=0, args_piece="{}"),
+        _chunk(content=None, finish_reason="tool_calls"),
+    ]
+    events = await _collect_sse_events(chunks)
+    deltas = [p for n, p in events if n == "content_block_delta"]
+    assert len(deltas) == 1
+    assert deltas[0]["delta"]["type"] == "input_json_delta"
+    assert deltas[0]["delta"]["partial_json"] == "{}"

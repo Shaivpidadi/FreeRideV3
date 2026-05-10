@@ -4,26 +4,32 @@ The shape of this is straightforward in the happy path (chat in,
 chat out), and gnarly in the long tail (tool use, streaming, vision,
 extended thinking, prompt caching).
 
-**Phase 1 (shipped):**
-  - Non-streaming chat
-  - System prompt hoisting (Anthropic top-level → OpenAI first
-    ``system`` message)
-  - Text-only content blocks
-  - stop_reason mapping
-  - usage mapping
-  - Tool definitions translate (request side); tool_use in responses
-    surfaces correctly when present.
+**Phase 1 (shipped):** non-streaming chat, system prompt hoisting,
+text-only content blocks, stop_reason + usage mapping, tool
+definition request-side translation.
 
-**Phase 2 (this commit):**
-  - Streaming SSE: consume OpenAI streaming chunks, emit Anthropic
-    SSE events (message_start / content_block_start /
-    content_block_delta / content_block_stop / message_delta /
-    message_stop). Text-only blocks for now; tool_use streaming
-    lands in Phase 3.
+**Phase 2 (shipped):** streaming SSE — emits
+message_start / content_block_start / content_block_delta /
+content_block_stop / message_delta / message_stop. Text-only blocks
+in that phase.
 
-**Phase 3 (deferred):**
-  - tool_use blocks in messages, tool_result handling, the
-    ``input_json_delta`` partial-JSON streaming state machine.
+**Phase 3 (this commit):** tool use end-to-end.
+  - ``tool_use`` blocks in assistant messages (input side) → OpenAI
+    ``tool_calls`` on the message.
+  - ``tool_result`` blocks in user messages (input side) → OpenAI
+    ``role: tool`` messages with ``tool_call_id``.
+  - Streaming tool calls — the gnarly part. OpenAI emits
+    ``tool_calls[index].function.arguments`` as partial-JSON deltas
+    across chunks; Anthropic expects an ``input_json_delta``
+    sub-type carrying the same fragments inside its
+    ``content_block_delta`` events, with one ``content_block_start``
+    per tool_use block carrying the tool id+name. The state machine
+    tracks block indices, transitions cleanly between text and
+    tool_use blocks, and closes the last open block before
+    ``message_delta``.
+
+**Deferred:** vision (image blocks), extended thinking blocks,
+``cache_control``.
 """
 
 from __future__ import annotations
@@ -153,21 +159,121 @@ def _translate_messages(
     anthropic_messages: list[Any],
 ) -> list[Message]:
     """Translate Anthropic message array → OpenAI Chat Completions
-    messages. Phase 1 handles text only; tool use is a Phase 3 concern.
+    messages.
+
+    Tool-use semantics differ subtly:
+
+    - Anthropic: assistant message ``content`` is an array that can
+      mix ``text`` and ``tool_use`` blocks; user message can mix
+      ``text`` and ``tool_result`` blocks.
+
+    - OpenAI: assistant message has separate ``content`` (string)
+      and ``tool_calls`` (array) fields; tool results are
+      ``role: tool`` messages, ONE PER tool_call_id, sent BEFORE
+      the next user message.
+
+    So a single Anthropic user message with two ``tool_result``
+    blocks expands into two OpenAI ``role: tool`` messages (plus
+    one user message if there's also text). The translation order
+    matters — tool messages must precede any text in the user turn
+    so the model sees the results before the follow-up.
     """
+    from freeride.core.chat_schema import ToolCall, ToolCallFunction
+
     out: list[Message] = []
     for m in anthropic_messages:
         # AnthropicMessage Pydantic instance OR dict — be permissive.
         role = m.role if hasattr(m, "role") else m["role"]
         content = m.content if hasattr(m, "content") else m["content"]
-        text, tool_blocks = _flatten_anthropic_content(content)
-        if tool_blocks:
-            raise UnsupportedContentBlock(
-                "tool_use / tool_result blocks are deferred to Phase 3"
+
+        # Plain string content (no blocks) — simplest case.
+        if isinstance(content, str):
+            out.append(Message(role=role, content=content))
+            continue
+
+        # Block-array content. Separate by block type so we can build
+        # the matching OpenAI message structure.
+        text_parts: list[str] = []
+        tool_use_blocks: list[dict[str, Any]] = []
+        tool_result_blocks: list[dict[str, Any]] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "text":
+                t = block.get("text") or ""
+                if t:
+                    text_parts.append(t)
+            elif btype == "tool_use":
+                tool_use_blocks.append(block)
+            elif btype == "tool_result":
+                tool_result_blocks.append(block)
+            elif btype == "image":
+                raise UnsupportedContentBlock(
+                    "image content blocks are deferred to a later phase"
+                )
+            elif btype in ("document", "search_result", "container_upload") or (
+                isinstance(btype, str) and btype.endswith("_tool_result")
+            ):
+                raise UnsupportedContentBlock(
+                    f"content block type {btype!r} is not supported"
+                )
+            elif btype in ("thinking", "redacted_thinking"):
+                continue
+            # Unknown types: forward-compat — drop silently.
+
+        text = "\n".join(text_parts) if text_parts else None
+
+        # Tool results: emit ONE OpenAI tool-role message per
+        # tool_use_id, in the order they appear in the Anthropic block
+        # array. Anthropic's `content` field of a tool_result can be a
+        # string OR a list of dicts (text blocks); we flatten to a
+        # string for OpenAI.
+        for tr in tool_result_blocks:
+            tr_content = tr.get("content", "")
+            if isinstance(tr_content, list):
+                # list of {type:"text",text:"..."} blocks
+                pieces: list[str] = []
+                for b in tr_content:
+                    if isinstance(b, dict) and b.get("type") == "text":
+                        pieces.append(b.get("text") or "")
+                tr_content_str = "\n".join(pieces)
+            else:
+                tr_content_str = str(tr_content) if tr_content is not None else ""
+
+            out.append(
+                Message(
+                    role="tool",
+                    content=tr_content_str,
+                    tool_call_id=tr.get("tool_use_id", ""),
+                )
             )
-        # OpenAI roles for a normal chat: 'user' or 'assistant' (we
-        # don't translate to 'tool' until Phase 3).
-        out.append(Message(role=role, content=text))
+
+        # The original assistant or user message. tool_use blocks (only
+        # legal in assistant role) become OpenAI tool_calls. Text
+        # becomes content.
+        if role == "assistant" and tool_use_blocks:
+            tool_calls_list = [
+                ToolCall(
+                    id=b.get("id", ""),
+                    type="function",
+                    function=ToolCallFunction(
+                        name=b.get("name", ""),
+                        arguments=json.dumps(b.get("input") or {}),
+                    ),
+                )
+                for b in tool_use_blocks
+            ]
+            out.append(Message(role=role, content=text, tool_calls=tool_calls_list))
+        elif text is not None:
+            # Plain text message (user or assistant)
+            out.append(Message(role=role, content=text))
+        elif not tool_result_blocks:
+            # Empty message with no tool_result either — emit empty
+            # content so the message exists in the array (Llama models
+            # accept empty messages; rejecting would over-validate).
+            out.append(Message(role=role, content=""))
+
     return out
 
 
@@ -359,25 +465,28 @@ def request_unsupported_for_phase_1(req: AnthropicMessagesRequest) -> str | None
     clean 501 instead of producing partial / wrong results.
 
     Returns None if the request is serviceable by phases shipped so
-    far. Streaming is now (Phase 2) supported; tool_use and images
-    still gate.
+    far. Streaming (Phase 2) and tool use (Phase 3) are now
+    supported; images and documents still gate.
+
+    (Function name preserved from Phase 1 to avoid an unnecessary
+    rename touching every caller; semantically this is now
+    "request_uses_unshipped_features".)
     """
-    if req.tools:
-        # Tool definitions translate, but tool_use blocks in input
-        # don't yet — and a model that picks a tool_call confuses the
-        # response translator. Reject all tool requests for now.
-        return "tool_use is deferred to Phase 3"
-    # Walk content blocks for tool_use / tool_result presence
+    # Walk content blocks for image presence (still deferred). Tool
+    # use and streaming are no longer gated.
     for m in req.messages:
         content = m.content
         if isinstance(content, list):
             for block in content:
                 if isinstance(block, dict):
                     t = block.get("type")
-                    if t in ("tool_use", "tool_result"):
-                        return "tool_use is deferred to Phase 3"
                     if t == "image":
                         return "image content blocks are deferred to a later phase"
+                    if t in ("document", "search_result", "container_upload"):
+                        return (
+                            f"content block type {t!r} requires Anthropic-side "
+                            "infra not available through FreeRide"
+                        )
     return None
 
 
@@ -408,25 +517,28 @@ async def stream_openai_to_anthropic(
     https://platform.claude.com/docs/en/api/messages-streaming :
 
       1. message_start
-      2. content_block_start              (text block, index 0)
-      3. content_block_delta * N          (one per chunk with content)
-      4. content_block_stop
-      5. message_delta                    (final stop_reason + usage)
-      6. message_stop
+      2. (per content block — text or tool_use:)
+         content_block_start      — text block or tool_use shell
+         content_block_delta * N  — text_delta or input_json_delta
+         content_block_stop       — close the block
+      3. message_delta            — stop_reason + cumulative usage
+      4. message_stop
 
-    Phase 2 only emits a single text content block. Phase 3 will add
-    tool_use blocks (each with its own content_block_start /
-    input_json_delta * N / content_block_stop sub-flow).
+    Phase 3 supports text AND tool_use blocks, including the
+    sub-flow when a model emits text BEFORE calling a tool. The
+    state machine tracks one ``current_index`` (monotonic counter)
+    and one ``current_kind`` (``text`` | ``tool_use`` | None);
+    transitions close the previous block before opening the next.
 
-    The OpenAI side may emit:
-      - role-only first delta (delta.role="assistant")  → swallowed
-      - delta.content chunks                            → text_delta
-      - finish_reason on the last choice                → captured for
-                                                          message_delta
-      - a final chunk with empty choices and usage      → captured for
-                                                          message_delta
-      - [DONE] sentinel                                 → handled at
-                                                          provider layer
+    OpenAI tool_calls stream as partial JSON in
+    ``delta.tool_calls[i].function.arguments`` — the first chunk
+    for a given index carries the tool ``id`` and ``name`` and
+    the args fragment, subsequent chunks carry only args. We map
+    OpenAI's per-call ``index`` to our monotonic ``content_block``
+    index, so two parallel tool_calls become two sequential
+    Anthropic blocks (parallel-tool-use is rare in practice on
+    free providers; sequential rendering matches what Anthropic's
+    own API does today).
     """
     msg_id = _new_message_id()
 
@@ -447,37 +559,124 @@ async def stream_openai_to_anthropic(
         },
     )
 
-    yield _sse_event(
-        "content_block_start",
-        {
-            "type": "content_block_start",
-            "index": 0,
-            "content_block": {"type": "text", "text": ""},
-        },
-    )
+    # State machine -----------------------------------------------
+    current_index = -1  # last-emitted block index; bumps on each open
+    current_kind: str | None = None  # 'text' | 'tool_use' | None
+    # Map OpenAI tool_calls[i].index → our content_block index
+    tool_call_to_block: dict[int, int] = {}
 
     finish_reason: str | None = None
     last_usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
 
+    async def _close_current() -> bytes | None:
+        nonlocal current_kind
+        if current_kind is None:
+            return None
+        out = _sse_event(
+            "content_block_stop",
+            {"type": "content_block_stop", "index": current_index},
+        )
+        current_kind = None
+        return out
+
     async for chunk in chunks:
-        # chunk is a ChatStreamEvent (or dict; tolerate both for tests)
         choices = chunk.choices if hasattr(chunk, "choices") else chunk.get("choices") or []
 
         for choice in choices:
             delta = choice.delta if hasattr(choice, "delta") else choice.get("delta") or {}
+
+            # ─── text content ───────────────────────────────
             content_piece = (
                 delta.content if hasattr(delta, "content") else delta.get("content")
             )
             if content_piece:
+                # Transition: open a text block if not already open.
+                if current_kind != "text":
+                    if current_kind is not None:
+                        closed = await _close_current()
+                        if closed:
+                            yield closed
+                    current_index += 1
+                    current_kind = "text"
+                    yield _sse_event(
+                        "content_block_start",
+                        {
+                            "type": "content_block_start",
+                            "index": current_index,
+                            "content_block": {"type": "text", "text": ""},
+                        },
+                    )
                 yield _sse_event(
                     "content_block_delta",
                     {
                         "type": "content_block_delta",
-                        "index": 0,
+                        "index": current_index,
                         "delta": {"type": "text_delta", "text": content_piece},
                     },
                 )
 
+            # ─── tool calls ─────────────────────────────────
+            tool_calls = (
+                delta.tool_calls
+                if hasattr(delta, "tool_calls")
+                else delta.get("tool_calls")
+            )
+            if tool_calls:
+                for tc in tool_calls:
+                    # tc is a dict per ChatStreamEvent's
+                    # StreamDelta.tool_calls type; access defensively
+                    if hasattr(tc, "model_dump"):
+                        tc = tc.model_dump()
+                    elif not isinstance(tc, dict):
+                        continue
+
+                    oai_index = tc.get("index", 0)
+                    fn = tc.get("function") or {}
+                    args_piece = fn.get("arguments")
+
+                    if oai_index not in tool_call_to_block:
+                        # New tool block — close any open block,
+                        # open a tool_use shell with id+name (which
+                        # the first chunk for this index should
+                        # carry; if name is empty here it'll just be
+                        # empty in the start event, the SDK still
+                        # accepts that).
+                        if current_kind is not None:
+                            closed = await _close_current()
+                            if closed:
+                                yield closed
+                        current_index += 1
+                        current_kind = "tool_use"
+                        tool_call_to_block[oai_index] = current_index
+                        yield _sse_event(
+                            "content_block_start",
+                            {
+                                "type": "content_block_start",
+                                "index": current_index,
+                                "content_block": {
+                                    "type": "tool_use",
+                                    "id": tc.get("id") or "",
+                                    "name": fn.get("name") or "",
+                                    "input": {},
+                                },
+                            },
+                        )
+
+                    block_index = tool_call_to_block[oai_index]
+                    if args_piece:
+                        yield _sse_event(
+                            "content_block_delta",
+                            {
+                                "type": "content_block_delta",
+                                "index": block_index,
+                                "delta": {
+                                    "type": "input_json_delta",
+                                    "partial_json": args_piece,
+                                },
+                            },
+                        )
+
+            # finish_reason on this choice
             choice_finish = (
                 choice.finish_reason
                 if hasattr(choice, "finish_reason")
@@ -486,9 +685,7 @@ async def stream_openai_to_anthropic(
             if choice_finish:
                 finish_reason = choice_finish
 
-        # Usage may arrive on a final choices=[] chunk (NIM does this;
-        # OpenAI does it when stream_options.include_usage=true). We
-        # forward whatever's most recent.
+        # Usage from the chunk (may arrive on a final choices=[] chunk)
         usage = chunk.usage if hasattr(chunk, "usage") else chunk.get("usage")
         if usage is not None:
             input_t = (
@@ -506,13 +703,31 @@ async def stream_openai_to_anthropic(
                 "output_tokens": int(output_t or 0),
             }
 
-    # End the (single) content block
-    yield _sse_event(
-        "content_block_stop",
-        {"type": "content_block_stop", "index": 0},
-    )
+    # End of stream: close any block we opened. If we opened NOTHING
+    # (no text, no tool — e.g. provider returned a finish_reason
+    # immediately), open and close a zero-length text block so the
+    # Anthropic-shape message is always well-formed (content !=
+    # empty-without-stop).
+    if current_kind is None:
+        current_index += 1
+        yield _sse_event(
+            "content_block_start",
+            {
+                "type": "content_block_start",
+                "index": current_index,
+                "content_block": {"type": "text", "text": ""},
+            },
+        )
+        yield _sse_event(
+            "content_block_stop",
+            {"type": "content_block_stop", "index": current_index},
+        )
+    else:
+        closed = await _close_current()
+        if closed:
+            yield closed
 
-    # Final usage + stop_reason
+    # Final message_delta + message_stop
     yield _sse_event(
         "message_delta",
         {
