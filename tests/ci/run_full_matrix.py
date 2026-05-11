@@ -58,7 +58,7 @@ def _run_phase(phase_name: str, script: str, ref: str, extra_args: list[str]) ->
         out = proc.stdout + ("\n--STDERR--\n" + proc.stderr if proc.stderr.strip() else "")
         return phase_name, proc.returncode, out, time.perf_counter() - t0
     except subprocess.TimeoutExpired:
-        return phase_name, 124, f"<TIMEOUT after 20 min>\n", time.perf_counter() - t0
+        return phase_name, 124, "<TIMEOUT after 20 min>\n", time.perf_counter() - t0
     except Exception as e:  # noqa: BLE001
         return phase_name, 1, f"<orchestrator raised {type(e).__name__}: {e}>\n", time.perf_counter() - t0
 

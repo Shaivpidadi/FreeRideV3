@@ -98,3 +98,10 @@ addopts = "-m 'not e2e'"
 markers = [
     "e2e: end-to-end tests against real agents and live providers (slow, network-bound)",
 ]
+# tests/ci/ is the Daytona-sandbox CI matrix (test_normal_flow.py etc.).
+# Those are STANDALONE Python scripts that happen to start with test_;
+# they're invoked directly (`python tests/ci/test_<phase>.py`), NOT via
+# pytest, and they import the daytona SDK which isn't a unit-test dep.
+# Pytest would otherwise auto-collect them and fail at import / fixture-
+# resolution time.
+norecursedirs = ["tests/ci"]

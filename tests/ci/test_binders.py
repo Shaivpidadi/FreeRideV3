@@ -40,7 +40,6 @@ from _daytona_lib import (
     step_launch_gateway,
     step_upload_env,
     step_wait_for_health,
-    timed,
 )
 
 
@@ -115,7 +114,7 @@ def _check_config_file(
                 label=label,
                 passed=False,
                 duration_s=duration,
-                detail=f"YAML invalid",
+                detail="YAML invalid",
                 stdout_tail=(v.result or "")[-300:],
             )
     if check_json:
@@ -127,7 +126,7 @@ def _check_config_file(
                 label=label,
                 passed=False,
                 duration_s=duration,
-                detail=f"JSON invalid",
+                detail="JSON invalid",
                 stdout_tail=(v.result or "")[-300:],
             )
 

@@ -43,7 +43,6 @@ import time
 from _daytona_lib import (
     PATH_PREFIX,
     PhaseReport,
-    StepResult,
     ephemeral_sandbox,
     step_install_freeride,
     step_install_uv,

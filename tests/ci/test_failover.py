@@ -28,9 +28,7 @@ import sys
 import time
 
 from _daytona_lib import (
-    PATH_PREFIX,
     PhaseReport,
-    StepResult,
     ephemeral_sandbox,
     post_chat,
     step_install_freeride,
@@ -78,7 +76,6 @@ def step_chat_with_failover(sandbox):
     """Send a chat request that SHOULD fail OR first then succeed on
     the next provider. Use a Groq-known model since OR has an invalid
     key. Force-route is NOT used — we want the normal failover flow."""
-    t0 = time.perf_counter()
     status, body, headers = post_chat(
         sandbox,
         body={
@@ -92,7 +89,7 @@ def step_chat_with_failover(sandbox):
         return False, f"HTTP {status} — failover did NOT recover", _json.dumps(detail)[:300]
     provider = headers.get("x-freeride-provider", "?")
     if provider == "openrouter":
-        return False, f"served via openrouter — invalid key not detected", ""
+        return False, "served via openrouter — invalid key not detected", ""
     choices = body.get("choices") or []
     text = ""
     if choices and isinstance(choices[0], dict):

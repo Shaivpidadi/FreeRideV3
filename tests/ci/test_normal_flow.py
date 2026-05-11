@@ -26,7 +26,6 @@ import time
 
 from _daytona_lib import (
     PhaseReport,
-    StepResult,
     ephemeral_sandbox,
     post_chat,
     step_install_freeride,
