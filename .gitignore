@@ -39,3 +39,8 @@ freeride.egg-info/
 # locally and fill in your own values.
 services/telemetry/wrangler.toml
 /.env
+
+# Skill installs via npx (per-developer choice, not vendored)
+.agents/
+skills-lock.json
+skills/
