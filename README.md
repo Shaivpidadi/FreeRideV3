@@ -108,6 +108,19 @@ Per request, FreeRide walks `(provider, key)` pairs in order:
 
 Streaming uses buffer-first-chunk failover: hold the first SSE event until upstream confirms the stream is real. If it fails before the first chunk, retry. After the first chunk has shipped, mid-stream errors propagate (rare; documented).
 
+### Recommended: run `freeride audit-models` after install
+
+Providers list models they can't always serve. NVIDIA NIM lists Gemma-3-27B but sometimes returns 500. HuggingFace lists models that need PRO credits. The smart-router doesn't know which entries are real until it tries.
+
+```bash
+freeride audit-models                  # probe every catalog model, ~30s
+freeride audit-models --provider groq  # one provider only
+```
+
+This writes `~/.freeride/cache/model_health.json` that the smart-router reads at request time, so `model: "auto"` skips known-broken upstream models without paying a failover-attempt cost. Re-run after big provider changes or if you start seeing surprising 503s.
+
+Stale cache (older than 24h) is auto-refreshed on the next request, but a manual audit-models run is faster than discovering staleness mid-request.
+
 ## Telemetry
 
 On by default. Hourly POST to `https://telemetry.free-ride.xyz/v1/beacon`:
