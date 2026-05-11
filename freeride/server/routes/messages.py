@@ -30,6 +30,7 @@ routes stay in lockstep.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 
@@ -38,7 +39,9 @@ from typing import AsyncIterator
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import ValidationError
 
+from freeride.core.anthropic_passthrough import relay_to_anthropic
 from freeride.core.anthropic_schema import AnthropicMessagesRequest
 from freeride.core.anthropic_translate import (
     UnsupportedContentBlock,
@@ -53,6 +56,7 @@ from freeride.core.errors import ErrorKind
 from freeride.core.events import emit as emit_event
 from freeride.core.events import new_request_id
 from freeride.core.health import sort_by_health, sort_keys_by_health
+from freeride.core.model_router import decide as decide_route
 from freeride.core.provider import Provider
 from freeride.server.routes.chat import (
     FailoverContext,
@@ -70,15 +74,103 @@ router = APIRouter()
 
 
 @router.post("/v1/messages")
-async def messages(request: Request, body: AnthropicMessagesRequest):
+async def messages(request: Request):
     """Anthropic-format ``POST /v1/messages`` endpoint.
 
-    Phases 1+2: non-streaming and streaming chat (text-only blocks).
-    Tool use and images still gate to 501.
-    """
+    Two execution paths, chosen by the model id + inbound auth:
 
-    # Gate features we haven't shipped (tool_use, images). Streaming
-    # is now supported — Phase 2 just landed.
+    - **Passthrough** — ``claude-*`` model id + inbound auth header
+      (Authorization or x-api-key). The request body is relayed
+      verbatim to ``api.anthropic.com``; FreeRide stays invisible.
+      Native Claude Code subscriptions work untouched.
+    - **Free route** — ``freeride/*`` model ids, or ``claude-*`` with
+      no auth, or anything else. Translates to OpenAI shape, dispatches
+      through provider failover, translates back to Anthropic shape.
+      All of Phases 1–3 land here.
+
+    The decision is made by
+    :func:`freeride.core.model_router.decide`. We peek at the raw
+    body bytes once to extract ``model`` (and ``stream`` for the
+    passthrough), then either relay raw or parse + translate.
+    """
+    request_id = new_request_id()
+    body_bytes = await request.body()
+    inbound_headers = dict(request.headers)
+
+    # Cheap peek to extract the model id without full Pydantic
+    # validation. For passthrough we MUST NOT validate — that would
+    # risk dropping fields Anthropic accepts that our schema hasn't
+    # caught up to. For the free route we validate below.
+    try:
+        peek = json.loads(body_bytes) if body_bytes else {}
+    except (ValueError, TypeError):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "Request body is not valid JSON.",
+                },
+            },
+        )
+    if not isinstance(peek, dict):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "Request body must be a JSON object.",
+                },
+            },
+        )
+
+    model_id = peek.get("model") or ""
+    decision = decide_route(model_id, inbound_headers)
+
+    emit_event(
+        "messages_routing_decision",
+        request_id=request_id,
+        model=model_id,
+        mode=decision.mode,
+        preset=decision.preset,
+        reason=decision.reason,
+        endpoint="messages",
+    )
+
+    # ─── passthrough ───────────────────────────────────────────────
+    # Relay to api.anthropic.com verbatim. Body bytes, auth header,
+    # and a small allowlist of Anthropic-specific headers forward
+    # unchanged. The native subscription experience is preserved.
+    if decision.mode == "passthrough":
+        return await relay_to_anthropic(
+            body_bytes=body_bytes,
+            inbound_headers=inbound_headers,
+            request_id=request_id,
+            model_id=model_id,
+        )
+
+    # ─── free route ────────────────────────────────────────────────
+    # Validate via Pydantic now. We deferred this so passthrough
+    # could ship the raw body without risk of re-serialization
+    # losing fields.
+    try:
+        body = AnthropicMessagesRequest.model_validate(peek)
+    except ValidationError as e:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": f"Request body failed validation: {e!s}",
+                },
+            },
+        )
+
+    # Gate features we haven't shipped (images, documents). Tools
+    # and streaming are supported.
     block_reason = request_unsupported_for_phase_1(body)
     if block_reason is not None:
         raise HTTPException(
@@ -132,7 +224,7 @@ async def messages(request: Request, body: AnthropicMessagesRequest):
             },
         )
 
-    ctx = FailoverContext(request_id=new_request_id())
+    ctx = FailoverContext(request_id=request_id)
     emit_event(
         "request_start",
         request_id=ctx.request_id,
