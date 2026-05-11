@@ -492,6 +492,83 @@ def test_route_preset_free_uses_registration_order(monkeypatch) -> None:
     assert r.headers["X-FreeRide-Provider"] == "openrouter"
 
 
+def test_route_free_strips_tools_from_request(monkeypatch) -> None:
+    """Claude Code 2.x sends ~70 tools in every request. Free
+    providers can't handle that. When routing to free we MUST drop
+    the tools array so the upstream request fits within provider
+    constraints. The user opted into free; they get a text answer.
+
+    We assert by checking what gets passed to the stub provider's
+    forward_chat — the ChatRequest seen there must have tools=None.
+    """
+    captured = {}
+    openrouter = _PresetStubProvider("openrouter")
+    original = openrouter._do_chat
+
+    async def capturing_do_chat(request, model_id, key):
+        captured["request"] = request
+        return await original(request, model_id, key)
+
+    openrouter.forward_chat.side_effect = capturing_do_chat
+    client = _make_preset_test_client(monkeypatch, [openrouter])
+    r = client.post(
+        "/v1/messages",
+        json={
+            "model": "freeride/free",
+            "max_tokens": 10,
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [
+                {"name": f"tool_{i}", "input_schema": {"type": "object"}}
+                for i in range(70)
+            ],
+            "tool_choice": {"type": "auto"},
+        },
+    )
+    assert r.status_code == 200
+    # The request that reached the provider must have NO tools.
+    assert captured["request"].tools is None
+    assert captured["request"].tool_choice is None
+
+
+def test_route_passthrough_preserves_tools(monkeypatch, httpx_mock) -> None:
+    """Counterpart of the above: when routing to PASSTHROUGH (claude-*
+    + auth), the raw body is relayed untouched. Tools MUST survive —
+    that's the entire point of the passthrough path, the user wants
+    their agentic Claude Code session to work end-to-end."""
+    httpx_mock.add_response(
+        url=ANTHROPIC_API_URL,
+        method="POST",
+        json={
+            "id": "msg_x",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-sonnet-4-6",
+            "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        },
+    )
+    client = TestClient(_app_with_no_providers())
+    payload = {
+        "model": "claude-sonnet-4-6",
+        "max_tokens": 10,
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [
+            {"name": "Agent", "description": "x", "input_schema": {"type": "object"}}
+        ],
+    }
+    r = client.post(
+        "/v1/messages",
+        json=payload,
+        headers={"Authorization": "Bearer sk-ant-oat01-test"},
+    )
+    assert r.status_code == 200
+    # The OUTBOUND body to Anthropic must still contain the tools
+    out = httpx_mock.get_request()
+    relayed_body = json.loads(out.content)
+    assert relayed_body["tools"][0]["name"] == "Agent"
+
+
 def test_route_preset_preference_falls_back_when_first_pick_absent(monkeypatch) -> None:
     """freeride/fast prefers [groq, cerebras, nvidia_nim]. If groq
     isn't registered but cerebras is, cerebras should win — the

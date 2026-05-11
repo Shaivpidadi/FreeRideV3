@@ -299,6 +299,31 @@ async def messages(request: Request):
         # full catalog is fair game.
         openai_request.model = "auto"
 
+    # ─── strip tools when routing to free ──────────────────────────
+    # Claude Code 2.x sends ~70 tools in every request (Agent, Read,
+    # Write, Bash, Edit, …). Free providers either reject the request
+    # outright (size + tool count) or quietly fail in shapes our
+    # error classifier doesn't catch. The user explicitly opted into
+    # /model freeride/* — they're asking for a quick text answer, not
+    # an agentic tool-using session. Drop the tools array so the free
+    # providers see a clean text-only request.
+    #
+    # The user can still flip back to /model claude-* for the
+    # agentic flow (passthrough relays everything untouched).
+    if decision.mode == "free" and (
+        openai_request.tools or openai_request.tool_choice
+    ):
+        n_dropped = len(openai_request.tools or [])
+        openai_request.tools = None
+        openai_request.tool_choice = None
+        emit_event(
+            "messages_free_tools_stripped",
+            request_id=ctx.request_id,
+            n_dropped=n_dropped,
+            preset=decision.preset,
+            endpoint="messages",
+        )
+
     chain = _resolve_provider_chain(providers)
     if not chain:
         raise HTTPException(
