@@ -44,3 +44,6 @@ services/telemetry/wrangler.toml
 .agents/
 skills-lock.json
 skills/
+
+# Local CI credentials — never commit
+tests/ci/.env*
