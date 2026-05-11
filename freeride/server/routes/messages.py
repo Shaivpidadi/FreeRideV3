@@ -57,6 +57,7 @@ from freeride.core.events import emit as emit_event
 from freeride.core.events import new_request_id
 from freeride.core.health import sort_by_health, sort_keys_by_health
 from freeride.core.model_router import decide as decide_route
+from freeride.core.model_router import preset_provider_order
 from freeride.core.provider import Provider
 from freeride.server.routes.chat import (
     FailoverContext,
@@ -247,6 +248,39 @@ async def messages(request: Request):
         )
 
     cooldown = KeyCooldown()
+
+    # ─── preset → provider-preference re-order ─────────────────────
+    # For freeride/fast|quality|coding, bias the failover chain so
+    # the preset's preferred providers go first. freeride/free uses
+    # standard health-ranked order (empty preference tuple). We do
+    # this BEFORE _resolve_provider_chain so the chain itself
+    # reflects the preset; the existing health-rank stays intact for
+    # ties / unspecified providers.
+    preferred = preset_provider_order(decision.preset)
+    if preferred:
+        preferred_set = set(preferred)
+        head = [p for name in preferred for p in providers if p.name == name]
+        tail = [p for p in providers if p.name not in preferred_set]
+        providers = head + tail
+        # The id "freeride/<preset>" isn't a real model on any
+        # provider — rewrite it to "auto" so the existing smart-
+        # router picks something from the (now preset-ordered)
+        # provider chain. freeride/free already maps to auto via the
+        # _AUTO_SENTINELS frozenset, but the typed presets don't.
+        openai_request.model = "auto"
+        emit_event(
+            "messages_preset_applied",
+            request_id=ctx.request_id,
+            preset=decision.preset,
+            preferred_order=list(preferred),
+            endpoint="messages",
+        )
+    elif decision.preset == "free":
+        # Bare "freeride/free" — rewrite to "auto" so the smart
+        # router doesn't see an unknown model id and fail. No
+        # provider re-ordering; standard health rank applies.
+        openai_request.model = "auto"
+
     chain = _resolve_provider_chain(providers)
     if not chain:
         raise HTTPException(

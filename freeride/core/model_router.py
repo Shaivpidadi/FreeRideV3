@@ -30,22 +30,74 @@ from typing import Literal
 # ─── presets ────────────────────────────────────────────────────────
 
 
-# Each preset is a hint to the smart-router about which free provider
-# family to prefer. The actual selection still goes through health-
-# ranked failover so the user always gets *some* response.
-#
-# Today the smart-router doesn't read these hints — it picks by health
-# alone. Once `freeride audit-models` matures we'll wire the preset
-# into provider scoring so "freeride/coding" routes to a code-tuned
-# free model first, etc. For now the preset just gets stamped on the
-# resolved model id so it shows up in telemetry and the user sees
-# their intent reflected back.
 PRESET_FREE = "free"
 PRESET_FAST = "fast"
 PRESET_QUALITY = "quality"
 PRESET_CODING = "coding"
 
 _KNOWN_PRESETS = {PRESET_FREE, PRESET_FAST, PRESET_QUALITY, PRESET_CODING}
+
+
+# Per-preset provider preference — ordered. Providers earlier in the
+# list go to the front of the failover chain; anything not in the
+# list goes to the back (still tried as fallback, just last).
+#
+# Why these mappings:
+#
+# - **fast**: Groq runs Llama on LPU silicon (sub-100ms TTFT in
+#   practice). Cerebras is faster still but smaller capacity.
+#   NVIDIA NIM has decent Llama latency from datacenter GPUs.
+# - **quality**: OpenRouter exposes the widest set of free models
+#   including the largest Llama and Qwen tiers. HuggingFace Inference
+#   has the original Mixtral / Llama 70B endpoints.
+# - **coding**: OpenRouter routes to Qwen-Coder-32B free + DeepSeek-V3
+#   free. Groq has DeepSeek-R1 distill + Llama variants that handle
+#   code well at speed.
+# - **free**: no preference — pure health-ranked smart routing. This
+#   is the path the gateway already uses for ``model="auto"``.
+#
+# Update this map when new providers ship or model quality shifts.
+# It's an empirical performance map, not a contract — the failover
+# still tries every provider if needed.
+_PRESET_PROVIDER_PREFERENCE: dict[str, tuple[str, ...]] = {
+    PRESET_FREE: (),
+    PRESET_FAST: ("groq", "cerebras", "nvidia_nim"),
+    PRESET_QUALITY: ("openrouter", "huggingface", "groq"),
+    PRESET_CODING: ("openrouter", "groq"),
+}
+
+
+def preset_provider_order(preset: str | None) -> tuple[str, ...]:
+    """Return the ordered provider preference for ``preset``. Unknown
+    presets return an empty tuple (= no preference, fall through to
+    standard health-ranked order).
+    """
+    if not preset:
+        return ()
+    return _PRESET_PROVIDER_PREFERENCE.get(preset, ())
+
+
+def reorder_providers_for_preset(provider_names: list[str], preset: str | None) -> list[str]:
+    """Return a new list of provider names re-ordered so providers in
+    the preset's preference list come first (in their preference
+    order), followed by everything else in its original order.
+
+    Pure function — caller is responsible for re-attaching whatever
+    metadata each provider name maps to (keys, chain entries, etc.).
+
+    Used by the messages route to pre-sort the failover chain before
+    the standard health-based ordering kicks in. We don't *replace*
+    health-ranking — providers that fail still cycle to the back of
+    the chain via the existing cooldown machinery. We just bias the
+    initial pick.
+    """
+    preferred = preset_provider_order(preset)
+    if not preferred:
+        return list(provider_names)
+    preferred_set = set(preferred)
+    head = [name for name in preferred if name in provider_names]
+    tail = [name for name in provider_names if name not in preferred_set]
+    return head + tail
 
 
 # ─── decision type ──────────────────────────────────────────────────

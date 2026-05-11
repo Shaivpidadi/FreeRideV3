@@ -24,6 +24,8 @@ from freeride.core.model_router import (
     has_inbound_auth,
     is_anthropic_model,
     parse_freeride_model,
+    preset_provider_order,
+    reorder_providers_for_preset,
 )
 
 
@@ -203,3 +205,96 @@ def test_decide_decision_carries_reason_string() -> None:
         d = decide(*case)
         assert d.reason
         assert isinstance(d.reason, str)
+
+
+# ─── preset provider preference ──────────────────────────────────
+
+
+def test_preset_provider_order_free_has_no_preference() -> None:
+    """freeride/free routes through pure health-ranked smart-routing —
+    no preset preference, returns empty tuple."""
+    assert preset_provider_order(PRESET_FREE) == ()
+
+
+def test_preset_provider_order_fast_prefers_low_latency_providers() -> None:
+    """freeride/fast → Groq, Cerebras, NVIDIA NIM are the fastest free
+    providers today (LPU/dedicated silicon)."""
+    order = preset_provider_order(PRESET_FAST)
+    assert order[0] == "groq"
+    assert "cerebras" in order
+    assert "nvidia_nim" in order
+
+
+def test_preset_provider_order_quality_prefers_wide_model_selection() -> None:
+    """freeride/quality → OpenRouter has the widest free model
+    catalog; HuggingFace Inference has the classic Mixtral/Llama
+    endpoints."""
+    order = preset_provider_order(PRESET_QUALITY)
+    assert order[0] == "openrouter"
+    assert "huggingface" in order
+
+
+def test_preset_provider_order_coding_prefers_code_tuned_providers() -> None:
+    order = preset_provider_order(PRESET_CODING)
+    assert "openrouter" in order  # Qwen-Coder, DeepSeek
+    assert "groq" in order  # DeepSeek-R1 distill at speed
+
+
+def test_preset_provider_order_none_returns_empty() -> None:
+    assert preset_provider_order(None) == ()
+    assert preset_provider_order("") == ()
+
+
+def test_preset_provider_order_unknown_preset_returns_empty() -> None:
+    """Unknown presets don't crash — just no preference. Caller falls
+    through to standard health-ranked order."""
+    assert preset_provider_order("banana") == ()
+
+
+# ─── reorder_providers_for_preset ────────────────────────────────
+
+
+def test_reorder_for_fast_puts_groq_first() -> None:
+    """A chain with several providers gets re-ordered so groq comes
+    first when preset is fast."""
+    chain = ["openrouter", "huggingface", "groq", "nvidia_nim"]
+    out = reorder_providers_for_preset(chain, PRESET_FAST)
+    # First element is the highest-priority provider in the preference
+    # list that's ALSO present in the chain.
+    assert out[0] == "groq"
+    # nvidia_nim is preferred too — should also move forward
+    assert "nvidia_nim" in out[:3]
+    # All original providers are still present
+    assert set(out) == set(chain)
+
+
+def test_reorder_preserves_unspecified_providers_at_tail() -> None:
+    """Providers not mentioned by the preset preference stay in the
+    chain (just at the end). We don't drop anyone — failover still
+    works as a last resort."""
+    chain = ["mystery_provider", "groq", "openrouter"]
+    out = reorder_providers_for_preset(chain, PRESET_FAST)
+    # groq comes first (preferred for fast); mystery_provider stays
+    # but ends up at the back.
+    assert out[0] == "groq"
+    assert "mystery_provider" in out
+    assert set(out) == set(chain)
+
+
+def test_reorder_empty_preset_returns_original_order() -> None:
+    chain = ["openrouter", "groq", "huggingface"]
+    out = reorder_providers_for_preset(chain, PRESET_FREE)
+    assert out == chain
+
+
+def test_reorder_with_no_chain_returns_empty() -> None:
+    assert reorder_providers_for_preset([], PRESET_FAST) == []
+
+
+def test_reorder_only_keeps_providers_actually_in_chain() -> None:
+    """If the preset prefers a provider that's not in the chain (not
+    registered or no key), it can't be added — re-ordering only
+    operates on what's there."""
+    chain = ["openrouter"]  # groq + cerebras + nvidia_nim absent
+    out = reorder_providers_for_preset(chain, PRESET_FAST)
+    assert out == ["openrouter"]

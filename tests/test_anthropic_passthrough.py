@@ -350,6 +350,167 @@ def test_route_malformed_json_returns_400() -> None:
     assert r.json()["detail"]["error"]["type"] == "invalid_request_error"
 
 
+# ─── preset → provider re-ordering at the route layer ───────────
+
+
+class _PresetStubProvider:
+    """Minimal Provider stub: records that forward_chat was called and
+    returns a canned response. Used to verify which provider was
+    picked first by the route."""
+
+    api_version = 1
+
+    def __init__(self, name: str):
+        from unittest.mock import AsyncMock
+
+        from freeride.core.chat_schema import ChatResponse
+
+        self.name = name
+        self.embeddings_supported = False
+        self._response = ChatResponse.model_validate(
+            {
+                "id": "chatcmpl-stub",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "stub-model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+            }
+        )
+        self.forward_chat = AsyncMock(side_effect=self._do_chat)
+
+    async def _do_chat(self, request, model_id, key):  # noqa: ARG002
+        return self._response
+
+    def classify_error(self, x):  # noqa: ARG002
+        from freeride.core.errors import ErrorKind
+
+        return ErrorKind.UNKNOWN
+
+    def retry_after_hint(self, response):  # noqa: ARG002
+        return None
+
+
+def _make_preset_test_client(monkeypatch, providers):
+    """Build an app with stub providers + bypass the smart-router
+    catalog requirement (we're testing chain order, not catalog
+    ranking)."""
+    from freeride.core.health import ProviderHealth
+
+    monkeypatch.setenv("FREERIDE_EVENTS", "0")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    monkeypatch.setenv("CEREBRAS_API_KEY", "k")
+    monkeypatch.setenv("NVIDIA_API_KEY", "k")
+    # Bypass cooldown so all keys are always available
+    monkeypatch.setattr(
+        "freeride.core.cooldown.KeyCooldown.available_keys",
+        lambda self, name, keys: list(keys),
+    )
+    # Bypass auto-model catalog: pretend we always resolve fine
+    async def fake_catalog(*a, **kw):  # noqa: ARG001
+        return []
+
+    monkeypatch.setattr(
+        "freeride.server.routes.messages.get_or_fetch_catalog", fake_catalog
+    )
+    monkeypatch.setattr(
+        "freeride.server.routes.messages.resolve_auto_model",
+        lambda providers, catalog: ("stub-model", providers[0].name if providers else None),
+    )
+    ProviderHealth.reset()
+    return TestClient(create_app(providers=providers))
+
+
+def test_route_preset_fast_pulls_groq_to_front_of_chain(monkeypatch) -> None:
+    """When the request is freeride/fast and both openrouter and groq
+    are registered (openrouter first by registration order), the
+    preset must re-order so groq serves the request."""
+    openrouter = _PresetStubProvider("openrouter")
+    groq = _PresetStubProvider("groq")
+    client = _make_preset_test_client(monkeypatch, [openrouter, groq])
+    r = client.post(
+        "/v1/messages",
+        json={
+            "model": "freeride/fast",
+            "max_tokens": 10,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert r.status_code == 200
+    assert r.headers["X-FreeRide-Provider"] == "groq"
+    groq.forward_chat.assert_awaited_once()
+    openrouter.forward_chat.assert_not_awaited()
+
+
+def test_route_preset_quality_pulls_openrouter_first(monkeypatch) -> None:
+    """freeride/quality prefers OpenRouter. Register groq first
+    (would normally win by registration order) and confirm
+    openrouter gets the call instead."""
+    groq = _PresetStubProvider("groq")
+    openrouter = _PresetStubProvider("openrouter")
+    client = _make_preset_test_client(monkeypatch, [groq, openrouter])
+    r = client.post(
+        "/v1/messages",
+        json={
+            "model": "freeride/quality",
+            "max_tokens": 10,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert r.status_code == 200
+    assert r.headers["X-FreeRide-Provider"] == "openrouter"
+    openrouter.forward_chat.assert_awaited_once()
+
+
+def test_route_preset_free_uses_registration_order(monkeypatch) -> None:
+    """freeride/free has empty preset preference — falls through to
+    the existing health-ranked/registration order. Whoever is first
+    in the registered chain wins."""
+    openrouter = _PresetStubProvider("openrouter")
+    groq = _PresetStubProvider("groq")
+    client = _make_preset_test_client(monkeypatch, [openrouter, groq])
+    r = client.post(
+        "/v1/messages",
+        json={
+            "model": "freeride/free",
+            "max_tokens": 10,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert r.status_code == 200
+    assert r.headers["X-FreeRide-Provider"] == "openrouter"
+
+
+def test_route_preset_preference_falls_back_when_first_pick_absent(monkeypatch) -> None:
+    """freeride/fast prefers [groq, cerebras, nvidia_nim]. If groq
+    isn't registered but cerebras is, cerebras should win — the
+    preference walks the list in order, not just the first item."""
+    cerebras = _PresetStubProvider("cerebras")
+    openrouter = _PresetStubProvider("openrouter")
+    client = _make_preset_test_client(monkeypatch, [openrouter, cerebras])
+    r = client.post(
+        "/v1/messages",
+        json={
+            "model": "freeride/fast",
+            "max_tokens": 10,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert r.status_code == 200
+    assert r.headers["X-FreeRide-Provider"] == "cerebras"
+
+
 def test_route_passthrough_relays_x_api_key(httpx_mock) -> None:
     """x-api-key flow (raw API key, not OAuth) must also passthrough.
     Confirms we don't accidentally hard-code on Authorization."""
