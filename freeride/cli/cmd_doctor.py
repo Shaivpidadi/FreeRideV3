@@ -239,7 +239,181 @@ def _check_telemetry() -> _Check:
         )
 
 
-def run_checks() -> list[_Check]:
+def _check_freeride_active_marker() -> _Check:
+    """``freeride run`` stamps FREERIDE_ACTIVE=1 in the child env. If
+    we see it, the user is inside the wrapper — show that so they
+    know which lens to read the rest of the report through."""
+    if os.environ.get("FREERIDE_ACTIVE") == "1":
+        return _Check(
+            "ok",
+            "inside `freeride run` (FREERIDE_ACTIVE=1)",
+            "ANTHROPIC_BASE_URL was set by the wrapper",
+        )
+    return _Check(
+        "info",
+        "not inside `freeride run`",
+        "to opt in: `freeride run claude`",
+    )
+
+
+def _check_anthropic_base_url(port: int = 11343) -> _Check:
+    """Is ANTHROPIC_BASE_URL pointed at a reachable gateway?
+
+    Three cases:
+      - unset → info (user hasn't bound; that's fine if they're
+        about to run `freeride run`)
+      - set to a URL we can probe → ok or warn depending on whether
+        /health answers
+      - set to an upstream we shouldn't proxy (e.g. api.anthropic.com)
+        → warn that the gateway isn't in the path
+    """
+    url = os.environ.get("ANTHROPIC_BASE_URL")
+    if not url:
+        return _Check(
+            "info",
+            "ANTHROPIC_BASE_URL not set",
+            "Claude Code will hit api.anthropic.com directly",
+        )
+    if "api.anthropic.com" in url:
+        return _Check(
+            "warn",
+            f"ANTHROPIC_BASE_URL = {url}",
+            "this bypasses FreeRide — drop the env var or use `freeride run`",
+        )
+    try:
+        health = httpx.get(url.rstrip("/") + "/health", timeout=2.0)
+    except httpx.HTTPError as e:
+        return _Check(
+            "error",
+            f"ANTHROPIC_BASE_URL = {url} (unreachable)",
+            f"/health failed: {type(e).__name__}",
+        )
+    if 200 <= health.status_code < 300:
+        return _Check("ok", f"ANTHROPIC_BASE_URL = {url} (gateway reachable)")
+    return _Check(
+        "warn",
+        f"ANTHROPIC_BASE_URL = {url} (responds, but /health → {health.status_code})",
+        "may not be a freeride gateway",
+    )
+
+
+def _check_claude_cli_on_path() -> _Check:
+    """Is the Claude Code CLI installed? Not required (user could be
+    using `@anthropic-ai/sdk` directly), but informational — when
+    it's there we can show the version, which matters because
+    2.x has the hardcoded OAuth gate (160.79.104.10) that needs
+    a workaround."""
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        return _Check(
+            "info",
+            "`claude` CLI not on PATH",
+            "install via `npm i -g @anthropic-ai/claude-code`",
+        )
+    # Try to get the version; non-fatal if it fails.
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            [claude_bin, "--version"], capture_output=True, text=True, timeout=5
+        )
+        version = (out.stdout or out.stderr or "").strip().splitlines()[0] if out.returncode == 0 else "?"
+    except (OSError, subprocess.SubprocessError):
+        version = "?"
+    return _Check("ok", f"claude CLI: {version}", f"at {claude_bin}")
+
+
+def _check_claude_routing() -> _Check:
+    """Spot-check the routing decision module: claude-* + auth should
+    passthrough; freeride/* should route free. If this drifts the
+    whole point of Phase 4 is broken — surface it loudly."""
+    from freeride.core.model_router import decide
+
+    d1 = decide("claude-sonnet-4-6", {"authorization": "Bearer test"})
+    d2 = decide("freeride/free", {})
+    d3 = decide("claude-opus-4-5", {})  # no auth
+    if (
+        d1.mode == "passthrough"
+        and d2.mode == "free"
+        and d3.mode == "free"
+    ):
+        return _Check(
+            "ok",
+            "routing decision module is sane",
+            "claude-*+auth→passthrough, freeride/*→free, claude-*-no-auth→free",
+        )
+    return _Check(
+        "error",
+        "routing decision module is broken",
+        f"claude+auth={d1.mode!r}, freeride={d2.mode!r}, claude-no-auth={d3.mode!r}",
+    )
+
+
+def _check_freeride_free_via_gateway(port: int = 11343) -> _Check:
+    """Live probe: if the gateway is reachable, POST a minimal
+    freeride/free request and confirm we get a 200. Skipped (info)
+    when no gateway is up — we don't auto-start one for the probe."""
+    base = (
+        os.environ.get("ANTHROPIC_BASE_URL", "").rstrip("/")
+        or f"http://127.0.0.1:{port}"
+    )
+    if "api.anthropic.com" in base:
+        return _Check(
+            "info",
+            "free-route live probe: skipped",
+            "ANTHROPIC_BASE_URL points at Anthropic; can't probe free route",
+        )
+    try:
+        h = httpx.get(base + "/health", timeout=1.0)
+        if not (200 <= h.status_code < 300):
+            return _Check(
+                "info",
+                "free-route live probe: skipped (no gateway)",
+                f"start one with `freeride serve --port {port}`",
+            )
+    except httpx.HTTPError:
+        return _Check(
+            "info",
+            "free-route live probe: skipped (no gateway)",
+            f"start one with `freeride serve --port {port}`",
+        )
+    # Gateway is up — fire one tiny request.
+    try:
+        r = httpx.post(
+            base + "/v1/messages",
+            json={
+                "model": "freeride/free",
+                "max_tokens": 8,
+                "messages": [{"role": "user", "content": "Reply with the single word: ok"}],
+            },
+            timeout=30.0,
+        )
+    except httpx.HTTPError as e:
+        return _Check(
+            "warn",
+            "free-route live probe failed (transport)",
+            f"{type(e).__name__}: {e}",
+        )
+    if r.status_code != 200:
+        return _Check(
+            "warn",
+            f"free-route live probe → HTTP {r.status_code}",
+            (r.text[:160] + "…") if len(r.text) > 160 else r.text,
+        )
+    body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+    provider = r.headers.get("X-FreeRide-Provider", "?")
+    content = body.get("content", [])
+    text_snippet = ""
+    if content and isinstance(content, list) and content[0].get("type") == "text":
+        text_snippet = (content[0].get("text") or "")[:60]
+    return _Check(
+        "ok",
+        f"free-route live probe → 200 via {provider}",
+        f"response: {text_snippet!r}",
+    )
+
+
+def run_checks(*, claude_code: bool = False, port: int = 11343) -> list[_Check]:
     # Mirror what `freeride serve` does — load ~/.freeride/.env BEFORE
     # checking provider env vars so doctor agrees with the gateway's
     # view of the world. OS env wins; we only fill gaps.
@@ -252,14 +426,25 @@ def run_checks() -> list[_Check]:
     checks.append(_check_freeride_on_path())
     checks.append(_check_freeride_dir())
     checks.extend(_check_provider_env_vars())
-    checks.extend(_check_port_or_gateway())
+    checks.extend(_check_port_or_gateway(port=port))
     checks.append(_check_telemetry())
+
+    if claude_code:
+        checks.append(_Check("info", "── Claude Code integration ──"))
+        checks.append(_check_freeride_active_marker())
+        checks.append(_check_anthropic_base_url(port=port))
+        checks.append(_check_claude_cli_on_path())
+        checks.append(_check_claude_routing())
+        checks.append(_check_freeride_free_via_gateway(port=port))
+
     return checks
 
 
 def cmd_doctor(args) -> int:
     no_color = bool(getattr(args, "no_color", False)) or not sys.stdout.isatty()
-    checks = run_checks()
+    claude_code = bool(getattr(args, "claude_code", False))
+    port = int(getattr(args, "port", 11343))
+    checks = run_checks(claude_code=claude_code, port=port)
 
     print("FreeRide doctor")
     print()

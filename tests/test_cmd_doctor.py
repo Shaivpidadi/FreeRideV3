@@ -153,3 +153,174 @@ class TestFormat:
         assert len(lines) == 2
         assert "label" in lines[0]
         assert "extra detail line" in lines[1]
+
+
+# ---------------------------------------------------------------------------
+# Claude Code probes (--claude-code flag)
+# ---------------------------------------------------------------------------
+
+
+from freeride.cli.cmd_doctor import (  # noqa: E402
+    _check_anthropic_base_url,
+    _check_claude_cli_on_path,
+    _check_claude_routing,
+    _check_freeride_active_marker,
+    _check_freeride_free_via_gateway,
+    run_checks,
+)
+
+
+class TestFreerideActiveMarker:
+    def test_inside_wrapper_reports_ok(self, monkeypatch):
+        monkeypatch.setenv("FREERIDE_ACTIVE", "1")
+        c = _check_freeride_active_marker()
+        assert c.severity == "ok"
+        assert "FREERIDE_ACTIVE" in c.label
+
+    def test_outside_wrapper_reports_info(self, monkeypatch):
+        monkeypatch.delenv("FREERIDE_ACTIVE", raising=False)
+        c = _check_freeride_active_marker()
+        assert c.severity == "info"
+        assert "freeride run" in c.detail
+
+
+class TestAnthropicBaseUrlCheck:
+    def test_unset_reports_info(self, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+        c = _check_anthropic_base_url()
+        assert c.severity == "info"
+        assert "not set" in c.label
+
+    def test_points_at_anthropic_directly_warns(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+        c = _check_anthropic_base_url()
+        assert c.severity == "warn"
+        assert "bypasses FreeRide" in c.detail
+
+    def test_reachable_gateway_reports_ok(self, monkeypatch, httpx_mock):
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://localhost:11343")
+        httpx_mock.add_response(
+            url="http://localhost:11343/health", status_code=200, json={"ok": True}
+        )
+        c = _check_anthropic_base_url()
+        assert c.severity == "ok"
+        assert "gateway reachable" in c.label
+
+    def test_unreachable_gateway_reports_error(self, monkeypatch, httpx_mock):
+        import httpx
+
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://localhost:11343")
+        httpx_mock.add_exception(httpx.ConnectError("nope"))
+        c = _check_anthropic_base_url()
+        assert c.severity == "error"
+        assert "unreachable" in c.label
+
+
+class TestClaudeRoutingCheck:
+    def test_resolver_passes_all_three_buckets(self):
+        """The resolver MUST keep these three cases stable — they're
+        the core mental model of Phase 4."""
+        c = _check_claude_routing()
+        assert c.severity == "ok"
+        assert "sane" in c.label
+
+
+class TestClaudeCliOnPath:
+    def test_missing_claude_reports_info(self, monkeypatch):
+        """When `which claude` returns None, info-level message
+        directing user to npm install."""
+        monkeypatch.setattr("freeride.cli.cmd_doctor.shutil.which", lambda x: None)
+        c = _check_claude_cli_on_path()
+        assert c.severity == "info"
+        assert "npm" in c.detail
+
+    def test_present_claude_reports_ok(self, monkeypatch, tmp_path):
+        """When the binary exists, we should report ok and try to grab
+        the version."""
+        fake = tmp_path / "claude"
+        fake.write_text("#!/bin/sh\necho '2.1.19 (Claude Code)'")
+        fake.chmod(0o755)
+        monkeypatch.setattr(
+            "freeride.cli.cmd_doctor.shutil.which", lambda x: str(fake)
+        )
+        c = _check_claude_cli_on_path()
+        assert c.severity == "ok"
+        assert str(fake) in c.detail
+
+
+class TestFreerideFreeViaGateway:
+    def test_no_gateway_reports_info(self, monkeypatch, httpx_mock):
+        """When /health fails, skip the live probe — don't make it an
+        error, the user might not have started the gateway yet."""
+        import httpx
+
+        monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+        httpx_mock.add_exception(httpx.ConnectError("nope"))
+        c = _check_freeride_free_via_gateway()
+        assert c.severity == "info"
+        assert "skipped" in c.label
+
+    def test_gateway_up_and_free_route_works(self, monkeypatch, httpx_mock):
+        monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+        httpx_mock.add_response(
+            url="http://127.0.0.1:11343/health", status_code=200, json={"ok": True}
+        )
+        httpx_mock.add_response(
+            url="http://127.0.0.1:11343/v1/messages",
+            method="POST",
+            status_code=200,
+            json={
+                "id": "msg_x",
+                "type": "message",
+                "role": "assistant",
+                "model": "freeride/free",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+            headers={"X-FreeRide-Provider": "openrouter"},
+        )
+        c = _check_freeride_free_via_gateway()
+        assert c.severity == "ok"
+        assert "openrouter" in c.label
+
+    def test_anthropic_base_url_skips_probe(self, monkeypatch):
+        """If ANTHROPIC_BASE_URL points at Anthropic directly, we
+        can't probe freeride/* (there's no gateway in the path).
+        Skip with info."""
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+        c = _check_freeride_free_via_gateway()
+        assert c.severity == "info"
+
+
+class TestRunChecksWithClaudeCodeFlag:
+    @pytest.fixture(autouse=True)
+    def _no_dotenv_load(self, monkeypatch):
+        """``run_checks`` calls ``load_dotenv_into_environ`` which reads
+        ``~/.freeride/.env`` and writes its contents to ``os.environ``
+        — invisible to monkeypatch's restore, so values bleed into
+        sibling test files. Stub it out for these tests."""
+        monkeypatch.setattr(
+            "freeride.core.dotenv.load_dotenv_into_environ", lambda: None
+        )
+
+    def test_default_run_does_not_include_claude_section(self, monkeypatch):
+        """Without --claude-code, no Claude-Code-specific checks are
+        emitted. Existing users see the same report they always have."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "x")
+        checks = run_checks(claude_code=False)
+        labels = [c.label for c in checks]
+        assert not any("Claude Code integration" in label for label in labels)
+        assert not any("FREERIDE_ACTIVE" in label for label in labels)
+
+    def test_claude_code_flag_appends_section(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "x")
+        monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+        monkeypatch.delenv("FREERIDE_ACTIVE", raising=False)
+        checks = run_checks(claude_code=True)
+        labels = [c.label for c in checks]
+        assert any("Claude Code integration" in label for label in labels)
+        # And at least one of the claude-code-specific probes ran
+        assert any("freeride run" in (c.detail or "") for c in checks) or any(
+            "FREERIDE_ACTIVE" in c.label for c in checks
+        )
