@@ -47,6 +47,25 @@ NIM_EMBEDDINGS_URL = f"{NIM_API_BASE}/embeddings"
 # Free-tier allowlist — see nim_model_metadata.py. We match exact ids
 # rather than prefixes so we don't accidentally free-flag a paid model
 # that shares a vendor namespace.
+# Hardcoded allowlist. Cross-referenced 2026-05-11 against
+# integrate.api.nvidia.com/v1/models AND verified each with a
+# 1-token probe. Live `freeride audit-models` will narrow further
+# at runtime — this list is the *starting set* of models we'll try.
+#
+# Entries we've REMOVED because the upstream consistently returns
+# errors (and shouldn't waste a hot-path failover attempt):
+#   - mistralai/mistral-7b-instruct-v0.3  (404 — NVIDIA removed it)
+#
+# Entries that occasionally time out but are kept in the allowlist
+# because they recover within minutes (per audit-models data):
+#   - meta/llama-3.1-8b-instruct
+#   - qwen/qwen2.5-coder-32b-instruct
+#   - google/gemma-3-27b-it
+#
+# Users hitting timeouts on these models should run
+# `freeride audit-models` to populate the per-model health cache;
+# the smart-router will then skip them automatically until they
+# recover.
 DEFAULT_FREE_MODEL_IDS: frozenset[str] = frozenset(
     [
         "meta/llama-3.1-8b-instruct",
@@ -56,7 +75,6 @@ DEFAULT_FREE_MODEL_IDS: frozenset[str] = frozenset(
         "meta/llama-3.3-70b-instruct",
         "deepseek-ai/deepseek-r1",
         "deepseek-ai/deepseek-v3",
-        "mistralai/mistral-7b-instruct-v0.3",
         "mistralai/mixtral-8x7b-instruct-v0.1",
         "mistralai/mixtral-8x22b-instruct-v0.1",
         "qwen/qwen2.5-7b-instruct",
