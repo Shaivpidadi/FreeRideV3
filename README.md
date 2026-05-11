@@ -234,19 +234,46 @@ Adding a sixth: implement `freeride.core.provider.Provider` (`api_version=1`) in
 
 Or anything else: `OPENAI_API_BASE=http://localhost:11343/v1` + `OPENAI_API_KEY=any`.
 
-## Claude Code skill
+## Claude Code
 
-If you use Claude Code, install the FreeRide skill so Claude knows how to
-detect, wire, and troubleshoot the gateway:
+Two ways FreeRide plays with Claude Code:
+
+### 1. `freeride run claude` — companion mode (the main path)
+
+```bash
+freeride run claude
+```
+
+Wraps a Claude Code session so free providers are available alongside your
+subscription. Your Pro/Max OAuth (or `ANTHROPIC_API_KEY`) is preserved.
+Inside the session, flip per request via `/model`:
+
+| You type                     | What happens |
+|------------------------------|--------------|
+| `/model claude-opus-4-7`     | Your subscription answers (passthrough to `api.anthropic.com`). |
+| `/model freeride/free`       | Free provider answers via smart-routing. |
+| `/model freeride/fast`       | Free, prefers groq (low TTFT). |
+| `/model freeride/quality`    | Free, prefers OpenRouter (widest catalog). |
+| `/model freeride/coding`     | Free, prefers code-tuned models (Qwen-Coder, DeepSeek). |
+
+Plain `claude` (no wrapper) goes direct to Anthropic — FreeRide is invisible.
+The wrapper sets `ANTHROPIC_BASE_URL` for the child process only; nothing
+system-wide changes.
+
+Probe the setup: `freeride doctor --claude-code`.
+
+Full guide: **[`docs/claude-code.md`](docs/claude-code.md)**.
+
+### 2. Skill / plugin install (in-Claude awareness)
+
+If you want Claude itself to know about FreeRide (detect it running, suggest
+the wrapper, help troubleshoot):
 
 ```
 /plugin install https://github.com/Shaivpidadi/FreeRideV3
 ```
 
-After install, Claude auto-invokes the skill when you mention FreeRide,
-have it running on `localhost:11343`, or ask about routing across
-free-tier providers. See [`skills/README.md`](skills/README.md) for
-manual-install instructions.
+See [`skills/README.md`](skills/README.md) for manual-install instructions.
 
 ## Docs
 
