@@ -249,36 +249,54 @@ async def messages(request: Request):
 
     cooldown = KeyCooldown()
 
-    # ─── preset → provider-preference re-order ─────────────────────
-    # For freeride/fast|quality|coding, bias the failover chain so
-    # the preset's preferred providers go first. freeride/free uses
-    # standard health-ranked order (empty preference tuple). We do
-    # this BEFORE _resolve_provider_chain so the chain itself
-    # reflects the preset; the existing health-rank stays intact for
-    # ties / unspecified providers.
+    # ─── preset → provider re-order + auto-resolution scope ────────
+    # For freeride/fast|quality|coding, two things change:
+    #
+    #   1. The failover chain is re-ordered so preferred providers
+    #      come first (existing health-rank fills ties).
+    #   2. Auto-model resolution is RESTRICTED to preferred providers
+    #      only. Without this restriction, the smart-router would
+    #      pick the highest-ranked model across the whole catalog —
+    #      often a groq-specific id — and the failover would try the
+    #      preferred provider first, get a MODEL_NOT_FOUND, and fall
+    #      back to groq anyway. That defeats the preset's purpose.
+    #
+    # ``auto_resolution_providers`` is what gets passed to the
+    # catalog fetch + resolver. ``providers`` (the full preset-
+    # ordered chain) is what gets used for the failover loop, so a
+    # rare key failure on a preferred provider still has the tail
+    # as a last-resort fallback.
     preferred = preset_provider_order(decision.preset)
+    auto_resolution_providers = providers
     if preferred:
         preferred_set = set(preferred)
         head = [p for name in preferred for p in providers if p.name == name]
         tail = [p for p in providers if p.name not in preferred_set]
         providers = head + tail
+        # Typed preset: restrict catalog ranking to preferred
+        # providers (head) so the resolved model id is actually
+        # available there. If none of the preferred providers are
+        # registered/healthy, fall back to the full list rather
+        # than 503 — better degraded than down.
+        auto_resolution_providers = head or providers
         # The id "freeride/<preset>" isn't a real model on any
         # provider — rewrite it to "auto" so the existing smart-
-        # router picks something from the (now preset-ordered)
-        # provider chain. freeride/free already maps to auto via the
-        # _AUTO_SENTINELS frozenset, but the typed presets don't.
+        # router picks something. freeride/free already maps to
+        # auto via the _AUTO_SENTINELS frozenset, but typed
+        # presets don't.
         openai_request.model = "auto"
         emit_event(
             "messages_preset_applied",
             request_id=ctx.request_id,
             preset=decision.preset,
             preferred_order=list(preferred),
+            auto_resolution_restricted=bool(head),
             endpoint="messages",
         )
     elif decision.preset == "free":
         # Bare "freeride/free" — rewrite to "auto" so the smart
-        # router doesn't see an unknown model id and fail. No
-        # provider re-ordering; standard health rank applies.
+        # router doesn't see an unknown model id. No restriction;
+        # full catalog is fair game.
         openai_request.model = "auto"
 
     chain = _resolve_provider_chain(providers)
@@ -302,10 +320,16 @@ async def messages(request: Request):
             },
         )
 
-    # auto-model resolution — same logic as the chat route.
+    # auto-model resolution — same logic as the chat route, but
+    # scoped to ``auto_resolution_providers`` when a typed preset
+    # is in play (set above). Without the scoping, a typed preset
+    # only re-orders the chain; here it also restricts WHICH
+    # provider catalogs the resolver considers.
     if is_auto_model(openai_request.model):
-        catalog = await get_or_fetch_catalog(providers, group=True)
-        resolved_id, resolved_provider = resolve_auto_model(providers, catalog)
+        catalog = await get_or_fetch_catalog(auto_resolution_providers, group=True)
+        resolved_id, resolved_provider = resolve_auto_model(
+            auto_resolution_providers, catalog
+        )
         if resolved_id is None:
             raise HTTPException(
                 status_code=503,
