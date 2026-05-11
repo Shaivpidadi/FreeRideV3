@@ -332,7 +332,13 @@ async def _stream_passthrough(
                         body = await resp.aread()
                         yield body
                         return
-                    async for chunk in resp.aiter_raw():
+                    # Use aiter_bytes (NOT aiter_raw) so httpx
+                    # transparently decompresses gzip/deflate before
+                    # we forward. We strip content-encoding from the
+                    # response headers (it's in the skip set) so the
+                    # client must receive plain bytes for the
+                    # framing to match.
+                    async for chunk in resp.aiter_bytes():
                         if chunk:
                             yield chunk
         except httpx.HTTPError as e:
