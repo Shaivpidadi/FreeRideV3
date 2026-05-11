@@ -60,6 +60,32 @@ def build_parser() -> argparse.ArgumentParser:
     p_serve.add_argument("--host", default="127.0.0.1")
     p_serve.add_argument("--verbose", action="store_true")
 
+    p_run = sub.add_parser(
+        "run",
+        help="Run a command (e.g. `claude`) with ANTHROPIC_BASE_URL pointed at the gateway",
+    )
+    p_run.add_argument(
+        "--port",
+        type=int,
+        default=11343,
+        help="Gateway port to use (default: 11343). Ignored if --gateway-url is set.",
+    )
+    p_run.add_argument(
+        "--gateway-url",
+        default=None,
+        help="Gateway base URL without /v1 suffix (default: http://localhost:<port>).",
+    )
+    p_run.add_argument(
+        "--no-autospawn",
+        action="store_true",
+        help="Fail if the gateway isn't running instead of starting one in the background.",
+    )
+    p_run.add_argument(
+        "command_argv",
+        nargs=argparse.REMAINDER,
+        help="The command to run, with arguments. Everything after `run` is passed through.",
+    )
+
     p_bind = sub.add_parser("bind", help="Configure an agent to use the gateway")
     p_bind.add_argument("agent", choices=["openclaw", "aider", "continue", "hermes", "opencode"])
     p_bind.add_argument("--gateway-url", default="http://localhost:11343/v1")
@@ -247,6 +273,11 @@ def main(argv: list[str] | None = None) -> int:
         from freeride.cli.cmd_serve import cmd_serve
 
         return cmd_serve(args)
+
+    if args.command == "run":
+        from freeride.cli.cmd_run import cmd_run
+
+        return cmd_run(args)
 
     if args.command == "bind":
         from freeride.cli.cmd_bind import cmd_bind
