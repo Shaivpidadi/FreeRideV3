@@ -173,6 +173,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Diagnose common setup issues (env vars, PATH, port, gateway reachability)",
     )
     p_doctor.add_argument("--no-color", action="store_true")
+    p_doctor.add_argument(
+        "--claude-code",
+        action="store_true",
+        help="Also probe the Claude Code integration "
+        "(ANTHROPIC_BASE_URL, routing decision, free-route live probe)",
+    )
+    p_doctor.add_argument(
+        "--port",
+        type=int,
+        default=11343,
+        help="Gateway port to probe (default: 11343)",
+    )
 
     p_audit = sub.add_parser(
         "audit-models",
