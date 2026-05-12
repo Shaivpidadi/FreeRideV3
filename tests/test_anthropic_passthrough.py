@@ -562,37 +562,38 @@ def test_route_non_claude_cli_freeride_free_no_pin(monkeypatch) -> None:
     assert captured["request_model"] != "openrouter/free"
 
 
-def test_route_claude_cli_explicit_fast_not_pinned(monkeypatch) -> None:
-    """When User-Agent is claude-cli but the user EXPLICITLY picked
-    freeride/fast (or quality/coding), leave it alone — don't
-    second-guess the user's pick."""
+def test_route_claude_cli_all_presets_pinned(monkeypatch) -> None:
+    """Updated 0.4.0a10: claude-cli pins for ALL freeride/* presets,
+    not just /free. /fast, /quality, /coding all route through the
+    tools-capable model because Claude Code is useless without
+    tool calling — preset is a HINT, tool support is non-negotiable.
+    """
     captured = {}
     groq = _PresetStubProvider("groq")
-    original = groq._do_chat
+    openrouter = _PresetStubProvider("openrouter")
+    original = openrouter._do_chat
 
     async def cap(request, model_id, key):
         captured["request_model"] = request.model
         return await original(request, model_id, key)
 
-    groq.forward_chat.side_effect = cap
-    openrouter = _PresetStubProvider("openrouter")
-    client = _make_preset_test_client(monkeypatch, [openrouter, groq])
+    openrouter.forward_chat.side_effect = cap
+    # groq registered first so default order would prefer it
+    client = _make_preset_test_client(monkeypatch, [groq, openrouter])
     r = client.post(
         "/v1/messages",
         json={
-            "model": "freeride/fast",
+            "model": "freeride/coding",  # NOT free — proves pin fires for any preset
             "max_tokens": 10,
             "messages": [{"role": "user", "content": "hi"}],
         },
         headers={"User-Agent": "claude-cli/2.1.139"},
     )
     assert r.status_code == 200
-    # fast preset prefers groq; pin should NOT fire because explicit
-    # preset picks are respected.
-    assert r.headers["X-FreeRide-Provider"] == "groq"
-    # Should be the smart-router's pick ("auto" → stub-model), NOT
-    # the pin's hardcoded id.
-    assert captured["request_model"] != "openrouter/free"
+    # Pin MUST fire even though preset is "coding" — claude-cli always
+    # gets the tools-capable pin.
+    assert r.headers["X-FreeRide-Provider"] == "openrouter"
+    assert captured["request_model"] == "openrouter/free"
 
 
 def test_route_claude_cli_pin_env_override(monkeypatch) -> None:
