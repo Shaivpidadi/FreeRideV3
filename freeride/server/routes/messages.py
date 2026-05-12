@@ -133,35 +133,35 @@ async def messages(request: Request):
 
     # ─── claude-code caller detected? pin to a code+tools model ────
     # Claude Code requires (a) tool/function calling, (b) code-quality
-    # responses. Most popular free models (openai/gpt-oss-120b,
-    # Qwen3-235B-A22B, etc.) emit *text* but don't reliably trigger
-    # tool_calls — claude code degenerates into "run the script" text
-    # with no actual Bash invocation. Useless.
+    # responses, (c) acceptance of large request bodies (claude sends
+    # ~110KB with the full system prompt + conversation history).
+    # Many otherwise-good free models fail one of these:
+    #   - openai/gpt-oss-120b → emits text but rarely tool_calls
+    #   - groq/llama-3.3-70b-versatile → 413 "payload too large"
+    #   - meta-llama/llama-3.3-70b-instruct:free → 429 often
+    # Probed live 2026-05-12 against this user's key. The pick below
+    # is what consistently returns 200 + a tool_calls block today.
     #
-    # So when User-Agent is `claude-cli/*` AND the user picked the
-    # bare `freeride/free` default, we pin to a SPECIFIC model that
-    # is verified to (1) support tool calls reliably, (2) be decent
-    # at coding, (3) be available on free providers today.
-    #
-    # Current pick: groq/llama-3.3-70b-versatile.
-    #   - 70B parameters → enough capacity for code
-    #   - tool-calling support (verified in Phase B tests)
-    #   - LPU silicon → sub-100ms TTFT
-    #   - Available on the user's free Groq key (we already validated)
+    # Current pick: openrouter/free.
+    #   - OR's curated smart-router across all their free models
+    #   - Handles upstream rate-limits internally (resilient)
+    #   - Sub-second response observed
+    #   - Verified emits tool_calls in probe
     #
     # Explicit picks (fast/quality/coding) are NOT overridden — the
     # user knew what they wanted.
     #
-    # Set FREERIDE_CLAUDE_CODE_MODEL env var to override the pick.
+    # Override via env: FREERIDE_CLAUDE_CODE_MODEL,
+    # FREERIDE_CLAUDE_CODE_PROVIDER.
     ua = inbound_headers.get("user-agent", "").lower()
     is_claude_cli = ua.startswith("claude-cli/") or "claude-code" in ua
     claude_code_pin: tuple[str, str] | None = None  # (model_id, provider_name)
     if is_claude_cli and decision.mode == "free" and decision.preset == "free":
         pinned_model = os.environ.get(
-            "FREERIDE_CLAUDE_CODE_MODEL", "llama-3.3-70b-versatile"
+            "FREERIDE_CLAUDE_CODE_MODEL", "openrouter/free"
         )
         pinned_provider = os.environ.get(
-            "FREERIDE_CLAUDE_CODE_PROVIDER", "groq"
+            "FREERIDE_CLAUDE_CODE_PROVIDER", "openrouter"
         )
         claude_code_pin = (pinned_model, pinned_provider)
         emit_event(

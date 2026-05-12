@@ -495,22 +495,23 @@ def test_route_preset_free_uses_registration_order(monkeypatch) -> None:
 def test_route_claude_cli_pins_to_code_tools_model(monkeypatch) -> None:
     """When User-Agent is claude-cli AND the user picked the bare
     freeride/free default, pin to a specific code+tools-capable
-    model (llama-3.3-70b-versatile on Groq). Smart-router's
+    model on OpenRouter (openrouter/free). Smart-router's
     auto-resolution roulette is bypassed — it tends to return
-    openai/gpt-oss-120b which doesn't reliably trigger tool_calls."""
+    openai/gpt-oss-120b which doesn't reliably trigger tool_calls,
+    or groq's llama-3.3-70b-versatile which 413s on large payloads."""
     captured = {}
     groq = _PresetStubProvider("groq")
     openrouter = _PresetStubProvider("openrouter")
-    original_groq = groq._do_chat
+    original = openrouter._do_chat
 
-    async def capture_groq(request, model_id, key):
+    async def capture(request, model_id, key):
         captured["model_id"] = model_id
         captured["request_model"] = request.model
-        return await original_groq(request, model_id, key)
+        return await original(request, model_id, key)
 
-    groq.forward_chat.side_effect = capture_groq
-    # Register openrouter FIRST so registration order doesn't trick us
-    client = _make_preset_test_client(monkeypatch, [openrouter, groq])
+    openrouter.forward_chat.side_effect = capture
+    # Register groq FIRST so registration order doesn't trick us
+    client = _make_preset_test_client(monkeypatch, [groq, openrouter])
     r = client.post(
         "/v1/messages",
         json={
@@ -521,12 +522,12 @@ def test_route_claude_cli_pins_to_code_tools_model(monkeypatch) -> None:
         headers={"User-Agent": "claude-cli/2.1.139 (external, cli)"},
     )
     assert r.status_code == 200
-    # MUST land on groq because we pinned the provider, even though
-    # openrouter is registered first.
-    assert r.headers["X-FreeRide-Provider"] == "groq"
-    # MUST use llama-3.3-70b-versatile (the pinned model), not the
+    # MUST land on openrouter because we pinned the provider, even though
+    # groq is registered first.
+    assert r.headers["X-FreeRide-Provider"] == "openrouter"
+    # MUST use openrouter/free (the pinned model), not the
     # smart-router's auto-resolution pick.
-    assert captured["request_model"] == "llama-3.3-70b-versatile"
+    assert captured["request_model"] == "openrouter/free"
 
 
 def test_route_non_claude_cli_freeride_free_no_pin(monkeypatch) -> None:
@@ -558,7 +559,7 @@ def test_route_non_claude_cli_freeride_free_no_pin(monkeypatch) -> None:
     # and registration order picks groq first.
     assert r.headers["X-FreeRide-Provider"] == "groq"
     # The pinned model id should NOT have been applied.
-    assert captured["request_model"] != "llama-3.3-70b-versatile"
+    assert captured["request_model"] != "openrouter/free"
 
 
 def test_route_claude_cli_explicit_fast_not_pinned(monkeypatch) -> None:
@@ -591,7 +592,7 @@ def test_route_claude_cli_explicit_fast_not_pinned(monkeypatch) -> None:
     assert r.headers["X-FreeRide-Provider"] == "groq"
     # Should be the smart-router's pick ("auto" → stub-model), NOT
     # the pin's hardcoded id.
-    assert captured["request_model"] != "llama-3.3-70b-versatile"
+    assert captured["request_model"] != "openrouter/free"
 
 
 def test_route_claude_cli_pin_env_override(monkeypatch) -> None:
