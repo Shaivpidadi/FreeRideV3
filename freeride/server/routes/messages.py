@@ -133,30 +133,28 @@ async def messages(request: Request):
 
     # ─── claude-code caller detected? pin to a code+tools model ────
     # Claude Code requires (a) tool/function calling, (b) code-quality
-    # responses, (c) acceptance of large request bodies (claude sends
-    # ~110KB with the full system prompt + conversation history).
+    # responses, (c) acceptance of large request bodies (~110KB).
     # Many otherwise-good free models fail one of these:
     #   - openai/gpt-oss-120b → emits text but rarely tool_calls
     #   - groq/llama-3.3-70b-versatile → 413 "payload too large"
     #   - meta-llama/llama-3.3-70b-instruct:free → 429 often
-    # Probed live 2026-05-12 against this user's key. The pick below
-    # is what consistently returns 200 + a tool_calls block today.
+    # Probed live 2026-05-12 against this user's key. openrouter/free
+    # consistently returns 200 + tool_calls block.
     #
-    # Current pick: openrouter/free.
-    #   - OR's curated smart-router across all their free models
-    #   - Handles upstream rate-limits internally (resilient)
-    #   - Sub-second response observed
-    #   - Verified emits tool_calls in probe
-    #
-    # Explicit picks (fast/quality/coding) are NOT overridden — the
-    # user knew what they wanted.
+    # Pin behavior: when User-Agent is claude-cli AND model is any
+    # freeride/* id (free, fast, quality, coding), pin to a known
+    # tools-capable model on a body-size-friendly provider. Claude
+    # Code WITHOUT tool calls is useless — the model would describe
+    # what it would do as text and the user sees no actual file
+    # writes / bash commands. We respect the user's preset choice as
+    # a *hint*, but tool support is non-negotiable for claude-cli.
     #
     # Override via env: FREERIDE_CLAUDE_CODE_MODEL,
     # FREERIDE_CLAUDE_CODE_PROVIDER.
     ua = inbound_headers.get("user-agent", "").lower()
     is_claude_cli = ua.startswith("claude-cli/") or "claude-code" in ua
     claude_code_pin: tuple[str, str] | None = None  # (model_id, provider_name)
-    if is_claude_cli and decision.mode == "free" and decision.preset == "free":
+    if is_claude_cli and decision.mode == "free":
         pinned_model = os.environ.get(
             "FREERIDE_CLAUDE_CODE_MODEL", "openrouter/free"
         )
@@ -169,7 +167,11 @@ async def messages(request: Request):
             request_id=request_id,
             pinned_model=pinned_model,
             pinned_provider=pinned_provider,
-            reason="freeride/free default for claude-cli — pinning to a tools-capable code model",
+            original_preset=decision.preset,
+            reason=(
+                f"claude-cli + freeride/{decision.preset} → pinning to a "
+                "tools-capable code model (tool calling is non-negotiable)"
+            ),
             endpoint="messages",
         )
 
@@ -370,15 +372,16 @@ async def messages(request: Request):
     # callers the user explicitly opted into /model freeride/* asking
     # for a quick text answer — dropping tools is fine.
     #
-    # EXCEPTION: when claude_code_pin is set, we KEEP the tools array.
-    # The pinned target (default: openrouter/free) has the body-size
-    # capacity to accept it, and Claude Code is USELESS without tools
-    # — the model would emit fake JSON-shaped text trying to describe
-    # tool calls instead of emitting actual tool_use blocks. Verified
-    # live 2026-05-12 against this exact regression.
+    # EXCEPTION: claude-cli ALWAYS keeps tools, regardless of preset.
+    # Claude Code is useless without tools — the model would emit
+    # fake JSON-shaped text describing tool calls instead of real
+    # tool_use blocks. Verified live 2026-05-12: this strip was the
+    # reason `freeride/coding` (and `/fast`, `/quality`) responses
+    # came back as plain text descriptions of commands rather than
+    # claude actually invoking Bash/Write/etc.
     if (
         decision.mode == "free"
-        and claude_code_pin is None
+        and not is_claude_cli
         and (openai_request.tools or openai_request.tool_choice)
     ):
         n_dropped = len(openai_request.tools or [])
