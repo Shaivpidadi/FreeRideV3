@@ -57,10 +57,21 @@ export PATH=\"\$HOME/.local/bin:\$PATH\" && curl -sSL https://api.free-ride.xyz/
 fi
 
 print ""
-print "Installing freeride-gateway..."
-# --prerelease=allow because we ship 0.3.0a* alphas pre-stable; once 0.3.0
-# final lands you can drop this flag and it'll still pick up the latest.
-uv tool install --prerelease=allow freeride-gateway
+# FREERIDE_REF lets early adopters install bleeding-edge from a git
+# branch/tag/sha rather than the latest PyPI release. Useful when PyPI
+# is behind main (e.g. a new feature merged but not yet tagged).
+#   FREERIDE_REF=main      curl -sSL .../install.sh | sh
+#   FREERIDE_REF=v0.5.0a1  curl -sSL .../install.sh | sh
+if [ -n "${FREERIDE_REF:-}" ]; then
+    print "Installing freeride-gateway from git ref: $FREERIDE_REF"
+    uv tool install --prerelease=allow --reinstall \
+        "git+https://github.com/Shaivpidadi/FreeRideV3.git@$FREERIDE_REF"
+else
+    print "Installing freeride-gateway..."
+    # --prerelease=allow because we ship 0.4.0a* alphas pre-stable; once 0.4.0
+    # final lands you can drop this flag and it'll still pick up the latest.
+    uv tool install --prerelease=allow freeride-gateway
+fi
 
 print ""
 print "Verifying..."
