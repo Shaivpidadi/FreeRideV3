@@ -492,23 +492,24 @@ def test_route_preset_free_uses_registration_order(monkeypatch) -> None:
     assert r.headers["X-FreeRide-Provider"] == "openrouter"
 
 
-def test_route_claude_cli_upgrades_free_to_quality(monkeypatch) -> None:
-    """When User-Agent is claude-cli and the user picked freeride/free,
-    auto-upgrade to freeride/quality semantics so the smart-router
-    picks a larger free model instead of an 8B Llama. Explicit
-    quality/fast/coding picks are respected as-is — only bare 'free'
-    is upgraded."""
+def test_route_claude_cli_pins_to_code_tools_model(monkeypatch) -> None:
+    """When User-Agent is claude-cli AND the user picked the bare
+    freeride/free default, pin to a specific code+tools-capable
+    model (llama-3.3-70b-versatile on Groq). Smart-router's
+    auto-resolution roulette is bypassed — it tends to return
+    openai/gpt-oss-120b which doesn't reliably trigger tool_calls."""
     captured = {}
-    openrouter = _PresetStubProvider("openrouter")
     groq = _PresetStubProvider("groq")
-    original_or = openrouter._do_chat
+    openrouter = _PresetStubProvider("openrouter")
+    original_groq = groq._do_chat
 
-    async def capturing(request, model_id, key):
-        captured["request"] = request
-        captured["provider"] = "openrouter"
-        return await original_or(request, model_id, key)
+    async def capture_groq(request, model_id, key):
+        captured["model_id"] = model_id
+        captured["request_model"] = request.model
+        return await original_groq(request, model_id, key)
 
-    openrouter.forward_chat.side_effect = capturing
+    groq.forward_chat.side_effect = capture_groq
+    # Register openrouter FIRST so registration order doesn't trick us
     client = _make_preset_test_client(monkeypatch, [openrouter, groq])
     r = client.post(
         "/v1/messages",
@@ -517,20 +518,30 @@ def test_route_claude_cli_upgrades_free_to_quality(monkeypatch) -> None:
             "max_tokens": 10,
             "messages": [{"role": "user", "content": "hi"}],
         },
-        headers={"User-Agent": "claude-cli/2.1.139 (external, sdk-cli)"},
+        headers={"User-Agent": "claude-cli/2.1.139 (external, cli)"},
     )
     assert r.status_code == 200
-    # The upgrade should route to openrouter (quality preset's first
-    # preference), NOT groq (which would be picked by registration
-    # order if no preset preference fired).
-    assert r.headers["X-FreeRide-Provider"] == "openrouter"
-    assert captured["provider"] == "openrouter"
+    # MUST land on groq because we pinned the provider, even though
+    # openrouter is registered first.
+    assert r.headers["X-FreeRide-Provider"] == "groq"
+    # MUST use llama-3.3-70b-versatile (the pinned model), not the
+    # smart-router's auto-resolution pick.
+    assert captured["request_model"] == "llama-3.3-70b-versatile"
 
 
-def test_route_non_claude_cli_freeride_free_no_upgrade(monkeypatch) -> None:
+def test_route_non_claude_cli_freeride_free_no_pin(monkeypatch) -> None:
     """Same request but from a different User-Agent (e.g., curl or
-    a python script) — freeride/free stays as free, no upgrade."""
+    a python script) — freeride/free stays as free, no pin. The
+    smart-router auto-resolves as normal."""
+    captured = {}
     groq = _PresetStubProvider("groq")
+    original = groq._do_chat
+
+    async def cap(request, model_id, key):
+        captured["request_model"] = request.model
+        return await original(request, model_id, key)
+
+    groq.forward_chat.side_effect = cap
     openrouter = _PresetStubProvider("openrouter")
     client = _make_preset_test_client(monkeypatch, [groq, openrouter])
     r = client.post(
@@ -543,14 +554,26 @@ def test_route_non_claude_cli_freeride_free_no_upgrade(monkeypatch) -> None:
         headers={"User-Agent": "curl/8.4.0"},
     )
     assert r.status_code == 200
-    # No preset preference → registration order wins → groq first.
+    # No pin → model is "auto" (rewritten from freeride/free by route)
+    # and registration order picks groq first.
     assert r.headers["X-FreeRide-Provider"] == "groq"
+    # The pinned model id should NOT have been applied.
+    assert captured["request_model"] != "llama-3.3-70b-versatile"
 
 
-def test_route_claude_cli_explicit_fast_not_upgraded(monkeypatch) -> None:
+def test_route_claude_cli_explicit_fast_not_pinned(monkeypatch) -> None:
     """When User-Agent is claude-cli but the user EXPLICITLY picked
-    freeride/fast, leave it alone — don't second-guess the user."""
+    freeride/fast (or quality/coding), leave it alone — don't
+    second-guess the user's pick."""
+    captured = {}
     groq = _PresetStubProvider("groq")
+    original = groq._do_chat
+
+    async def cap(request, model_id, key):
+        captured["request_model"] = request.model
+        return await original(request, model_id, key)
+
+    groq.forward_chat.side_effect = cap
     openrouter = _PresetStubProvider("openrouter")
     client = _make_preset_test_client(monkeypatch, [openrouter, groq])
     r = client.post(
@@ -563,9 +586,41 @@ def test_route_claude_cli_explicit_fast_not_upgraded(monkeypatch) -> None:
         headers={"User-Agent": "claude-cli/2.1.139"},
     )
     assert r.status_code == 200
-    # fast preset prefers groq — and claude-cli upgrade does NOT
-    # override an explicit pick.
+    # fast preset prefers groq; pin should NOT fire because explicit
+    # preset picks are respected.
     assert r.headers["X-FreeRide-Provider"] == "groq"
+    # Should be the smart-router's pick ("auto" → stub-model), NOT
+    # the pin's hardcoded id.
+    assert captured["request_model"] != "llama-3.3-70b-versatile"
+
+
+def test_route_claude_cli_pin_env_override(monkeypatch) -> None:
+    """FREERIDE_CLAUDE_CODE_MODEL env var overrides the default pin."""
+    monkeypatch.setenv("FREERIDE_CLAUDE_CODE_MODEL", "qwen-3-coder")
+    monkeypatch.setenv("FREERIDE_CLAUDE_CODE_PROVIDER", "openrouter")
+    captured = {}
+    openrouter = _PresetStubProvider("openrouter")
+    original = openrouter._do_chat
+
+    async def cap(request, model_id, key):
+        captured["request_model"] = request.model
+        return await original(request, model_id, key)
+
+    openrouter.forward_chat.side_effect = cap
+    groq = _PresetStubProvider("groq")
+    client = _make_preset_test_client(monkeypatch, [openrouter, groq])
+    r = client.post(
+        "/v1/messages",
+        json={
+            "model": "freeride/free",
+            "max_tokens": 10,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+        headers={"User-Agent": "claude-cli/2.1.139"},
+    )
+    assert r.status_code == 200
+    assert r.headers["X-FreeRide-Provider"] == "openrouter"
+    assert captured["request_model"] == "qwen-3-coder"
 
 
 def test_route_free_strips_tools_from_request(monkeypatch) -> None:

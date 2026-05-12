@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 
 from typing import AsyncIterator
@@ -130,35 +131,45 @@ async def messages(request: Request):
     model_id = peek.get("model") or ""
     decision = decide_route(model_id, inbound_headers)
 
-    # ─── claude-code caller detected? upgrade to better preset ─────
-    # When the User-Agent is `claude-cli/...` and the user picked
-    # `freeride/free`, the smart-router often returns a 7-8B Llama
-    # because that's what shows up cheapest in the catalog. That's
-    # wrong for code-gen / agentic workflows where claude code is the
-    # caller — those need a 70B+ class model to be useful.
+    # ─── claude-code caller detected? pin to a code+tools model ────
+    # Claude Code requires (a) tool/function calling, (b) code-quality
+    # responses. Most popular free models (openai/gpt-oss-120b,
+    # Qwen3-235B-A22B, etc.) emit *text* but don't reliably trigger
+    # tool_calls — claude code degenerates into "run the script" text
+    # with no actual Bash invocation. Useless.
     #
-    # The upgrade: when (preset="free" AND user-agent is claude-cli),
-    # promote to "quality" semantics (prefer OpenRouter's free large
-    # models: Qwen3-235B, DeepSeek-V3, GPT-OSS-120B). Explicit picks
-    # (fast/quality/coding) are respected as-is — the user knew what
-    # they wanted.
+    # So when User-Agent is `claude-cli/*` AND the user picked the
+    # bare `freeride/free` default, we pin to a SPECIFIC model that
+    # is verified to (1) support tool calls reliably, (2) be decent
+    # at coding, (3) be available on free providers today.
+    #
+    # Current pick: groq/llama-3.3-70b-versatile.
+    #   - 70B parameters → enough capacity for code
+    #   - tool-calling support (verified in Phase B tests)
+    #   - LPU silicon → sub-100ms TTFT
+    #   - Available on the user's free Groq key (we already validated)
+    #
+    # Explicit picks (fast/quality/coding) are NOT overridden — the
+    # user knew what they wanted.
+    #
+    # Set FREERIDE_CLAUDE_CODE_MODEL env var to override the pick.
     ua = inbound_headers.get("user-agent", "").lower()
     is_claude_cli = ua.startswith("claude-cli/") or "claude-code" in ua
+    claude_code_pin: tuple[str, str] | None = None  # (model_id, provider_name)
     if is_claude_cli and decision.mode == "free" and decision.preset == "free":
-        from freeride.core.model_router import RoutingDecision
-        decision = RoutingDecision(
-            mode="free",
-            preset="quality",
-            reason=(
-                "claude-cli detected — auto-upgrading freeride/free to "
-                "freeride/quality semantics (prefer larger OR/HF models)"
-            ),
+        pinned_model = os.environ.get(
+            "FREERIDE_CLAUDE_CODE_MODEL", "llama-3.3-70b-versatile"
         )
+        pinned_provider = os.environ.get(
+            "FREERIDE_CLAUDE_CODE_PROVIDER", "groq"
+        )
+        claude_code_pin = (pinned_model, pinned_provider)
         emit_event(
-            "messages_claude_cli_upgrade",
+            "messages_claude_cli_pin",
             request_id=request_id,
-            from_preset="free",
-            to_preset="quality",
+            pinned_model=pinned_model,
+            pinned_provider=pinned_provider,
+            reason="freeride/free default for claude-cli — pinning to a tools-capable code model",
             endpoint="messages",
         )
 
@@ -240,6 +251,22 @@ async def messages(request: Request):
     # same shape as /v1/chat/completions so smart-routing, cooldown,
     # and per-key health all apply uniformly.
     providers: list[Provider] = sort_by_health(list(request.app.state.providers))
+
+    # If we pinned a claude-code-specific model (see decision block
+    # above), rewrite the OpenAI request's model field NOW so the
+    # smart-router's auto resolution doesn't fire downstream. We also
+    # narrow the provider list to the pinned provider so failover
+    # doesn't try the wrong upstream first.
+    if claude_code_pin is not None:
+        openai_request.model = claude_code_pin[0]
+        pinned_provider_name = claude_code_pin[1]
+        narrowed = [p for p in providers if p.name == pinned_provider_name]
+        if narrowed:
+            providers = narrowed
+        # If the pinned provider isn't registered we keep the full
+        # list so the existing failover machinery still finds *some*
+        # provider for the model id.
+
     providers, forced = _apply_force_provider(providers, request)
     if forced is not None and not providers:
         raise HTTPException(
@@ -325,10 +352,14 @@ async def messages(request: Request):
             auto_resolution_restricted=bool(head),
             endpoint="messages",
         )
-    elif decision.preset == "free":
+    elif decision.preset == "free" and claude_code_pin is None:
         # Bare "freeride/free" — rewrite to "auto" so the smart
         # router doesn't see an unknown model id. No restriction;
         # full catalog is fair game.
+        #
+        # Skipped when claude_code_pin is set: the pin already
+        # overwrote openai_request.model with a specific id, and we
+        # do NOT want to clobber that back to "auto".
         openai_request.model = "auto"
 
     # ─── strip tools when routing to free ──────────────────────────
