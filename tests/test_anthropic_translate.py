@@ -9,6 +9,8 @@ expected to gate cleanly).
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from freeride.core.anthropic_schema import (
@@ -360,6 +362,84 @@ def test_response_no_choices_yields_empty_content_not_crash() -> None:
     assert out.usage.input_tokens == 0
 
 
+def test_response_reasoning_field_becomes_thinking_block() -> None:
+    """OpenRouter returns model's chain-of-thought in
+    `choices[0].message.reasoning` (separate from `content`). Surface
+    it as an Anthropic thinking block so Claude Code renders it
+    dimmed/collapsed rather than as a user-facing text bullet."""
+    resp = ChatResponse(
+        id="chatcmpl-r",
+        created=0,
+        model="poolside/laguna-xs.2-20260421:free",
+        choices=[
+            Choice(
+                index=0,
+                message=ChoiceMessage(
+                    role="assistant",
+                    content="The file has been created.",
+                    reasoning="Let me confirm this to the user.",  # type: ignore[call-arg]
+                ),
+                finish_reason="stop",
+            )
+        ],
+    )
+    out = openai_to_anthropic_response(resp, "claude-sonnet-4-6")
+    assert out.content == [
+        {
+            "type": "thinking",
+            "thinking": "Let me confirm this to the user.",
+            "signature": "",
+        },
+        {"type": "text", "text": "The file has been created."},
+    ]
+
+
+def test_response_reasoning_content_alias_becomes_thinking_block() -> None:
+    """vLLM and NIM use `reasoning_content` instead of `reasoning`."""
+    resp = ChatResponse(
+        id="chatcmpl-r",
+        created=0,
+        model="m",
+        choices=[
+            Choice(
+                index=0,
+                message=ChoiceMessage(
+                    role="assistant",
+                    content="Done.",
+                    reasoning_content="I figured out X.",  # type: ignore[call-arg]
+                ),
+                finish_reason="stop",
+            )
+        ],
+    )
+    out = openai_to_anthropic_response(resp, "claude-sonnet-4-6")
+    assert out.content[0]["type"] == "thinking"
+    assert out.content[0]["thinking"] == "I figured out X."
+
+
+def test_response_empty_reasoning_omitted() -> None:
+    """Empty or whitespace-only reasoning must not produce an empty
+    thinking block (would render as a blank dimmed bullet)."""
+    resp = ChatResponse(
+        id="chatcmpl-r",
+        created=0,
+        model="m",
+        choices=[
+            Choice(
+                index=0,
+                message=ChoiceMessage(
+                    role="assistant",
+                    content="Hello",
+                    reasoning="   ",  # type: ignore[call-arg]
+                ),
+                finish_reason="stop",
+            )
+        ],
+    )
+    out = openai_to_anthropic_response(resp, "claude-sonnet-4-6")
+    assert out.content == [{"type": "text", "text": "Hello"}]
+
+
 def test_response_with_tool_calls_emits_tool_use_block() -> None:
     """Phase-1 doesn't ROUTE tool requests, but if a provider
     spontaneously emits tool_calls anyway, the translator must not
@@ -497,9 +577,17 @@ def _chunk(
     finish_reason: str | None = None,
     usage: Usage | None = None,
     role_only: bool = False,
+    reasoning: str | None = None,
 ) -> ChatStreamEvent:
     """Build a synthetic OpenAI streaming chunk for the translator."""
-    delta = StreamDelta(role="assistant" if role_only else None, content=content)
+    extra: dict[str, Any] = {}
+    if reasoning is not None:
+        extra["reasoning"] = reasoning
+    delta = StreamDelta(
+        role="assistant" if role_only else None,
+        content=content,
+        **extra,
+    )
     return ChatStreamEvent(
         id="chatcmpl-stub",
         created=1234567890,
@@ -690,6 +778,70 @@ async def test_stream_message_stop_is_terminal() -> None:
     events = await _collect_sse_events(chunks)
     assert events[-1][0] == "message_stop"
     assert events[-1][1] == {"type": "message_stop"}
+
+
+@pytest.mark.asyncio
+async def test_stream_reasoning_opens_thinking_block_before_text() -> None:
+    """When `delta.reasoning` arrives before `delta.content`, the
+    translator opens a thinking content block at index 0, streams
+    thinking_delta events into it, closes it, then opens a separate
+    text block at index 1. Claude Code uses this to render reasoning
+    dimmed and the answer normally."""
+    chunks = [
+        _chunk(role_only=True),
+        _chunk(reasoning="Let me think..."),
+        _chunk(reasoning=" about this."),
+        _chunk(content="Here's the answer."),
+        _chunk(content=None, finish_reason="stop"),
+    ]
+    events = await _collect_sse_events(chunks)
+    names = [e[0] for e in events]
+    assert names == [
+        "message_start",
+        "content_block_start",   # thinking block opens at index 0
+        "content_block_delta",
+        "content_block_delta",
+        "content_block_stop",    # thinking closes before text opens
+        "content_block_start",   # text block opens at index 1
+        "content_block_delta",
+        "content_block_stop",
+        "message_delta",
+        "message_stop",
+    ]
+    # Thinking block shape
+    start_thinking = events[1][1]
+    assert start_thinking["index"] == 0
+    assert start_thinking["content_block"] == {"type": "thinking", "thinking": ""}
+    # Thinking deltas use thinking_delta subtype, not text_delta
+    assert events[2][1]["delta"] == {"type": "thinking_delta", "thinking": "Let me think..."}
+    assert events[3][1]["delta"] == {"type": "thinking_delta", "thinking": " about this."}
+    # Text block opens at index 1
+    start_text = events[5][1]
+    assert start_text["index"] == 1
+    assert start_text["content_block"] == {"type": "text", "text": ""}
+    assert events[6][1]["delta"] == {"type": "text_delta", "text": "Here's the answer."}
+
+
+@pytest.mark.asyncio
+async def test_stream_reasoning_only_no_text() -> None:
+    """Some models stream only reasoning then finish without content
+    (e.g. forced empty answer). The thinking block must still close
+    cleanly and we must not synthesize an empty text block."""
+    chunks = [
+        _chunk(reasoning="Thinking out loud."),
+        _chunk(content=None, finish_reason="stop"),
+    ]
+    events = await _collect_sse_events(chunks)
+    names = [e[0] for e in events]
+    assert names == [
+        "message_start",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_stop",
+        "message_delta",
+        "message_stop",
+    ]
+    assert events[1][1]["content_block"]["type"] == "thinking"
 
 
 @pytest.mark.asyncio

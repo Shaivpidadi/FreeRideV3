@@ -398,6 +398,13 @@ def openai_to_anthropic_response(
     msg = choice.message
 
     content_blocks: list[dict[str, Any]] = []
+
+    reasoning = _extract_reasoning(msg)
+    if reasoning:
+        content_blocks.append(
+            {"type": "thinking", "thinking": reasoning, "signature": ""}
+        )
+
     text = msg.content or ""
     if text:
         content_blocks.append({"type": "text", "text": text})
@@ -438,6 +445,28 @@ def openai_to_anthropic_response(
         stop_sequence=None,
         usage=usage_obj,
     )
+
+
+def _extract_reasoning(obj: Any) -> str | None:
+    """Pull reasoning text out of an upstream message or stream delta.
+
+    OpenRouter uses `reasoning`; vLLM / NIM use `reasoning_content`.
+    Both arrive as model_extra because our schemas declare
+    `extra="allow"`. Returns None when no usable text is present.
+    """
+    for attr in ("reasoning", "reasoning_content"):
+        val: Any
+        if hasattr(obj, attr):
+            val = getattr(obj, attr)
+        elif hasattr(obj, "model_extra") and obj.model_extra:
+            val = obj.model_extra.get(attr)
+        elif isinstance(obj, dict):
+            val = obj.get(attr)
+        else:
+            val = None
+        if isinstance(val, str) and val.strip():
+            return val
+    return None
 
 
 def _safe_parse_tool_args(arguments: str | None) -> dict[str, Any]:
@@ -561,7 +590,7 @@ async def stream_openai_to_anthropic(
 
     # State machine -----------------------------------------------
     current_index = -1  # last-emitted block index; bumps on each open
-    current_kind: str | None = None  # 'text' | 'tool_use' | None
+    current_kind: str | None = None  # 'thinking' | 'text' | 'tool_use' | None
     # Map OpenAI tool_calls[i].index → our content_block index
     tool_call_to_block: dict[int, int] = {}
 
@@ -584,6 +613,44 @@ async def stream_openai_to_anthropic(
 
         for choice in choices:
             delta = choice.delta if hasattr(choice, "delta") else choice.get("delta") or {}
+
+            # ─── reasoning / thinking ───────────────────────
+            # OpenRouter streams `delta.reasoning`; vLLM/NIM stream
+            # `delta.reasoning_content`. Surface as Anthropic
+            # thinking_delta events so Claude Code renders them in
+            # the dimmed thinking block instead of as user-facing
+            # text.
+            reasoning_piece = _extract_reasoning(delta)
+            if reasoning_piece:
+                if current_kind != "thinking":
+                    if current_kind is not None:
+                        closed = await _close_current()
+                        if closed:
+                            yield closed
+                    current_index += 1
+                    current_kind = "thinking"
+                    yield _sse_event(
+                        "content_block_start",
+                        {
+                            "type": "content_block_start",
+                            "index": current_index,
+                            "content_block": {
+                                "type": "thinking",
+                                "thinking": "",
+                            },
+                        },
+                    )
+                yield _sse_event(
+                    "content_block_delta",
+                    {
+                        "type": "content_block_delta",
+                        "index": current_index,
+                        "delta": {
+                            "type": "thinking_delta",
+                            "thinking": reasoning_piece,
+                        },
+                    },
+                )
 
             # ─── text content ───────────────────────────────
             content_piece = (
