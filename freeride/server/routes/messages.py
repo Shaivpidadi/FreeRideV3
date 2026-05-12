@@ -364,17 +364,22 @@ async def messages(request: Request):
 
     # ─── strip tools when routing to free ──────────────────────────
     # Claude Code 2.x sends ~70 tools in every request (Agent, Read,
-    # Write, Bash, Edit, …). Free providers either reject the request
-    # outright (size + tool count) or quietly fail in shapes our
-    # error classifier doesn't catch. The user explicitly opted into
-    # /model freeride/* — they're asking for a quick text answer, not
-    # an agentic tool-using session. Drop the tools array so the free
-    # providers see a clean text-only request.
+    # Write, Bash, Edit, …). Some free providers reject the request
+    # outright (groq returns 413 "payload too large") or quietly fail
+    # in shapes our error classifier doesn't catch. For non-claude-cli
+    # callers the user explicitly opted into /model freeride/* asking
+    # for a quick text answer — dropping tools is fine.
     #
-    # The user can still flip back to /model claude-* for the
-    # agentic flow (passthrough relays everything untouched).
-    if decision.mode == "free" and (
-        openai_request.tools or openai_request.tool_choice
+    # EXCEPTION: when claude_code_pin is set, we KEEP the tools array.
+    # The pinned target (default: openrouter/free) has the body-size
+    # capacity to accept it, and Claude Code is USELESS without tools
+    # — the model would emit fake JSON-shaped text trying to describe
+    # tool calls instead of emitting actual tool_use blocks. Verified
+    # live 2026-05-12 against this exact regression.
+    if (
+        decision.mode == "free"
+        and claude_code_pin is None
+        and (openai_request.tools or openai_request.tool_choice)
     ):
         n_dropped = len(openai_request.tools or [])
         openai_request.tools = None
