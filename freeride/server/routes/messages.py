@@ -130,6 +130,38 @@ async def messages(request: Request):
     model_id = peek.get("model") or ""
     decision = decide_route(model_id, inbound_headers)
 
+    # ─── claude-code caller detected? upgrade to better preset ─────
+    # When the User-Agent is `claude-cli/...` and the user picked
+    # `freeride/free`, the smart-router often returns a 7-8B Llama
+    # because that's what shows up cheapest in the catalog. That's
+    # wrong for code-gen / agentic workflows where claude code is the
+    # caller — those need a 70B+ class model to be useful.
+    #
+    # The upgrade: when (preset="free" AND user-agent is claude-cli),
+    # promote to "quality" semantics (prefer OpenRouter's free large
+    # models: Qwen3-235B, DeepSeek-V3, GPT-OSS-120B). Explicit picks
+    # (fast/quality/coding) are respected as-is — the user knew what
+    # they wanted.
+    ua = inbound_headers.get("user-agent", "").lower()
+    is_claude_cli = ua.startswith("claude-cli/") or "claude-code" in ua
+    if is_claude_cli and decision.mode == "free" and decision.preset == "free":
+        from freeride.core.model_router import RoutingDecision
+        decision = RoutingDecision(
+            mode="free",
+            preset="quality",
+            reason=(
+                "claude-cli detected — auto-upgrading freeride/free to "
+                "freeride/quality semantics (prefer larger OR/HF models)"
+            ),
+        )
+        emit_event(
+            "messages_claude_cli_upgrade",
+            request_id=request_id,
+            from_preset="free",
+            to_preset="quality",
+            endpoint="messages",
+        )
+
     emit_event(
         "messages_routing_decision",
         request_id=request_id,

@@ -59,6 +59,24 @@ Outside the wrapper, plain `claude` hits `api.anthropic.com` directly. No magic.
 
 The free presets are hints, not contracts. If a preferred provider is rate-limited or offline, failover walks the chain.
 
+### Which preset to use with Claude Code
+
+**For most code-gen and reasoning work, prefer `freeride/quality`.** The smart-router behind `freeride/free` often picks small 7-8B Llama models that are not strong enough for Claude Code's typical tasks (multi-step coding, refactor, debug). `freeride/quality` biases toward OpenRouter's larger free models (DeepSeek-V3, Qwen3-235B, GPT-OSS-120B, Llama 3.3 70B).
+
+To make this less surprising: **when FreeRide detects the caller is Claude Code (User-Agent `claude-cli/...`) and the model id is `freeride/free`, FreeRide automatically upgrades to `freeride/quality` semantics.** Explicit picks (`fast`, `quality`, `coding`) are respected as-is — the upgrade only fires for the bare `free` default. Telemetry stamps `messages_claude_cli_upgrade` events so you can see this happening.
+
+### Discovering presets inside Claude Code
+
+Claude Code's `/model` picker is a **client-side hardcoded list of Anthropic's official models**. It doesn't query `/v1/models` on the configured `ANTHROPIC_BASE_URL`, so `freeride/*` ids will never appear in the picker.
+
+To use a `freeride/*` preset, type the full id:
+
+```
+/model freeride/quality
+```
+
+The `freeride run claude` wrapper prints a one-time banner at session start listing the four presets — so you'll see them every time you start a wrapped session.
+
 ---
 
 ## Subscription passthrough — how it works

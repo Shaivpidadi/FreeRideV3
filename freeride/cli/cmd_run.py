@@ -219,6 +219,29 @@ def cmd_run(args) -> int:
 
     child_env = build_child_env(base_url=base_url, parent_env=os.environ.copy())
 
+    # Banner — only when wrapping `claude` AND running an interactive
+    # TTY. claude-cli's hardcoded /model picker doesn't surface
+    # freeride/* virtual ids, so print them once at session start.
+    # Suppressed when stdin isn't a tty (CI, scripts, --print mode
+    # already detached) so we don't clutter machine consumers.
+    if (
+        command_argv
+        and os.path.basename(command_argv[0]) == "claude"
+        and "--print" not in command_argv
+        and sys.stdin.isatty()
+    ):
+        print(
+            "\n  ╭─ freeride: free-tier model presets ─────────────────╮\n"
+            "  │  Inside claude, type /model <id>:                   │\n"
+            "  │    freeride/free     — smart-routed                 │\n"
+            "  │    freeride/fast     — groq-preferred (low latency) │\n"
+            "  │    freeride/quality  — OR-preferred (larger models) │\n"
+            "  │    freeride/coding   — code-tuned (Qwen-Coder)      │\n"
+            "  │  /model claude-opus-4-7 keeps using your sub.       │\n"
+            "  ╰─────────────────────────────────────────────────────╯\n",
+            file=sys.stderr,
+        )
+
     try:
         os.execvpe(command_argv[0], command_argv, child_env)
     except FileNotFoundError:
