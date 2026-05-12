@@ -345,7 +345,14 @@ async def messages(request: Request):
         # router picks something. freeride/free already maps to
         # auto via the _AUTO_SENTINELS frozenset, but typed
         # presets don't.
-        openai_request.model = "auto"
+        #
+        # SKIP when claude_code_pin is set: the pin already
+        # rewrote openai_request.model to a specific tools-capable
+        # id, and we MUST NOT clobber that back to "auto" (which
+        # would trigger the smart-router roulette and pick a
+        # model that doesn't reliably emit tool_calls).
+        if claude_code_pin is None:
+            openai_request.model = "auto"
         emit_event(
             "messages_preset_applied",
             request_id=ctx.request_id,
