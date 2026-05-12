@@ -65,6 +65,15 @@ class HuggingFaceProvider:
 
     def __init__(self, *, http_timeout: float = 30.0) -> None:
         self._timeout = http_timeout
+        # Streaming responses bump `read` to 10 min so extended-thinking
+        # models can stall >30s between chunks without httpx killing the
+        # SSE connection.
+        self._stream_timeout = httpx.Timeout(
+            connect=http_timeout,
+            read=600.0,
+            write=http_timeout,
+            pool=http_timeout,
+        )
 
     # ----- request stamping ----------------------------------------------
     def auth_header(self, key: str) -> dict[str, str]:
@@ -232,7 +241,7 @@ class HuggingFaceProvider:
         payload["model"] = model_id
         payload["stream"] = True
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with httpx.AsyncClient(timeout=self._stream_timeout) as client:
             async with client.stream(
                 "POST",
                 HF_CHAT_URL,

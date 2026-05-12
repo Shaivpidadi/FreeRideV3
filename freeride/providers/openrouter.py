@@ -137,6 +137,16 @@ class OpenRouterProvider:
 
     def __init__(self, *, http_timeout: float = 30.0) -> None:
         self._timeout = http_timeout
+        # Streaming responses keep connect/write tight but extend `read`
+        # to 10 min — extended-thinking models can go >30s between
+        # visible tokens, which would otherwise trip httpx's default
+        # read-timeout and kill the SSE connection mid-stream.
+        self._stream_timeout = httpx.Timeout(
+            connect=http_timeout,
+            read=600.0,
+            write=http_timeout,
+            pool=http_timeout,
+        )
 
     # ----- request stamping (Provider Protocol) --------------------------
     def auth_header(self, key: str) -> dict[str, str]:
@@ -283,7 +293,7 @@ class OpenRouterProvider:
         payload["model"] = model_id
         payload["stream"] = True
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with httpx.AsyncClient(timeout=self._stream_timeout) as client:
             async with client.stream(
                 "POST",
                 OPENROUTER_CHAT_URL,
