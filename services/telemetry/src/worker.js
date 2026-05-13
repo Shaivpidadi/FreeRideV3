@@ -211,6 +211,25 @@ async function handleStats(env) {
      LIMIT 10`,
   ).all();
 
+  // Lifetime totals across every day we've ever scraped. `openrouter_daily`
+  // rows are never deleted — when a day rolls past OR's 30-day window the
+  // upsert simply stops touching that row, but the historical tokens count
+  // stays in the table. So a plain SUM() gives us a cumulative number that
+  // grows monotonically over the project's lifetime, suitable for the
+  // homepage "all tokens served" counter.
+  //
+  // The MIN(date) `since` field lets the UI be honest about coverage:
+  // numbers before that date were never recorded by us.
+  const lifetime = await env.DB.prepare(
+    `SELECT
+       SUM(tokens) AS combined_tokens,
+       SUM(CASE WHEN app = 'v1' THEN tokens ELSE 0 END) AS v1_tokens,
+       SUM(CASE WHEN app = 'v3' THEN tokens ELSE 0 END) AS v3_tokens,
+       MIN(date) AS since,
+       MAX(date) AS through
+     FROM openrouter_daily`,
+  ).first();
+
   // Install velocity from the install_events table (populated by
   // install.sh / install.ps1, NOT by `freeride serve`). This is the
   // honest install count — every CLI that ran the installer is here,
@@ -257,6 +276,15 @@ async function handleStats(env) {
           v3_tokens: or.v3_tokens,
           combined_tokens: or.combined_tokens,
           fetched_at: or.fetched_at,
+        }
+      : null,
+    openrouter_lifetime: lifetime && lifetime.combined_tokens
+      ? {
+          v1_tokens: lifetime.v1_tokens ?? 0,
+          v3_tokens: lifetime.v3_tokens ?? 0,
+          combined_tokens: lifetime.combined_tokens ?? 0,
+          since: lifetime.since,
+          through: lifetime.through,
         }
       : null,
     openrouter_daily: {
