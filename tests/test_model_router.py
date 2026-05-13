@@ -115,6 +115,19 @@ def test_has_inbound_auth_no_headers() -> None:
     assert has_inbound_auth(None) is False
 
 
+def test_has_inbound_auth_freeride_sentinel_doesnt_count_as_auth() -> None:
+    """The `freeride run claude` wrapper injects
+    ANTHROPIC_API_KEY=sk-freeride-no-auth when the user has no real
+    credential, to satisfy claude-cli 2.1.140+'s pre-flight gate. The
+    gateway must NOT treat that as real auth — it has to fall through
+    to free routing instead of attempting a passthrough that would
+    401 against api.anthropic.com."""
+    assert has_inbound_auth({"x-api-key": "sk-freeride-no-auth"}) is False
+    assert has_inbound_auth({"Authorization": "Bearer sk-freeride-no-auth"}) is False
+    # Real keys still count.
+    assert has_inbound_auth({"x-api-key": "sk-ant-api03-real"}) is True
+
+
 def test_has_inbound_auth_other_headers_dont_count() -> None:
     """Anthropic-version, content-type, etc. mustn't be mistaken for
     auth."""

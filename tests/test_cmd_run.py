@@ -89,12 +89,37 @@ def test_build_child_env_passes_through_anthropic_api_key() -> None:
     assert env["ANTHROPIC_API_KEY"] == "sk-ant-api03-direct"
 
 
-def test_build_child_env_does_not_invent_credentials() -> None:
-    """If the parent has no auth set, the child must not get a
-    fabricated one — the gateway routes such requests to free
-    providers, which is the right behavior."""
+def test_build_child_env_injects_sentinel_when_no_real_credential() -> None:
+    """claude-cli 2.1.140+ short-circuits with "Not logged in" before
+    making any HTTP call if it can't find an API key. To keep the
+    free-routing flow working for users with no Anthropic account, we
+    inject a sentinel ANTHROPIC_API_KEY. The gateway recognizes the
+    sentinel via has_inbound_auth and still routes claude-* ids to
+    free mode."""
     env = build_child_env(base_url="http://localhost:11343", parent_env={})
+    assert env["ANTHROPIC_API_KEY"] == "sk-freeride-no-auth"
     assert "ANTHROPIC_AUTH_TOKEN" not in env
+
+
+def test_build_child_env_does_not_overwrite_real_key() -> None:
+    """If the parent already has a real ANTHROPIC_API_KEY we must NOT
+    clobber it with the sentinel — paid users want their real key to
+    flow through for passthrough on claude-* ids."""
+    env = build_child_env(
+        base_url="http://localhost:11343",
+        parent_env={"ANTHROPIC_API_KEY": "sk-ant-api03-real"},
+    )
+    assert env["ANTHROPIC_API_KEY"] == "sk-ant-api03-real"
+
+
+def test_build_child_env_does_not_overwrite_oauth_token() -> None:
+    """OAuth session via `claude login` also satisfies claude-cli's
+    auth check, so we must not stomp on it with the sentinel either."""
+    env = build_child_env(
+        base_url="http://localhost:11343",
+        parent_env={"ANTHROPIC_AUTH_TOKEN": "sk-ant-oat01-user"},
+    )
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "sk-ant-oat01-user"
     assert "ANTHROPIC_API_KEY" not in env
 
 

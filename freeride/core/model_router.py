@@ -174,12 +174,24 @@ def parse_freeride_model(model_id: str) -> str | None:
     return PRESET_FREE
 
 
+# The CLI's `freeride run claude` wrapper injects this as
+# ANTHROPIC_API_KEY when the user has no real Anthropic credential, to
+# satisfy claude-cli 2.1.140+'s client-side "Not logged in" gate. The
+# gateway must treat it as the *absence* of auth so claude-* ids fall
+# through to free routing instead of attempting a passthrough that
+# would 401 against api.anthropic.com.
+_FREERIDE_SENTINEL_KEY = "sk-freeride-no-auth"
+
+
 def has_inbound_auth(headers: dict | None) -> bool:
     """Did the caller send a credential we can relay to Anthropic?
 
     Anthropic accepts BOTH ``Authorization: Bearer <oauth-token>``
     (Claude Code subscription flow) AND ``x-api-key: <key>`` (direct
-    API key flow). Either header counts. Empty values don't count.
+    API key flow). Either header counts. Empty values don't count, and
+    the FreeRide sentinel (injected by `freeride run claude` when no
+    real key is set) doesn't count either — we want claude-* ids in
+    that flow to fall through to free routing.
 
     Header keys in FastAPI are lowercased; we accept any case the
     caller used.
@@ -189,9 +201,11 @@ def has_inbound_auth(headers: dict | None) -> bool:
     # Normalize keys to lowercase for the lookup; values are passed
     # through to upstream as-is.
     norm = {k.lower(): v for k, v in headers.items() if v}
-    if norm.get("authorization", "").strip():
+    auth = norm.get("authorization", "").strip()
+    if auth and _FREERIDE_SENTINEL_KEY not in auth:
         return True
-    if norm.get("x-api-key", "").strip():
+    api_key = norm.get("x-api-key", "").strip()
+    if api_key and api_key != _FREERIDE_SENTINEL_KEY:
         return True
     return False
 

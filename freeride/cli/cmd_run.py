@@ -133,15 +133,27 @@ def build_child_env(*, base_url: str, parent_env: dict[str, str]) -> dict[str, s
     ``claude login``, ANTHROPIC_API_KEY if set, terminal-specific
     vars, etc.), then layers FreeRide's additions on top.
 
-    We intentionally DO NOT modify or fabricate auth tokens — the
-    passthrough route in the gateway expects the caller (Claude Code)
-    to attach its own credential via the Authorization header. Our
-    job is just to point Claude Code at the gateway.
+    Claude Code 2.1.140+ added a client-side auth gate: when it can't
+    find ANTHROPIC_API_KEY and there's no logged-in OAuth session, it
+    short-circuits with "Not logged in · Please run /login" *before*
+    making any HTTP request — so the gateway never sees the call. To
+    unblock free-routing for users with no Anthropic account, we inject
+    a sentinel ANTHROPIC_API_KEY whenever the parent env has neither.
+    The gateway's free-mode router picks routes from the model id (e.g.
+    ``freeride/coding``) and never inspects the auth value, so the
+    sentinel just satisfies claude-cli's pre-flight check.
+
+    If the parent already has a real ANTHROPIC_API_KEY or
+    ANTHROPIC_AUTH_TOKEN (e.g. paid users who want passthrough on
+    claude-* model ids but free routing on freeride/* presets), we pass
+    it through untouched.
     """
     env = dict(parent_env)
     # No trailing /v1: the Anthropic SDK appends "/v1/messages".
     env["ANTHROPIC_BASE_URL"] = base_url.rstrip("/")
     env["FREERIDE_ACTIVE"] = "1"
+    if not env.get("ANTHROPIC_API_KEY") and not env.get("ANTHROPIC_AUTH_TOKEN"):
+        env["ANTHROPIC_API_KEY"] = "sk-freeride-no-auth"
     return env
 
 
