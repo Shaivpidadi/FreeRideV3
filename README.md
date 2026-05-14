@@ -1,12 +1,25 @@
 # FreeRide
 
-**FreeRide now supports Claude Code**
+**The OpenAI-compatible gateway for every free-tier provider.**
+
 <img width="800" height="468" alt="freeride-now-supports-claudecode" src="https://github.com/user-attachments/assets/8fac89b2-9d31-4aa9-b349-7d6769fa63a5" />
 
+One local endpoint that fans out across **OpenRouter, Groq, NVIDIA NIM, HuggingFace, Cerebras, Cloudflare Workers AI**, and **your own Ollama**. Hit a rate limit, fail over to the next provider. Your agent never knows.
 
-**Ollama for free cloud inference.**
+Also wraps **Claude Code**, **OpenAI Codex**, and **Google Gemini CLI** — run all three without paying any of their vendors.
 
-A local OpenAI-compatible gateway that routes across every free-tier provider you have a key for — OpenRouter, Groq, NVIDIA NIM, Cloudflare Workers AI, HuggingFace, Cerebras, and your own Ollama. Hits a rate limit, fails over. Your agent never knows.
+> **102M+ tokens served in 35 days. $0 spent.**
+> Routed through community free-tier keys via this gateway.
+> Daily traffic: [free-ride.xyz/models](https://free-ride.xyz/models)
+
+```bash
+curl -sSL https://api.free-ride.xyz/install.sh | sh
+freeride run claude    # or: freeride run codex / freeride run gemini
+```
+
+That's it. No accounts, no subscriptions, no FreeRide cloud. Local-first, BYO keys, your machine talks to providers directly.
+
+---
 
 ## Install
 
@@ -22,283 +35,196 @@ curl -sSL https://api.free-ride.xyz/install.sh | sh
 powershell -ExecutionPolicy ByPass -c "irm https://api.free-ride.xyz/install.ps1 | iex"
 ```
 
-Then:
+The installer picks up `uv`, then `pipx`, then plain `pip` — whichever is on your system. Or [install from source](docs/install.md).
 
 ```bash
 freeride init           # interactive — collects keys, writes ~/.freeride/.env
 freeride serve          # gateway listens on localhost:11343
 ```
 
-Point any OpenAI-shaped client at `http://localhost:11343/v1` with `OPENAI_API_KEY=any`. That's it.
+**Get keys (any one is enough; more = better failover):**
 
-The installer bootstraps `uv` if missing, then `uv tool install`s `freeride-gateway`. Binary lands at `~/.local/bin/freeride` (Linux/macOS) or `%USERPROFILE%\.local\bin\freeride.exe` (Windows). Same shape as the bun.sh and astral.sh installers.
-
-<details>
-<summary>Or install manually</summary>
-
-```bash
-# uv (what the installer does)
-uv tool install --prerelease=allow freeride-gateway
-
-# pipx
-pipx install --pip-args=--pre freeride-gateway
-
-# pip + venv (the venv only — re-activate per shell)
-python3 -m venv .venv && source .venv/bin/activate
-pip install --pre freeride-gateway
-
-# from source
-git clone https://github.com/Shaivpidadi/FreeRideV3 && cd FreeRideV3
-pip install -e .
-```
-
-PyPI distribution: `freeride-gateway`. CLI: `freeride`. Python ≥ 3.10.
-</details>
-
-## Get keys (any one is enough; more = better failover)
-
-| Provider | Where | Env var |
+| Provider | Free tier | Get a key |
 |---|---|---|
-| OpenRouter | https://openrouter.ai/keys | `OPENROUTER_API_KEY` |
-| Groq | https://console.groq.com/keys | `GROQ_API_KEY` |
-| NVIDIA NIM | https://build.nvidia.com | `NVIDIA_API_KEY` |
-| Cloudflare Workers AI | https://dash.cloudflare.com/profile/api-tokens | `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` |
-| HuggingFace | https://huggingface.co/settings/tokens | `HF_TOKEN` |
-| Cerebras | https://cloud.cerebras.ai/platform | `CEREBRAS_API_KEY` |
-| Ollama (local) | https://ollama.com/download | `OLLAMA_BASE_URL=http://localhost:11434` |
+| OpenRouter | rotating free models | [openrouter.ai/keys](https://openrouter.ai/keys) |
+| Groq | daily token cap | [console.groq.com/keys](https://console.groq.com/keys) |
+| NVIDIA NIM | credits per account | [build.nvidia.com](https://build.nvidia.com) |
+| HuggingFace | $0.10/mo Free, $2/mo PRO | [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) |
+| Cerebras | RPM / TPM caps | [cloud.cerebras.ai](https://cloud.cerebras.ai) |
+| Cloudflare Workers AI | 10K neurons/day | [dash.cloudflare.com](https://dash.cloudflare.com) |
+| Ollama (local) | no quota | install from [ollama.com](https://ollama.com) |
 
-Set whichever you have, then `freeride serve`. The gateway picks them up and rotates between them.
+---
 
-Or use the wizard: `freeride init` writes `~/.freeride/.env` for you. The gateway auto-loads that file at startup — no manual `source` needed.
+## Run a coding agent — free
 
-## Wire your agent
+Three of the major coding CLIs ship a `freeride run` wrapper that works with **no per-vendor key** and **no login**. The gateway translates between each CLI's native wire protocol and our routing layer; you get the polished agent UX of each CLI, paid for entirely by free-tier providers.
 
-The fastest way is a binder:
-
-```bash
-freeride bind aider       # writes ~/.aider.conf.yml
-freeride bind continue    # writes ~/.continue/config.yaml
-freeride bind hermes      # writes ~/.hermes/config.yaml
-freeride bind openclaw    # writes ~/.openclaw/openclaw.json
-```
-
-Or set the OpenAI vars yourself:
-
-```bash
-export OPENAI_API_BASE=http://localhost:11343/v1
-export OPENAI_API_KEY=any
-```
-
-Anything OpenAI-shaped works. Tested with the openai-python SDK, Aider, Continue, Hermes, OpenClaw.
-
-## Multi-key rotation
-
-Got several free keys for the same provider? Pass them as a JSON array:
-
-```bash
-export OPENROUTER_API_KEY='["sk-or-v1-key1","sk-or-v1-key2","sk-or-v1-key3"]'
-```
-
-When key 1 hits 429 it goes on cooldown for 120s; key 2 takes the next request. Cooldowns persist across restarts (`~/.freeride/cooldown.json`).
-
-## How failover works
-
-Per request, FreeRide walks `(provider, key)` pairs in order:
-
-- `RATE_LIMIT` or `AUTH` → mark this key cooling, try the next key.
-- `MODEL_NOT_FOUND` → skip this provider, try the next provider.
-- Anything 5xx-ish → next pair.
-- First successful response → ship it; stamp `X-FreeRide-Provider` header (or `_freeride_provider` field on JSON) so you can tell who actually served it.
-
-Streaming uses buffer-first-chunk failover: hold the first SSE event until upstream confirms the stream is real. If it fails before the first chunk, retry. After the first chunk has shipped, mid-stream errors propagate (rare; documented).
-
-### Recommended: run `freeride audit-models` after install
-
-Providers list models they can't always serve. NVIDIA NIM lists Gemma-3-27B but sometimes returns 500. HuggingFace lists models that need PRO credits. The smart-router doesn't know which entries are real until it tries.
-
-```bash
-freeride audit-models                  # probe every catalog model, ~30s
-freeride audit-models --provider groq  # one provider only
-```
-
-This writes `~/.freeride/cache/model_health.json` that the smart-router reads at request time, so `model: "auto"` skips known-broken upstream models without paying a failover-attempt cost. Re-run after big provider changes or if you start seeing surprising 503s.
-
-Stale cache (older than 24h) is auto-refreshed on the next request, but a manual audit-models run is faster than discovering staleness mid-request.
-
-## Telemetry
-
-On by default. Hourly POST to `https://telemetry.free-ride.xyz/v1/beacon`:
-
-```json
-{
-  "installation_id": "random-uuid-v4",
-  "version": "0.3.0",
-  "os": "darwin",
-  "tokens_served": 412034,
-  "request_count": 187,
-  "providers_active": ["openrouter", "groq"],
-  "uptime_hours": 8
-}
-```
-
-Prompts, completions, model IDs, API keys, hostnames, IPs — never sent. The Worker doesn't log `cf-connecting-ip`. The first time you run any `freeride` command a banner prints the exact payload.
-
-```bash
-freeride telemetry off    # turn it off
-freeride telemetry        # show what would be sent
-```
-
-## Embeddings
-
-Same endpoint shape as OpenAI's `/v1/embeddings`. Failover across the
-4 providers that support embeddings (Groq doesn't):
-
-```bash
-curl http://localhost:11343/v1/embeddings \
-  -H 'Content-Type: application/json' \
-  -d '{"model": "text-embedding-3-small", "input": "hello world"}'
-```
-
-The same `X-FreeRide-Provider` header tells you which provider served
-the embedding. Same multi-key rotation, same per-provider failover.
-
-## See what FreeRide is doing
-
-```bash
-freeride watch
-```
-
-Tails live failover events from a running gateway. Every request, every
-provider attempt, every rate-limit, every retry. Useful for seeing
-failover happen in real time, debugging "is my agent actually using
-FreeRide", or just demoing.
-
-```
-[14:23:01.412] req_a3f8e2c1  ▶ request model=openrouter/free stream
-[14:23:01.421] req_a3f8e2c1  → openrouter[k0] openrouter/free
-[14:23:01.833] req_a3f8e2c1  ← openrouter[k0] 412ms RATE_LIMIT ✗ (retry-after 47s)
-[14:23:01.835] req_a3f8e2c1  → groq[k0] openrouter/free
-[14:23:02.153] req_a3f8e2c1  ← groq[k0] 318ms OK ✓ first-chunk
-[14:23:02.154] req_a3f8e2c1  ■ complete via groq
-```
-
-Events are written to `~/.freeride/events.jsonl`. Opt out with
-`FREERIDE_EVENTS=0` if you don't want them. File caps at 1 MiB with
-single-backup rotation.
-
-## Commands
-
-```
-freeride serve                  start the gateway
-freeride bind <agent>           write gateway URL into agent config
-freeride watch                  tail live failover events
-freeride bench                  per-provider latency comparison (needs serve running)
-freeride reload                 refresh provider registry from env vars (no restart)
-freeride providers              live provider health from a running gateway
-freeride doctor                 diagnose common setup issues (env vars, PATH, port)
-freeride upgrade                bump installed package to latest PyPI release
-freeride init                   interactive setup wizard — prompts for keys, writes ~/.freeride/.env
-freeride keys                   show which provider keys are available vs cooling
-freeride telemetry [on|off]     manage telemetry
-freeride list                   list available free models
-freeride status                 show OpenClaw config + cache age (v2)
-freeride auto                   auto-configure OpenClaw (v2)
-freeride rotate                 swap primary if it fails (v2)
-freeride-watcher                background daemon that rotates on failure
-```
-
-`freeride bench` example output:
-
-```
-$ freeride bench
-Benchmarking 5 providers, 3 requests each via http://localhost:11343/v1...
-
-provider              ok    p50      p95      tok/s
-─────────────────────────────────────────────────────
-groq                  3/3   142ms    287ms    98
-cloudflare_wai        3/3   284ms    410ms    81
-nvidia_nim            3/3   389ms    502ms    72
-openrouter            3/3   412ms    721ms    63
-huggingface           2/3   612ms    1840ms   41
-
-Fastest: groq (142ms p50)
-```
-
-The v2 commands keep working for existing OpenClaw users.
-
-## Providers
-
-| Provider | Status | Notes |
-|---|---|---|
-| OpenRouter | shipped | full surface — chat, streaming, tools, vision, structured outputs |
-| NVIDIA NIM | shipped | curated free-model allowlist; `NVIDIA_NIM_FREE_MODELS_OVERRIDE` to expand |
-| Groq | shipped | hardcoded allowlist (Llama 3.x, Gemma 2, Mixtral, DeepSeek-R1-distill); `GROQ_FREE_MODELS_OVERRIDE` to expand |
-| Cloudflare Workers AI | shipped | curated allowlist of cheap-per-neuron chat models; needs `CLOUDFLARE_ACCOUNT_ID` |
-| HuggingFace Inference | shipped | full HF router catalog; budget governs access ($0.10/mo Free, $2/mo PRO) |
-| Cerebras | shipped | fastest Llama / Qwen inference; chat-only (no embeddings). `CEREBRAS_FREE_MODELS_OVERRIDE` to restrict catalog. |
-| Ollama (local) | shipped | local-only; mix with remote providers in the same failover chain. Set `OLLAMA_BASE_URL` to opt in. |
-
-Adding a sixth: implement `freeride.core.provider.Provider` (`api_version=1`) in `freeride/providers/<name>.py`, register it in the conformance suite, done. See `CONTRIBUTING.md`.
-
-## Agents
-
-| Agent | `freeride bind` | Hot reload |
-|---|---|---|
-| OpenClaw | yes | needs restart |
-| Aider | yes (`--scope home/cwd/git`) | needs restart |
-| Continue | yes | yes |
-| Hermes (NousResearch/hermes-agent) | yes | needs restart |
-
-Or anything else: `OPENAI_API_BASE=http://localhost:11343/v1` + `OPENAI_API_KEY=any`.
-
-## Claude Code
-
-Two ways FreeRide plays with Claude Code:
-
-### 1. `freeride run claude` — companion mode (the main path)
+### Claude Code
 
 ```bash
 freeride run claude
 ```
 
-Wraps a Claude Code session so free providers are available alongside your
-subscription. Your Pro/Max OAuth (or `ANTHROPIC_API_KEY`) is preserved.
-Inside the session, flip per request via `/model`:
+Inside the session, switch routing per request via `/model`:
 
-| You type                     | What happens |
-|------------------------------|--------------|
-| `/model claude-opus-4-7`     | Your subscription answers (passthrough to `api.anthropic.com`). |
-| `/model freeride/free`       | Free provider answers via smart-routing. |
-| `/model freeride/fast`       | Free, prefers groq (low TTFT). |
-| `/model freeride/quality`    | Free, prefers OpenRouter (widest catalog). |
-| `/model freeride/coding`     | Free, prefers code-tuned models (Qwen-Coder, DeepSeek). |
+| You type | What happens |
+|---|---|
+| `/model claude-opus-4-7` | Your Pro/Max subscription answers (passthrough to api.anthropic.com) — only if `claude login` has run |
+| `/model freeride/free` | Free providers answer; smart-router picks the model |
+| `/model freeride/fast` | Free; prefers Groq (low TTFT) |
+| `/model freeride/quality` | Free; prefers OpenRouter (widest catalog) |
+| `/model freeride/coding` | Free; pinned to a code-tuned model that reliably emits tool_use blocks |
 
-Plain `claude` (no wrapper) goes direct to Anthropic — FreeRide is invisible.
-The wrapper sets `ANTHROPIC_BASE_URL` for the child process only; nothing
-system-wide changes.
+Full guide: [`docs/agents/claude-code.md`](docs/agents/claude-code.md).
 
-Probe the setup: `freeride doctor --claude-code`.
+### OpenAI Codex
 
-Full guide: **[`docs/claude-code.md`](docs/claude-code.md)**.
-
-### 2. Skill / plugin install (in-Claude awareness)
-
-If you want Claude itself to know about FreeRide (detect it running, suggest
-the wrapper, help troubleshoot):
-
-```
-/plugin install https://github.com/Shaivpidadi/FreeRideV3
+```bash
+freeride run codex
 ```
 
-See [`skills/README.md`](skills/README.md) for manual-install instructions.
+Whatever model the CLI picks (`gpt-5-codex`, `gpt-5`, etc.) is routed to a free upstream provider. The gateway translates the Responses-API wire format (with full SSE event protocol — `response.output_item.added` → `output_text.delta` → `output_item.done` → `response.completed`) so the CLI parses everything natively.
+
+Note: codex uses `bubblewrap` for shell-tool sandboxing; on systems without it, file/shell tool calls fail (the model still works). Full guide: [`docs/agents/codex.md`](docs/agents/codex.md).
+
+### Google Gemini CLI
+
+```bash
+freeride run gemini
+```
+
+Any `gemini-*` model name routes to a free upstream provider. Translator handles Google's `{contents, tools, generationConfig}` shape both directions. Full guide: [`docs/agents/gemini.md`](docs/agents/gemini.md).
+
+### Any other agent / SDK
+
+```bash
+# Aider / Continue.dev / hermes / your-own-tool — anything that speaks OpenAI:
+freeride bind aider
+freeride bind continue
+# or just point it at the gateway directly:
+OPENAI_API_BASE=http://localhost:11343/v1
+OPENAI_API_KEY=any-string-here
+```
+
+---
+
+## How failover works
+
+Per-request the chain is **(provider, key)**, sorted by recent health:
+
+1. Try the head pair.
+2. **`RATE_LIMIT`** or **`AUTH`** error → mark the key as cooling, try the next key on the same provider.
+3. **`MODEL_NOT_FOUND`** or **`QUOTA_EXHAUSTED`** → skip to the next provider.
+4. **5xx / TIMEOUT** → next pair.
+5. First successful response — stamp `X-FreeRide-Provider` + `X-FreeRide-Request-Id` headers and ship.
+
+If every pair fails, you get a structured 503 with a per-provider breakdown so debugging is one log line, not five round-trips. Mid-stream errors after the first chunk shipped are logged but don't break the client (we can't un-ship bytes).
+
+**Smart routing for `model: "auto"`:** the resolver scores every free model in the catalog by health × popularity (from the public [models leaderboard](https://free-ride.xyz/models)) and picks the best one. Run `freeride audit-models` once after install to cache health probes locally so the first real request isn't a cold start.
+
+Deeper: [`docs/architecture/failover.md`](docs/architecture/failover.md).
+
+---
+
+## Providers
+
+| Provider | Surface | Notes |
+|---|---|---|
+| OpenRouter | chat, streaming, tools, vision, structured outputs, embeddings | full surface — the most-used provider in our routing |
+| NVIDIA NIM | chat + embeddings | curated free-model allowlist; `NVIDIA_NIM_FREE_MODELS_OVERRIDE` to expand |
+| Groq | chat | Llama 3.x, Gemma 2, Mixtral, DeepSeek-R1-distill; daily token cap |
+| Cloudflare Workers AI | chat | cheap-per-neuron models; needs `CLOUDFLARE_ACCOUNT_ID` |
+| HuggingFace Inference | chat + embeddings | full HF router catalog; budget governs access |
+| Cerebras | chat | fastest Llama / Qwen inference; no embeddings |
+| Ollama (local) | chat | local-only; can mix with remote in the same failover chain |
+
+Adding a new provider: implement `freeride.core.provider.Provider` in `freeride/providers/<name>.py`, register it in the conformance suite. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+---
+
+## Multi-key rotation
+
+Provide more than one key per provider with a numbered suffix:
+
+```bash
+OPENROUTER_API_KEY=sk-or-v1-aaa     # primary
+OPENROUTER_API_KEY_2=sk-or-v1-bbb
+OPENROUTER_API_KEY_3=sk-or-v1-ccc
+```
+
+The router tries them in health order. A 429 on one key cools it for the next 60s and rotates to the sibling key — no provider switch needed. On startup `freeride keys` shows which keys are available vs cooling.
+
+---
+
+## See what the gateway is doing
+
+```bash
+freeride doctor                # static checks: keys, ports, /etc/hosts, common gotchas
+freeride doctor --claude-code  # the same + Claude-Code-specific probes
+freeride audit-models          # probe every free model on every key; cache the results
+freeride bench                 # measure p50/p95/tok-s per provider
+```
+
+Tail live events:
+
+```bash
+tail -f ~/.freeride/events.jsonl
+```
+
+Each line is a JSON event: routing decisions, provider attempts, response statuses, mid-stream errors. Same schema the marketing site reads to render the [live token counter](https://free-ride.xyz) and [provider leaderboard](https://free-ride.xyz/models).
+
+---
+
+## Telemetry
+
+A small beacon ships hourly with **counts only**: tokens served, request count, active providers, uptime hours, OS, version, and a per-install UUID. **Never sent:** prompts, completions, model IDs, API keys, hostname, IP.
+
+```bash
+freeride telemetry        # audit what the next beacon would post
+freeride telemetry off    # opt out
+```
+
+The aggregate is what powers [free-ride.xyz/models](https://free-ride.xyz/models). Default on; explicit disclosure banner prints on first run.
+
+---
+
+## Commands
+
+```
+freeride init           interactive setup wizard — prompts for keys, writes ~/.freeride/.env
+freeride serve          start the gateway on :11343
+freeride run <cli>      wrap a CLI (claude / codex / gemini / anything) — points it at the gateway
+freeride bind <agent>   write the agent's config so it uses the gateway permanently
+freeride doctor         pre-flight checks: keys, ports, hosts file, common gotchas
+freeride keys           which provider keys are available vs cooling
+freeride audit-models   probe every free model; cache health locally
+freeride bench          measure p50/p95/tok-s per provider
+freeride list           list available free models
+freeride telemetry      manage the hourly aggregate beacon
+```
+
+---
 
 ## Docs
 
-- [`docs/providers/SURVEY.md`](docs/providers/SURVEY.md) — Provider Protocol fit per provider (auth shape, free-tier semantics, error mapping)
-- [`docs/providers/nvidia_nim.md`](docs/providers/nvidia_nim.md) — NVIDIA NIM specifics (free-model allowlist, 403=AUTH quirk)
-- [`docs/agent-binders.md`](docs/agent-binders.md) — per-agent bind reference (config locations, hot-reload behavior, edge cases)
-- [`docs/hermes.md`](docs/hermes.md) — Hermes identification + bind plan
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — adding a provider or binder
+- **Agents**
+  - [`docs/agents/claude-code.md`](docs/agents/claude-code.md) — Claude Code setup, `/model` modes, troubleshooting
+  - [`docs/agents/codex.md`](docs/agents/codex.md) — OpenAI Codex setup, bwrap notes, model selection
+  - [`docs/agents/gemini.md`](docs/agents/gemini.md) — Google Gemini CLI setup, auth flow, model selection
+  - [`docs/agents/binders.md`](docs/agents/binders.md) — Aider, Continue, OpenClaw — per-agent `freeride bind` reference
+  - [`docs/agents/hermes.md`](docs/agents/hermes.md) — NousResearch Hermes agent integration
+- **Providers**
+  - [`docs/providers/SURVEY.md`](docs/providers/SURVEY.md) — per-provider fit (auth, free-tier semantics, error mapping)
+  - [`docs/providers/nvidia_nim.md`](docs/providers/nvidia_nim.md) — NVIDIA NIM specifics
+- **Architecture**
+  - [`docs/architecture/failover.md`](docs/architecture/failover.md) — failover chain, cooldown, health tracking
+  - [`docs/architecture/translators.md`](docs/architecture/translators.md) — how the Anthropic / Google / OpenAI-Responses translators work
+- **Other**
+  - [`CONTRIBUTING.md`](CONTRIBUTING.md) — adding a provider, a CLI wrapper, or a binder
+  - [`SECURITY.md`](SECURITY.md) — reporting vulnerabilities
+
+---
 
 ## License
 
