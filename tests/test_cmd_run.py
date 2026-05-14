@@ -17,10 +17,13 @@ import argparse
 from unittest.mock import patch
 
 from freeride.cli.cmd_run import (
+    _detect_cli,
     autospawn_gateway,
     build_child_env,
     cmd_run,
     gateway_healthy,
+    prepare_codex_argv,
+    seed_cli_configs,
     wait_for_gateway,
 )
 
@@ -121,6 +124,195 @@ def test_build_child_env_does_not_overwrite_oauth_token() -> None:
     )
     assert env["ANTHROPIC_AUTH_TOKEN"] == "sk-ant-oat01-user"
     assert "ANTHROPIC_API_KEY" not in env
+
+
+# ─── _detect_cli ─────────────────────────────────────────────────
+
+
+def test_detect_cli_recognizes_known_binaries() -> None:
+    assert _detect_cli(["claude"]) == "claude"
+    assert _detect_cli(["gemini"]) == "gemini"
+    assert _detect_cli(["codex"]) == "codex"
+
+
+def test_detect_cli_basename_only() -> None:
+    """Absolute paths and PATH-relative names both work — we strip the
+    directory before matching."""
+    assert _detect_cli(["/usr/local/bin/claude"]) == "claude"
+    assert _detect_cli(["./codex"]) == "codex"
+    assert _detect_cli(["/opt/gemini-cli/bin/gemini"]) == "gemini"
+
+
+def test_detect_cli_unknown_falls_through() -> None:
+    assert _detect_cli(["aider"]) == "unknown"
+    assert _detect_cli([]) == "unknown"
+    assert _detect_cli(["bash"]) == "unknown"
+
+
+# ─── build_child_env per-CLI dispatch ────────────────────────────
+
+
+def test_build_child_env_gemini_sets_google_base_url_and_sentinel() -> None:
+    """gemini-cli short-circuits before making any HTTP request if no
+    GEMINI_API_KEY / GOOGLE_API_KEY is set, even when
+    GOOGLE_GEMINI_BASE_URL points at a gateway. Inject the sentinel
+    when the parent env has neither, same pattern as claude/codex."""
+    env = build_child_env(
+        base_url="http://localhost:11343",
+        parent_env={},
+        cli_name="gemini",
+    )
+    assert env["GOOGLE_GEMINI_BASE_URL"] == "http://localhost:11343"
+    assert env["FREERIDE_ACTIVE"] == "1"
+    assert env["GEMINI_API_KEY"] == "sk-freeride-no-auth"
+    # And we must not set ANTHROPIC_BASE_URL — that would leak into
+    # other tools that read it.
+    assert "ANTHROPIC_BASE_URL" not in env
+
+
+def test_build_child_env_gemini_passes_through_real_key() -> None:
+    env = build_child_env(
+        base_url="http://localhost:11343",
+        parent_env={"GEMINI_API_KEY": "real-google-key"},
+        cli_name="gemini",
+    )
+    assert env["GEMINI_API_KEY"] == "real-google-key"
+
+
+def test_build_child_env_codex_sets_sentinel_when_no_key() -> None:
+    """Codex's auth gate reads CODEX_API_KEY at request time. Without
+    a real one we inject the sentinel to unblock the request — the
+    base URL itself isn't an env var for codex (handled in
+    prepare_codex_argv)."""
+    env = build_child_env(
+        base_url="http://localhost:11343",
+        parent_env={},
+        cli_name="codex",
+    )
+    assert env["CODEX_API_KEY"] == "sk-freeride-no-auth"
+    assert env["FREERIDE_ACTIVE"] == "1"
+    # No ANTHROPIC_BASE_URL leakage to the codex env.
+    assert "ANTHROPIC_BASE_URL" not in env
+
+
+def test_build_child_env_codex_preserves_real_key() -> None:
+    env = build_child_env(
+        base_url="http://localhost:11343",
+        parent_env={"CODEX_API_KEY": "real-user-key"},
+        cli_name="codex",
+    )
+    assert env["CODEX_API_KEY"] == "real-user-key"
+
+
+def test_build_child_env_unknown_cli_sets_both_base_urls() -> None:
+    """For an experimental tool we don't recognize, set both base-URL
+    env vars so whichever the tool reads still routes through us."""
+    env = build_child_env(
+        base_url="http://localhost:11343",
+        parent_env={},
+        cli_name="unknown",
+    )
+    assert env["ANTHROPIC_BASE_URL"] == "http://localhost:11343"
+    assert env["GOOGLE_GEMINI_BASE_URL"] == "http://localhost:11343"
+
+
+# ─── prepare_codex_argv ──────────────────────────────────────────
+
+
+def test_prepare_codex_argv_injects_base_url_flag_with_v1_suffix() -> None:
+    """Codex's default base URL is https://api.openai.com/v1 and it
+    appends /responses directly — so the override MUST include /v1."""
+    argv = prepare_codex_argv(["codex"], "http://localhost:11343")
+    assert argv == ["codex", "-c", "openai_base_url=http://localhost:11343/v1"]
+
+
+def test_prepare_codex_argv_inserts_after_binary_keeps_user_flags() -> None:
+    """User-supplied flags must still reach codex untouched — and they
+    must come AFTER our -c so a user override via their own -c
+    wins via last-write-wins config layering."""
+    argv = prepare_codex_argv(
+        ["codex", "exec", "--model", "gpt-5"],
+        "http://localhost:11343",
+    )
+    assert argv == [
+        "codex",
+        "-c",
+        "openai_base_url=http://localhost:11343/v1",
+        "exec",
+        "--model",
+        "gpt-5",
+    ]
+
+
+def test_prepare_codex_argv_strips_trailing_slash_on_base_url() -> None:
+    argv = prepare_codex_argv(["codex"], "http://localhost:11343/")
+    assert argv[2] == "openai_base_url=http://localhost:11343/v1"
+
+
+def test_prepare_codex_argv_empty_argv_no_change() -> None:
+    assert prepare_codex_argv([], "http://localhost:11343") == []
+
+
+# ─── seed_cli_configs ────────────────────────────────────────────
+
+
+def test_seed_cli_configs_gemini_writes_settings(tmp_path) -> None:
+    """First-run auth-picker bypass: write selectedAuthType so the CLI
+    doesn't pop the picker on the very first invocation."""
+    import json
+    seed_cli_configs("gemini", home=tmp_path)
+    settings = tmp_path / ".gemini" / "settings.json"
+    assert settings.exists()
+    body = json.loads(settings.read_text())
+    assert body["selectedAuthType"] == "gemini-api-key"
+
+
+def test_seed_cli_configs_gemini_preserves_existing(tmp_path) -> None:
+    """Real user config must not be overwritten — a user who ran
+    `gemini login` may have picked a different auth type."""
+    settings = tmp_path / ".gemini" / "settings.json"
+    settings.parent.mkdir()
+    settings.write_text('{"selectedAuthType": "oauth-personal"}')
+    seed_cli_configs("gemini", home=tmp_path)
+    import json
+    body = json.loads(settings.read_text())
+    assert body["selectedAuthType"] == "oauth-personal"  # unchanged
+
+
+def test_seed_cli_configs_codex_writes_auth(tmp_path) -> None:
+    """Codex's first-run gate is satisfied by the presence of
+    ~/.codex/auth.json with an api_key field. Sentinel value goes here
+    so the CLI doesn't prompt for a real one before letting the
+    request fly."""
+    import json
+    seed_cli_configs("codex", home=tmp_path)
+    auth = tmp_path / ".codex" / "auth.json"
+    assert auth.exists()
+    body = json.loads(auth.read_text())
+    assert body["OPENAI_API_KEY"] == "sk-freeride-no-auth"
+
+
+def test_seed_cli_configs_codex_preserves_existing(tmp_path) -> None:
+    auth = tmp_path / ".codex" / "auth.json"
+    auth.parent.mkdir()
+    auth.write_text('{"OPENAI_API_KEY": "sk-real-user-key"}')
+    seed_cli_configs("codex", home=tmp_path)
+    import json
+    body = json.loads(auth.read_text())
+    assert body["OPENAI_API_KEY"] == "sk-real-user-key"
+
+
+def test_seed_cli_configs_claude_is_noop(tmp_path) -> None:
+    """claude-code reads its sentinel from env only — no config file
+    pre-flight is needed. The function should not create stray files."""
+    seed_cli_configs("claude", home=tmp_path)
+    assert not (tmp_path / ".claude").exists()
+
+
+def test_seed_cli_configs_unknown_is_noop(tmp_path) -> None:
+    seed_cli_configs("unknown", home=tmp_path)
+    # No directories created for unknown CLIs.
+    assert list(tmp_path.iterdir()) == []
 
 
 # ─── gateway_healthy ─────────────────────────────────────────────

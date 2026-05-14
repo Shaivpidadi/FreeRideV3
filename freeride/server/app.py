@@ -216,7 +216,9 @@ def create_app(
 
     # Route modules attach via APIRouter so the app stays composable.
     from freeride.server.routes import chat as chat_route
+    from freeride.server.routes import codex as codex_route
     from freeride.server.routes import embeddings as embeddings_route
+    from freeride.server.routes import gemini as gemini_route
     from freeride.server.routes import messages as messages_route
     from freeride.server.routes import models as models_route
 
@@ -224,5 +226,7 @@ def create_app(
     app.include_router(chat_route.router)
     app.include_router(embeddings_route.router)
     app.include_router(messages_route.router)
+    app.include_router(gemini_route.router)
+    app.include_router(codex_route.router)
 
     return app

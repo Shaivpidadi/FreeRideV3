@@ -122,39 +122,223 @@ def wait_for_gateway(base_url: str, *, total_wait: float) -> bool:
     return False
 
 
-# ─── env construction ───────────────────────────────────────────────
+# ─── CLI detection + env construction ───────────────────────────────
 
 
-def build_child_env(*, base_url: str, parent_env: dict[str, str]) -> dict[str, str]:
+# Sentinel API key — see has_inbound_auth in core/model_router.py for
+# the gateway-side recognition that demotes this to "no auth" so
+# claude-* / gpt-* / gemini-* model ids fall through to free routing.
+_FREERIDE_SENTINEL_KEY = "sk-freeride-no-auth"
+
+
+def _detect_cli(command_argv: list[str]) -> str:
+    """Return a tag for the wrapped CLI: 'claude', 'gemini', 'codex',
+    or 'unknown'.
+
+    Each tag drives a different env-var layering strategy in
+    build_child_env (and an argv mutation for codex). We dispatch on the
+    basename only, so absolute paths and aliases still work
+    (``/usr/local/bin/claude`` → ``claude``).
+    """
+    if not command_argv:
+        return "unknown"
+    name = os.path.basename(command_argv[0])
+    if name == "claude":
+        return "claude"
+    if name == "gemini":
+        return "gemini"
+    if name == "codex":
+        return "codex"
+    return "unknown"
+
+
+def build_child_env(
+    *,
+    base_url: str,
+    parent_env: dict[str, str],
+    cli_name: str = "claude",
+) -> dict[str, str]:
     """Build the env vars for the child process.
 
     Copies the parent env so the child inherits whatever the user
-    already had (PATH, HOME, ANTHROPIC_AUTH_TOKEN from a prior
-    ``claude login``, ANTHROPIC_API_KEY if set, terminal-specific
-    vars, etc.), then layers FreeRide's additions on top.
+    already had (PATH, HOME, terminal-specific vars, existing
+    credentials, etc.), then layers FreeRide's additions on top per the
+    wrapped CLI's expected env-var shape:
 
-    Claude Code 2.1.140+ added a client-side auth gate: when it can't
-    find ANTHROPIC_API_KEY and there's no logged-in OAuth session, it
-    short-circuits with "Not logged in · Please run /login" *before*
-    making any HTTP request — so the gateway never sees the call. To
-    unblock free-routing for users with no Anthropic account, we inject
-    a sentinel ANTHROPIC_API_KEY whenever the parent env has neither.
-    The gateway's free-mode router picks routes from the model id (e.g.
-    ``freeride/coding``) and never inspects the auth value, so the
-    sentinel just satisfies claude-cli's pre-flight check.
+    * **claude** — sets ``ANTHROPIC_BASE_URL``. Claude Code 2.1.140+
+      short-circuits with "Not logged in" if it can't find an API key
+      *before* making any HTTP request, so we inject a sentinel
+      ``ANTHROPIC_API_KEY`` when the parent has neither
+      ``ANTHROPIC_API_KEY`` nor ``ANTHROPIC_AUTH_TOKEN``. The gateway
+      recognizes the sentinel and demotes it to "no auth" so claude-*
+      ids fall through to free routing.
 
-    If the parent already has a real ANTHROPIC_API_KEY or
-    ANTHROPIC_AUTH_TOKEN (e.g. paid users who want passthrough on
-    claude-* model ids but free routing on freeride/* presets), we pass
-    it through untouched.
+    * **gemini** — sets ``GOOGLE_GEMINI_BASE_URL``. The official
+      ``@google/genai``-backed CLI ships a dedicated ``AuthType.GATEWAY``
+      path that allows empty keys when this var is set, so no sentinel
+      is needed.
+
+    * **codex** — sets ``CODEX_API_KEY`` to the sentinel when the parent
+      has none. The base-URL override is *not* an env var for codex
+      (it's a TOML config key); see ``prepare_codex_argv`` for the argv
+      injection that handles it.
+
+    * **unknown** — defensively sets both ANTHROPIC and Gemini env vars
+      so an experimental wrapped tool that honors either still picks
+      the gateway up. Env vars no tool reads are harmless.
+
+    Real credentials in the parent env (``ANTHROPIC_API_KEY``,
+    ``ANTHROPIC_AUTH_TOKEN``, ``GEMINI_API_KEY``, ``CODEX_API_KEY``)
+    are never overwritten — paid users keep their passthrough flow.
     """
     env = dict(parent_env)
-    # No trailing /v1: the Anthropic SDK appends "/v1/messages".
-    env["ANTHROPIC_BASE_URL"] = base_url.rstrip("/")
+    base = base_url.rstrip("/")
     env["FREERIDE_ACTIVE"] = "1"
-    if not env.get("ANTHROPIC_API_KEY") and not env.get("ANTHROPIC_AUTH_TOKEN"):
-        env["ANTHROPIC_API_KEY"] = "sk-freeride-no-auth"
+
+    if cli_name == "claude":
+        env["ANTHROPIC_BASE_URL"] = base
+        if not env.get("ANTHROPIC_API_KEY") and not env.get("ANTHROPIC_AUTH_TOKEN"):
+            env["ANTHROPIC_API_KEY"] = _FREERIDE_SENTINEL_KEY
+    elif cli_name == "gemini":
+        env["GOOGLE_GEMINI_BASE_URL"] = base
+        # Newer gemini-cli versions ship a dedicated AuthType.GATEWAY
+        # path that allows empty keys when GOOGLE_GEMINI_BASE_URL is
+        # set — but 0.42.0 and earlier still require *some* auth env
+        # var to be present, otherwise the CLI short-circuits with
+        # "Please set an Auth method" before making any HTTP request.
+        # Inject a sentinel GEMINI_API_KEY when the parent has none,
+        # same pattern as the claude / codex wrappers. The gateway's
+        # has_inbound_auth helper recognizes this value and ignores
+        # it for routing decisions.
+        if not env.get("GEMINI_API_KEY") and not env.get("GOOGLE_API_KEY"):
+            env["GEMINI_API_KEY"] = _FREERIDE_SENTINEL_KEY
+    elif cli_name == "codex":
+        if not env.get("CODEX_API_KEY"):
+            env["CODEX_API_KEY"] = _FREERIDE_SENTINEL_KEY
+        # Codex base URL injection lives in prepare_codex_argv (TOML
+        # config / -c flag, not env).
+    else:
+        # Unknown tool — set every base-URL env var we know about. If
+        # the tool honors *any* of them it'll route through the gateway;
+        # if it honors none, this is no worse than the default.
+        env["ANTHROPIC_BASE_URL"] = base
+        env["GOOGLE_GEMINI_BASE_URL"] = base
+
     return env
+
+
+def seed_cli_configs(cli_name: str, home: Path | None = None) -> None:
+    """Pre-write minimal config files so first-run auth pickers don't fire.
+
+    On a clean machine, each of these CLIs shows an interactive auth-method
+    picker the very first time it runs — "API key vs sign in with Google",
+    "API key vs ChatGPT login", etc. Even when we set the right env vars
+    via ``build_child_env``, an older CLI version may still pop the picker
+    once before honoring the env var on the second run. That confuses users
+    who got here through ``freeride run`` expecting one-command UX.
+
+    Pre-writing the minimal config that the picker WOULD have written makes
+    the CLI skip the picker entirely. We only write a file if one doesn't
+    already exist — a real user who's run ``gemini login`` keeps their
+    state untouched.
+
+    * **gemini** — writes ``~/.gemini/settings.json`` with
+      ``selectedAuthType: "gemini-api-key"``. That's what the picker
+      writes when the user chooses "API key" — combined with the
+      sentinel ``GEMINI_API_KEY`` we injected, the CLI bypasses the
+      picker and uses our gateway-routable key.
+
+    * **codex** — writes ``~/.codex/auth.json`` with the sentinel API
+      key. Codex's auth resolution picks ``CODEX_API_KEY`` env over this
+      file, but having the file present satisfies the first-run
+      "configure authentication" gate that otherwise blocks ``codex
+      exec`` on a brand-new machine.
+
+    * **claude** — claude-code reads its sentinel from env only, no
+      pre-flight config file needed.
+
+    * **unknown** — no-op.
+    """
+    h = home or Path.home()
+    try:
+        if cli_name == "gemini":
+            settings = h / ".gemini" / "settings.json"
+            if not settings.exists():
+                settings.parent.mkdir(parents=True, exist_ok=True)
+                settings.write_text(
+                    '{"selectedAuthType": "gemini-api-key"}\n',
+                    encoding="utf-8",
+                )
+        elif cli_name == "codex":
+            auth = h / ".codex" / "auth.json"
+            if not auth.exists():
+                auth.parent.mkdir(parents=True, exist_ok=True)
+                import json as _json
+
+                auth.write_text(
+                    _json.dumps({"OPENAI_API_KEY": _FREERIDE_SENTINEL_KEY}) + "\n",
+                    encoding="utf-8",
+                )
+    except OSError as e:
+        # Best-effort. If we can't write the config (e.g. read-only HOME),
+        # the CLI's own picker still gets a chance — annoying but not
+        # broken.
+        logger.warning("seed_cli_configs(%s) failed: %s", cli_name, e)
+
+
+# Preset hints printed in the wrapper banner. Each CLI has its own
+# /model picker (or none at all) and a different model namespace, so the
+# banner is per-CLI. None of them surface freeride/* in their built-in
+# pickers — these messages tell the user what to type manually.
+_PRESET_BANNER = {
+    "claude": (
+        "\n  ╭─ freeride: free-tier model presets ─────────────────╮\n"
+        "  │  Inside claude, type /model <id>:                   │\n"
+        "  │    freeride/free     — smart-routed                 │\n"
+        "  │    freeride/fast     — groq-preferred (low latency) │\n"
+        "  │    freeride/quality  — OR-preferred (larger models) │\n"
+        "  │    freeride/coding   — code-tuned (Qwen-Coder)      │\n"
+        "  │  /model claude-opus-4-7 keeps using your sub.       │\n"
+        "  ╰─────────────────────────────────────────────────────╯\n"
+    ),
+    "gemini": (
+        "\n  ╭─ freeride is routing this gemini session ───────────╮\n"
+        "  │  Any model you pick gets translated to a free model │\n"
+        "  │  on our side (gemini-2.0-flash, gemini-2.5-pro, …   │\n"
+        "  │  all resolve to the same upstream free provider).   │\n"
+        "  │  No GEMINI_API_KEY needed — gateway handles auth.   │\n"
+        "  ╰─────────────────────────────────────────────────────╯\n"
+    ),
+    "codex": (
+        "\n  ╭─ freeride is routing this codex session ────────────╮\n"
+        "  │  Any model you pick (gpt-5-codex, gpt-5, …) routes  │\n"
+        "  │  to a free upstream provider via our gateway.       │\n"
+        "  │  No CODEX_API_KEY needed — gateway handles auth.    │\n"
+        "  │  Note: codex's shell tool needs bubblewrap (Linux). │\n"
+        "  ╰─────────────────────────────────────────────────────╯\n"
+    ),
+}
+
+
+def prepare_codex_argv(command_argv: list[str], base_url: str) -> list[str]:
+    """Inject ``-c openai_base_url=<gateway>/v1`` into a codex argv.
+
+    Codex CLI reads its base URL from ``~/.codex/config.toml`` (key
+    ``openai_base_url``), not from any env var. To redirect a single
+    invocation without mutating the user's config file, we pass the
+    same key via the ``-c`` CLI flag. Codex's config precedence is
+    last-write-wins per key, so we prepend ours right after the binary
+    name — any explicit user ``-c openai_base_url=...`` later in argv
+    will still override ours.
+
+    The ``/v1`` suffix is required: codex's default is
+    ``https://api.openai.com/v1`` and it appends ``/responses``
+    directly, so the base must include /v1.
+    """
+    if not command_argv:
+        return command_argv
+    base = base_url.rstrip("/")
+    return [command_argv[0], "-c", f"openai_base_url={base}/v1"] + command_argv[1:]
 
 
 # ─── command entry ──────────────────────────────────────────────────
@@ -229,30 +413,32 @@ def cmd_run(args) -> int:
             file=sys.stderr,
         )
 
-    child_env = build_child_env(base_url=base_url, parent_env=os.environ.copy())
+    cli_name = _detect_cli(command_argv)
+    if cli_name == "codex":
+        command_argv = prepare_codex_argv(command_argv, base_url)
+    # Pre-write minimal config files so first-run auth pickers don't fire.
+    # Safe — only writes when the file doesn't already exist.
+    seed_cli_configs(cli_name)
+    child_env = build_child_env(
+        base_url=base_url,
+        parent_env=os.environ.copy(),
+        cli_name=cli_name,
+    )
 
-    # Banner — only when wrapping `claude` AND running an interactive
-    # TTY. claude-cli's hardcoded /model picker doesn't surface
-    # freeride/* virtual ids, so print them once at session start.
-    # Suppressed when stdin isn't a tty (CI, scripts, --print mode
-    # already detached) so we don't clutter machine consumers.
+    # Banner: print preset hints for any CLI we recognize, when the
+    # child is going to render a TUI (stdin is a tty AND we're not in
+    # an explicit non-interactive flag like --print / --prompt / exec).
+    # Hints are CLI-specific because each tool has its own /model
+    # picker (or none at all) and a different model namespace.
+    _is_noninteractive_flag = any(
+        flag in command_argv for flag in ("--print", "--prompt", "exec")
+    )
     if (
-        command_argv
-        and os.path.basename(command_argv[0]) == "claude"
-        and "--print" not in command_argv
+        cli_name in _PRESET_BANNER
+        and not _is_noninteractive_flag
         and sys.stdin.isatty()
     ):
-        print(
-            "\n  ╭─ freeride: free-tier model presets ─────────────────╮\n"
-            "  │  Inside claude, type /model <id>:                   │\n"
-            "  │    freeride/free     — smart-routed                 │\n"
-            "  │    freeride/fast     — groq-preferred (low latency) │\n"
-            "  │    freeride/quality  — OR-preferred (larger models) │\n"
-            "  │    freeride/coding   — code-tuned (Qwen-Coder)      │\n"
-            "  │  /model claude-opus-4-7 keeps using your sub.       │\n"
-            "  ╰─────────────────────────────────────────────────────╯\n",
-            file=sys.stderr,
-        )
+        print(_PRESET_BANNER[cli_name], file=sys.stderr)
 
     try:
         os.execvpe(command_argv[0], command_argv, child_env)
