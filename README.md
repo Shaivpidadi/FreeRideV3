@@ -1,5 +1,9 @@
 # FreeRide
 
+**FreeRide now supports Claude Code**
+<img width="800" height="468" alt="freeride-now-supports-claudecode" src="https://github.com/user-attachments/assets/8fac89b2-9d31-4aa9-b349-7d6769fa63a5" />
+
+
 **Ollama for free cloud inference.**
 
 A local OpenAI-compatible gateway that routes across every free-tier provider you have a key for — OpenRouter, Groq, NVIDIA NIM, Cloudflare Workers AI, HuggingFace, Cerebras, and your own Ollama. Hits a rate limit, fails over. Your agent never knows.
