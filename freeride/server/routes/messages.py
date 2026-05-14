@@ -594,6 +594,13 @@ async def messages(request: Request):
     # exposed via the ``X-FreeRide-Provider`` header.
     anthropic_response = openai_to_anthropic_response(response_obj, requested_model)
 
+    # Local counter bump for the hourly beacon. Same shape as the
+    # chat route — non-streaming has usage on the response.
+    from freeride.core.telemetry import record_request
+
+    _total = (response_obj.usage.total_tokens if response_obj.usage else 0) or 0
+    record_request(tokens=int(_total), provider=chosen_provider.name)
+
     return JSONResponse(
         content=anthropic_response.model_dump(exclude_none=True),
         headers={
@@ -691,6 +698,9 @@ async def _build_anthropic_stream_response(
             streaming=True,
             endpoint="messages",
         )
+        from freeride.core.telemetry import record_request
+
+        record_request(tokens=0, provider=chosen.name)
 
     return StreamingResponse(
         emit_anthropic_sse(),

@@ -103,6 +103,60 @@ class TestDisclosure:
         assert capsys.readouterr().out == ""
 
 
+class TestRecordRequest:
+    """Coverage for the missing increment path. Stats.load() used to read
+    a file nobody wrote, so every beacon shipped zeros. record_request is
+    the writer; these tests pin the contract."""
+
+    def test_increments_request_count(self, isolated_config):
+        telemetry.record_request()
+        telemetry.record_request()
+        s = telemetry.Stats.load()
+        assert s.request_count == 2
+
+    def test_accumulates_tokens(self, isolated_config):
+        telemetry.record_request(tokens=120)
+        telemetry.record_request(tokens=45)
+        s = telemetry.Stats.load()
+        assert s.tokens_served == 165
+        assert s.request_count == 2
+
+    def test_tokens_default_zero_still_ticks_request_count(self, isolated_config):
+        """Streaming responses can't peek upstream usage cleanly; tokens=0
+        is the documented contract there. request_count still bumps so the
+        install at least reflects activity."""
+        telemetry.record_request()  # default tokens=0
+        s = telemetry.Stats.load()
+        assert s.tokens_served == 0
+        assert s.request_count == 1
+
+    def test_provider_added_to_active_set(self, isolated_config):
+        telemetry.record_request(tokens=10, provider="openrouter")
+        telemetry.record_request(tokens=10, provider="groq")
+        telemetry.record_request(tokens=10, provider="openrouter")  # dedupe
+        s = telemetry.Stats.load()
+        assert set(s.providers_active) == {"openrouter", "groq"}
+
+    def test_preserves_uptime_hours_set_by_other_writers(self, isolated_config):
+        """A future uptime tracker writes uptime_hours; record_request must
+        not overwrite that field while it bumps its own counters."""
+        telemetry.STATS_FILE.write_text(
+            json.dumps({"uptime_hours": 42})
+        )
+        telemetry.record_request(tokens=5, provider="openrouter")
+        s = telemetry.Stats.load()
+        assert s.uptime_hours == 42
+        assert s.tokens_served == 5
+        assert s.request_count == 1
+
+    def test_negative_tokens_clamped_to_zero(self, isolated_config):
+        """Some upstream errors return junk usage. Don't poison the counter."""
+        telemetry.record_request(tokens=-100, provider="openrouter")
+        s = telemetry.Stats.load()
+        assert s.tokens_served == 0
+        assert s.request_count == 1
+
+
 class TestPayload:
     def test_empty_state(self, isolated_config):
         p = telemetry.build_payload()

@@ -347,6 +347,13 @@ async def _build_stream_response(
             provider=chosen.name,
             streaming=True,
         )
+        # Bump the local counter that the hourly beacon ships. Streaming
+        # path can't peek the upstream usage cleanly without buffering
+        # the whole response, so we pass tokens=0 — request_count still
+        # ticks so the user's per-install stats reflect activity.
+        from freeride.core.telemetry import record_request
+
+        record_request(tokens=0, provider=chosen.name)
         yield _format_done()
 
     return StreamingResponse(
@@ -569,6 +576,12 @@ async def chat_completions(request: Request, body: ChatRequest):
         provider=chosen_provider.name,
         streaming=False,
     )
+    # Bump the local counter that the beacon ships. Non-streaming has
+    # the usage block on the response — use the total when present.
+    from freeride.core.telemetry import record_request
+
+    _total = (response.usage.total_tokens if response.usage else 0) or 0
+    record_request(tokens=int(_total), provider=chosen_provider.name)
     out = response.model_dump(exclude_none=False)
     out["_freeride_provider"] = chosen_provider.name
     out["_freeride_request_id"] = ctx.request_id
