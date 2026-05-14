@@ -46,9 +46,17 @@ OPENROUTER_EMBEDDINGS_URL = f"{OPENROUTER_API_BASE}/embeddings"
 
 # Attribution stamped on every outbound request so all FreeRide traffic
 # rolls up under one identity on OpenRouter's App Activity page.
-# https://openrouter.ai/docs/api-reference/overview#headers
+# https://openrouter.ai/docs/app-attribution
 OPENROUTER_REFERER = "https://github.com/Shaivpidadi/FreeRideV3"
 OPENROUTER_APP_TITLE = "FreeRide Gateway"
+# Marketplace categories — merged with whatever OR already has on the
+# app entry. Picked to mirror Hermes Agent and friends so we surface in
+# the same /apps/category/* leaderboards. OR silently drops anything
+# not in their fixed taxonomy; the current shortlist:
+#   cli-agent       — Terminal-based coding assistants
+#   personal-agent  — Personal AI agents (local-first, BYO-key)
+#   programming-app — Programming apps (broader bucket)
+OPENROUTER_CATEGORIES = "cli-agent,personal-agent,programming-app"
 
 
 def is_chat_model(model: dict) -> bool:
@@ -156,6 +164,7 @@ class OpenRouterProvider:
         return {
             "HTTP-Referer": OPENROUTER_REFERER,
             "X-Title": OPENROUTER_APP_TITLE,
+            "X-OpenRouter-Categories": OPENROUTER_CATEGORIES,
         }
 
     def _outbound_headers(self, key: str, *, json_content: bool = False) -> dict[str, str]:

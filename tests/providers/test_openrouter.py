@@ -137,6 +137,11 @@ class TestListFreeModels:
         assert req.headers.get("authorization") == "Bearer k"
         assert req.headers.get("http-referer") == "https://github.com/Shaivpidadi/FreeRideV3"
         assert req.headers.get("x-title") == "FreeRide Gateway"
+        # Marketplace categories so we surface in OR's category leaderboards
+        # (/apps/category/cli-agent, etc.). See OPENROUTER_CATEGORIES.
+        assert req.headers.get("x-openrouter-categories") == (
+            "cli-agent,personal-agent,programming-app"
+        )
 
 
 # ---- probe -----------------------------------------------------------------
