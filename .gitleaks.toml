@@ -1,0 +1,40 @@
+# Gitleaks configuration for the FreeRide repository.
+#
+# Strategy: inherit the upstream default ruleset (`extend.useDefault = true`)
+# and add narrow allowlist entries for known false positives that come
+# from documentation / template / test text — never from real credentials.
+#
+# Run: gitleaks detect --source . --no-banner
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known false positives — none of these are real credentials."
+
+# Each entry is a regex against the matched secret string. We intentionally
+# keep the patterns narrow so a real key that happens to share a prefix
+# would still trip the scan.
+regexes = [
+  # Placeholder copied to ~/.freeride/.env.template by the sandbox
+  # bootstrap script. The `<PASTE_*_KEY_HERE>` shape is current; the
+  # `*_replace_me` shape only exists in commit f1b0540's diff (cleaned
+  # up in a later commit). Both kept here so historical scans pass too.
+  '''sk-or-v1-(replace_me|<PASTE[^>]*>)''',
+  '''gsk_replace_me''',
+  '''nvapi-replace_me''',
+  '''hf_replace_me''',
+  '''<PASTE_[A-Z_]+_KEY_HERE>''',
+  # FreeRide's own sentinel value used to satisfy CLI auth gates when
+  # the user has no real provider credential. has_inbound_auth treats
+  # this string as "no auth" and routes around it — never sent to a
+  # real upstream provider as a credential.
+  '''sk-freeride-no-auth''',
+]
+
+# Skip files that legitimately discuss credential SHAPES (README's setup
+# section, the test env-var sample) without containing real ones.
+paths = [
+  '''scripts/bootstrap-multi-cli-sandbox\.sh''',
+  '''internal-docs/''',
+]

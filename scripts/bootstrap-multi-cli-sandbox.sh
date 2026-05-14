@@ -121,18 +121,22 @@ backup_if_exists "$HOME/.gemini/oauth_creds.json" # gemini OAuth from `gemini lo
 mkdir -p "$HOME/.freeride"
 ENV_FILE="$HOME/.freeride/.env"
 if [ ! -f "$ENV_FILE" ] || ! grep -q '_API_KEY=' "$ENV_FILE" 2>/dev/null; then
+  # Template placeholders use <ANGLE-BRACKETS> so secret-scanners
+  # (gitleaks, github push-protection, trufflehog, etc.) don't flag
+  # them as real credentials. Replace the bracketed text with your
+  # actual key when you copy this template to .env.
   cat > "$ENV_FILE.template" <<'EOF'
 # FreeRide provider API keys. Add the providers you have access to —
 # OpenRouter alone is enough to make `freeride run claude/gemini/codex` work.
 #
 # Get free OpenRouter access: https://openrouter.ai/keys
-OPENROUTER_API_KEY=sk-or-v1-replace_me
+OPENROUTER_API_KEY=<PASTE_OPENROUTER_KEY_HERE>
 
 # Optional — add any of these for more failover headroom:
-# GROQ_API_KEY=gsk_replace_me
-# NVIDIA_API_KEY=nvapi-replace_me
-# HUGGINGFACE_API_KEY=hf_replace_me
-# CEREBRAS_API_KEY=replace_me
+# GROQ_API_KEY=<PASTE_GROQ_KEY_HERE>
+# NVIDIA_API_KEY=<PASTE_NVIDIA_KEY_HERE>
+# HUGGINGFACE_API_KEY=<PASTE_HUGGINGFACE_KEY_HERE>
+# CEREBRAS_API_KEY=<PASTE_CEREBRAS_KEY_HERE>
 EOF
   warn "no provider keys configured yet"
   warn "template written to $ENV_FILE.template — add at least OPENROUTER_API_KEY:"
