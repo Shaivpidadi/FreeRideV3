@@ -281,6 +281,13 @@ async def responses(request: Request):
         streaming=False,
         endpoint="responses",
     )
+    from freeride.core.telemetry import record_request
+
+    _total = (response_obj.usage.total_tokens if response_obj.usage else 0) or 0
+    record_request(
+        tokens=int(_total),
+        provider=chosen_provider.name if chosen_provider else None,
+    )
 
     resp_obj = chat_to_responses_response(response_obj, requested_model)
     return JSONResponse(
@@ -351,6 +358,9 @@ async def _build_responses_stream(
             streaming=True,
             endpoint="responses",
         )
+        from freeride.core.telemetry import record_request
+
+        record_request(tokens=0, provider=chosen.name)
 
     return StreamingResponse(
         _emit_sse(),

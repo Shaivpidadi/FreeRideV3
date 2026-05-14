@@ -185,6 +185,71 @@ class Stats:
         )
 
 
+def record_request(
+    *,
+    tokens: int = 0,
+    provider: str | None = None,
+) -> None:
+    """Bump the local counters that the beacon will ship.
+
+    Called from every route's success path. Writes ``~/.freeride/stats.json``
+    atomically with the new totals. Safe to call from concurrent requests:
+    the read-modify-write window is microseconds and ``atomic_write`` does
+    a tmp+rename so a torn write can't leave partial JSON on disk.
+
+    * ``tokens`` — total tokens for this response (prompt + completion). For
+      non-streaming responses this comes from ``response.usage.total_tokens``.
+      For streaming responses where we can't peek at the final-chunk usage
+      cleanly, pass 0; request_count still increments so the install at
+      least shows activity in the per-user telemetry.
+
+    * ``provider`` — the resolved provider that served the request, added to
+      ``providers_active`` (deduplicated). Tracks which providers an install
+      has actually exercised at least once, surfaced in the beacon so the
+      community-level stats know which providers are getting real traffic.
+
+    Local-only — does NOT involve any network call. The beacon ships these
+    later, on its own schedule, only when telemetry is opted in. A user with
+    ``freeride telemetry off`` still gets correct local counters; they just
+    never leave the machine.
+
+    Why this didn't tick before: ``Stats`` had a ``load()`` method but no
+    code anywhere wrote to ``stats.json``. The doc comment claimed the
+    gateway wrote it "when running" but that code was never shipped, so
+    every beacon read 0 / 0 forever. Hence the 100M-tokens-but-zero-on-
+    every-install picture in the worker DB.
+    """
+    if tokens < 0:
+        tokens = 0
+    try:
+        existing = read_json_or(STATS_FILE, {})
+        if not isinstance(existing, dict):
+            existing = {}
+
+        prev_tokens = int(existing.get("tokens_served", 0) or 0)
+        prev_count = int(existing.get("request_count", 0) or 0)
+        prev_providers = existing.get("providers_active") or []
+        if not isinstance(prev_providers, list):
+            prev_providers = []
+        providers_set = {p for p in prev_providers if isinstance(p, str)}
+        if provider:
+            providers_set.add(provider)
+
+        existing["tokens_served"] = prev_tokens + tokens
+        existing["request_count"] = prev_count + 1
+        existing["providers_active"] = sorted(providers_set)
+        # Preserve uptime_hours and any other field a future writer adds.
+        write_json_atomic(STATS_FILE, existing)
+    except OSError as e:
+        # Disk full, permission, etc. Don't fail the user's request because
+        # we couldn't write a counter — log and continue.
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "record_request: could not update %s: %s", STATS_FILE, e
+        )
+
+
 def build_payload(*, version: str | None = None) -> dict[str, Any]:
     """Build the telemetry beacon payload from current local state.
 
