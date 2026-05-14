@@ -48,8 +48,15 @@ fi
 
 export PATH="$NPM_PREFIX/bin:$HOME/.local/bin:$PATH"
 
-# Persist for future shells without duplicating.
-for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+# Persist for future shells. Cover both interactive (.bashrc / .zshrc)
+# AND login-shell startup (.profile / .bash_profile) — `bash -lc` and
+# some IDE remote-shell setups read the login path only, so writing to
+# just .bashrc means PATH silently disappears in those contexts.
+for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.bash_profile"; do
+  # Touch login files so we always write to a file the shell will read.
+  case "$rc" in
+    *.profile|*.bash_profile) [ -f "$rc" ] || touch "$rc" ;;
+  esac
   [ -f "$rc" ] || continue
   if ! grep -q ".npm-global/bin" "$rc" 2>/dev/null; then
     log "adding PATH export to $rc"
