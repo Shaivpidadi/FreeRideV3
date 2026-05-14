@@ -17,10 +17,12 @@ import argparse
 from unittest.mock import patch
 
 from freeride.cli.cmd_run import (
+    _detect_cli,
     autospawn_gateway,
     build_child_env,
     cmd_run,
     gateway_healthy,
+    prepare_codex_argv,
     wait_for_gateway,
 )
 
@@ -121,6 +123,132 @@ def test_build_child_env_does_not_overwrite_oauth_token() -> None:
     )
     assert env["ANTHROPIC_AUTH_TOKEN"] == "sk-ant-oat01-user"
     assert "ANTHROPIC_API_KEY" not in env
+
+
+# ─── _detect_cli ─────────────────────────────────────────────────
+
+
+def test_detect_cli_recognizes_known_binaries() -> None:
+    assert _detect_cli(["claude"]) == "claude"
+    assert _detect_cli(["gemini"]) == "gemini"
+    assert _detect_cli(["codex"]) == "codex"
+
+
+def test_detect_cli_basename_only() -> None:
+    """Absolute paths and PATH-relative names both work — we strip the
+    directory before matching."""
+    assert _detect_cli(["/usr/local/bin/claude"]) == "claude"
+    assert _detect_cli(["./codex"]) == "codex"
+    assert _detect_cli(["/opt/gemini-cli/bin/gemini"]) == "gemini"
+
+
+def test_detect_cli_unknown_falls_through() -> None:
+    assert _detect_cli(["aider"]) == "unknown"
+    assert _detect_cli([]) == "unknown"
+    assert _detect_cli(["bash"]) == "unknown"
+
+
+# ─── build_child_env per-CLI dispatch ────────────────────────────
+
+
+def test_build_child_env_gemini_sets_google_base_url() -> None:
+    """gemini-cli's GATEWAY auth mode reads GOOGLE_GEMINI_BASE_URL and
+    allows empty keys when it's set, so we don't need a sentinel."""
+    env = build_child_env(
+        base_url="http://localhost:11343",
+        parent_env={},
+        cli_name="gemini",
+    )
+    assert env["GOOGLE_GEMINI_BASE_URL"] == "http://localhost:11343"
+    assert env["FREERIDE_ACTIVE"] == "1"
+    # No sentinel for gemini.
+    assert "GEMINI_API_KEY" not in env
+    # And we must not set ANTHROPIC_BASE_URL — that would leak into
+    # other tools that read it.
+    assert "ANTHROPIC_BASE_URL" not in env
+
+
+def test_build_child_env_gemini_passes_through_real_key() -> None:
+    env = build_child_env(
+        base_url="http://localhost:11343",
+        parent_env={"GEMINI_API_KEY": "real-google-key"},
+        cli_name="gemini",
+    )
+    assert env["GEMINI_API_KEY"] == "real-google-key"
+
+
+def test_build_child_env_codex_sets_sentinel_when_no_key() -> None:
+    """Codex's auth gate reads CODEX_API_KEY at request time. Without
+    a real one we inject the sentinel to unblock the request — the
+    base URL itself isn't an env var for codex (handled in
+    prepare_codex_argv)."""
+    env = build_child_env(
+        base_url="http://localhost:11343",
+        parent_env={},
+        cli_name="codex",
+    )
+    assert env["CODEX_API_KEY"] == "sk-freeride-no-auth"
+    assert env["FREERIDE_ACTIVE"] == "1"
+    # No ANTHROPIC_BASE_URL leakage to the codex env.
+    assert "ANTHROPIC_BASE_URL" not in env
+
+
+def test_build_child_env_codex_preserves_real_key() -> None:
+    env = build_child_env(
+        base_url="http://localhost:11343",
+        parent_env={"CODEX_API_KEY": "real-user-key"},
+        cli_name="codex",
+    )
+    assert env["CODEX_API_KEY"] == "real-user-key"
+
+
+def test_build_child_env_unknown_cli_sets_both_base_urls() -> None:
+    """For an experimental tool we don't recognize, set both base-URL
+    env vars so whichever the tool reads still routes through us."""
+    env = build_child_env(
+        base_url="http://localhost:11343",
+        parent_env={},
+        cli_name="unknown",
+    )
+    assert env["ANTHROPIC_BASE_URL"] == "http://localhost:11343"
+    assert env["GOOGLE_GEMINI_BASE_URL"] == "http://localhost:11343"
+
+
+# ─── prepare_codex_argv ──────────────────────────────────────────
+
+
+def test_prepare_codex_argv_injects_base_url_flag_with_v1_suffix() -> None:
+    """Codex's default base URL is https://api.openai.com/v1 and it
+    appends /responses directly — so the override MUST include /v1."""
+    argv = prepare_codex_argv(["codex"], "http://localhost:11343")
+    assert argv == ["codex", "-c", "openai_base_url=http://localhost:11343/v1"]
+
+
+def test_prepare_codex_argv_inserts_after_binary_keeps_user_flags() -> None:
+    """User-supplied flags must still reach codex untouched — and they
+    must come AFTER our -c so a user override via their own -c
+    wins via last-write-wins config layering."""
+    argv = prepare_codex_argv(
+        ["codex", "exec", "--model", "gpt-5"],
+        "http://localhost:11343",
+    )
+    assert argv == [
+        "codex",
+        "-c",
+        "openai_base_url=http://localhost:11343/v1",
+        "exec",
+        "--model",
+        "gpt-5",
+    ]
+
+
+def test_prepare_codex_argv_strips_trailing_slash_on_base_url() -> None:
+    argv = prepare_codex_argv(["codex"], "http://localhost:11343/")
+    assert argv[2] == "openai_base_url=http://localhost:11343/v1"
+
+
+def test_prepare_codex_argv_empty_argv_no_change() -> None:
+    assert prepare_codex_argv([], "http://localhost:11343") == []
 
 
 # ─── gateway_healthy ─────────────────────────────────────────────
