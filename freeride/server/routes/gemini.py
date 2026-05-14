@@ -262,7 +262,7 @@ async def gemini_generate(model_with_action: str, request: Request):
                     status=kind.value,
                     endpoint="gemini",
                 )
-                _record_health(provider.name, key, status=kind.value)
+                _record_health(provider.name, ok=False, duration_ms=duration_ms, key=key)
                 continue
             except (httpx.RequestError, httpx.TimeoutException) as e:
                 duration_ms = int((time.perf_counter() - t0) * 1000)
@@ -277,7 +277,7 @@ async def gemini_generate(model_with_action: str, request: Request):
                     status=kind.value,
                     endpoint="gemini",
                 )
-                _record_health(provider.name, key, status=kind.value)
+                _record_health(provider.name, ok=False, duration_ms=duration_ms, key=key)
                 continue
 
             # Success.
@@ -291,7 +291,7 @@ async def gemini_generate(model_with_action: str, request: Request):
                 status="OK",
                 endpoint="gemini",
             )
-            _record_health(provider.name, key, status="OK")
+            _record_health(provider.name, ok=True, duration_ms=duration_ms, key=key)
             chosen_provider = provider
             break
         if response_obj is not None:
