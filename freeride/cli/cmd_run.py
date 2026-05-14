@@ -227,6 +227,99 @@ def build_child_env(
     return env
 
 
+def seed_cli_configs(cli_name: str, home: Path | None = None) -> None:
+    """Pre-write minimal config files so first-run auth pickers don't fire.
+
+    On a clean machine, each of these CLIs shows an interactive auth-method
+    picker the very first time it runs — "API key vs sign in with Google",
+    "API key vs ChatGPT login", etc. Even when we set the right env vars
+    via ``build_child_env``, an older CLI version may still pop the picker
+    once before honoring the env var on the second run. That confuses users
+    who got here through ``freeride run`` expecting one-command UX.
+
+    Pre-writing the minimal config that the picker WOULD have written makes
+    the CLI skip the picker entirely. We only write a file if one doesn't
+    already exist — a real user who's run ``gemini login`` keeps their
+    state untouched.
+
+    * **gemini** — writes ``~/.gemini/settings.json`` with
+      ``selectedAuthType: "gemini-api-key"``. That's what the picker
+      writes when the user chooses "API key" — combined with the
+      sentinel ``GEMINI_API_KEY`` we injected, the CLI bypasses the
+      picker and uses our gateway-routable key.
+
+    * **codex** — writes ``~/.codex/auth.json`` with the sentinel API
+      key. Codex's auth resolution picks ``CODEX_API_KEY`` env over this
+      file, but having the file present satisfies the first-run
+      "configure authentication" gate that otherwise blocks ``codex
+      exec`` on a brand-new machine.
+
+    * **claude** — claude-code reads its sentinel from env only, no
+      pre-flight config file needed.
+
+    * **unknown** — no-op.
+    """
+    h = home or Path.home()
+    try:
+        if cli_name == "gemini":
+            settings = h / ".gemini" / "settings.json"
+            if not settings.exists():
+                settings.parent.mkdir(parents=True, exist_ok=True)
+                settings.write_text(
+                    '{"selectedAuthType": "gemini-api-key"}\n',
+                    encoding="utf-8",
+                )
+        elif cli_name == "codex":
+            auth = h / ".codex" / "auth.json"
+            if not auth.exists():
+                auth.parent.mkdir(parents=True, exist_ok=True)
+                import json as _json
+
+                auth.write_text(
+                    _json.dumps({"OPENAI_API_KEY": _FREERIDE_SENTINEL_KEY}) + "\n",
+                    encoding="utf-8",
+                )
+    except OSError as e:
+        # Best-effort. If we can't write the config (e.g. read-only HOME),
+        # the CLI's own picker still gets a chance — annoying but not
+        # broken.
+        logger.warning("seed_cli_configs(%s) failed: %s", cli_name, e)
+
+
+# Preset hints printed in the wrapper banner. Each CLI has its own
+# /model picker (or none at all) and a different model namespace, so the
+# banner is per-CLI. None of them surface freeride/* in their built-in
+# pickers — these messages tell the user what to type manually.
+_PRESET_BANNER = {
+    "claude": (
+        "\n  ╭─ freeride: free-tier model presets ─────────────────╮\n"
+        "  │  Inside claude, type /model <id>:                   │\n"
+        "  │    freeride/free     — smart-routed                 │\n"
+        "  │    freeride/fast     — groq-preferred (low latency) │\n"
+        "  │    freeride/quality  — OR-preferred (larger models) │\n"
+        "  │    freeride/coding   — code-tuned (Qwen-Coder)      │\n"
+        "  │  /model claude-opus-4-7 keeps using your sub.       │\n"
+        "  ╰─────────────────────────────────────────────────────╯\n"
+    ),
+    "gemini": (
+        "\n  ╭─ freeride is routing this gemini session ───────────╮\n"
+        "  │  Any model you pick gets translated to a free model │\n"
+        "  │  on our side (gemini-2.0-flash, gemini-2.5-pro, …   │\n"
+        "  │  all resolve to the same upstream free provider).   │\n"
+        "  │  No GEMINI_API_KEY needed — gateway handles auth.   │\n"
+        "  ╰─────────────────────────────────────────────────────╯\n"
+    ),
+    "codex": (
+        "\n  ╭─ freeride is routing this codex session ────────────╮\n"
+        "  │  Any model you pick (gpt-5-codex, gpt-5, …) routes  │\n"
+        "  │  to a free upstream provider via our gateway.       │\n"
+        "  │  No CODEX_API_KEY needed — gateway handles auth.    │\n"
+        "  │  Note: codex's shell tool needs bubblewrap (Linux). │\n"
+        "  ╰─────────────────────────────────────────────────────╯\n"
+    ),
+}
+
+
 def prepare_codex_argv(command_argv: list[str], base_url: str) -> list[str]:
     """Inject ``-c openai_base_url=<gateway>/v1`` into a codex argv.
 
@@ -323,35 +416,29 @@ def cmd_run(args) -> int:
     cli_name = _detect_cli(command_argv)
     if cli_name == "codex":
         command_argv = prepare_codex_argv(command_argv, base_url)
+    # Pre-write minimal config files so first-run auth pickers don't fire.
+    # Safe — only writes when the file doesn't already exist.
+    seed_cli_configs(cli_name)
     child_env = build_child_env(
         base_url=base_url,
         parent_env=os.environ.copy(),
         cli_name=cli_name,
     )
 
-    # Banner — only when wrapping `claude` AND running an interactive
-    # TTY. claude-cli's hardcoded /model picker doesn't surface
-    # freeride/* virtual ids, so print them once at session start.
-    # gemini-cli and codex have their own model-selection UIs, so we
-    # don't show this banner for them.
-    # Suppressed when stdin isn't a tty (CI, scripts, --print mode
-    # already detached) so we don't clutter machine consumers.
+    # Banner: print preset hints for any CLI we recognize, when the
+    # child is going to render a TUI (stdin is a tty AND we're not in
+    # an explicit non-interactive flag like --print / --prompt / exec).
+    # Hints are CLI-specific because each tool has its own /model
+    # picker (or none at all) and a different model namespace.
+    _is_noninteractive_flag = any(
+        flag in command_argv for flag in ("--print", "--prompt", "exec")
+    )
     if (
-        cli_name == "claude"
-        and "--print" not in command_argv
+        cli_name in _PRESET_BANNER
+        and not _is_noninteractive_flag
         and sys.stdin.isatty()
     ):
-        print(
-            "\n  ╭─ freeride: free-tier model presets ─────────────────╮\n"
-            "  │  Inside claude, type /model <id>:                   │\n"
-            "  │    freeride/free     — smart-routed                 │\n"
-            "  │    freeride/fast     — groq-preferred (low latency) │\n"
-            "  │    freeride/quality  — OR-preferred (larger models) │\n"
-            "  │    freeride/coding   — code-tuned (Qwen-Coder)      │\n"
-            "  │  /model claude-opus-4-7 keeps using your sub.       │\n"
-            "  ╰─────────────────────────────────────────────────────╯\n",
-            file=sys.stderr,
-        )
+        print(_PRESET_BANNER[cli_name], file=sys.stderr)
 
     try:
         os.execvpe(command_argv[0], command_argv, child_env)

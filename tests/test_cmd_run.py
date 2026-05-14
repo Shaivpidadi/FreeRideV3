@@ -23,6 +23,7 @@ from freeride.cli.cmd_run import (
     cmd_run,
     gateway_healthy,
     prepare_codex_argv,
+    seed_cli_configs,
     wait_for_gateway,
 )
 
@@ -250,6 +251,68 @@ def test_prepare_codex_argv_strips_trailing_slash_on_base_url() -> None:
 
 def test_prepare_codex_argv_empty_argv_no_change() -> None:
     assert prepare_codex_argv([], "http://localhost:11343") == []
+
+
+# ─── seed_cli_configs ────────────────────────────────────────────
+
+
+def test_seed_cli_configs_gemini_writes_settings(tmp_path) -> None:
+    """First-run auth-picker bypass: write selectedAuthType so the CLI
+    doesn't pop the picker on the very first invocation."""
+    import json
+    seed_cli_configs("gemini", home=tmp_path)
+    settings = tmp_path / ".gemini" / "settings.json"
+    assert settings.exists()
+    body = json.loads(settings.read_text())
+    assert body["selectedAuthType"] == "gemini-api-key"
+
+
+def test_seed_cli_configs_gemini_preserves_existing(tmp_path) -> None:
+    """Real user config must not be overwritten — a user who ran
+    `gemini login` may have picked a different auth type."""
+    settings = tmp_path / ".gemini" / "settings.json"
+    settings.parent.mkdir()
+    settings.write_text('{"selectedAuthType": "oauth-personal"}')
+    seed_cli_configs("gemini", home=tmp_path)
+    import json
+    body = json.loads(settings.read_text())
+    assert body["selectedAuthType"] == "oauth-personal"  # unchanged
+
+
+def test_seed_cli_configs_codex_writes_auth(tmp_path) -> None:
+    """Codex's first-run gate is satisfied by the presence of
+    ~/.codex/auth.json with an api_key field. Sentinel value goes here
+    so the CLI doesn't prompt for a real one before letting the
+    request fly."""
+    import json
+    seed_cli_configs("codex", home=tmp_path)
+    auth = tmp_path / ".codex" / "auth.json"
+    assert auth.exists()
+    body = json.loads(auth.read_text())
+    assert body["OPENAI_API_KEY"] == "sk-freeride-no-auth"
+
+
+def test_seed_cli_configs_codex_preserves_existing(tmp_path) -> None:
+    auth = tmp_path / ".codex" / "auth.json"
+    auth.parent.mkdir()
+    auth.write_text('{"OPENAI_API_KEY": "sk-real-user-key"}')
+    seed_cli_configs("codex", home=tmp_path)
+    import json
+    body = json.loads(auth.read_text())
+    assert body["OPENAI_API_KEY"] == "sk-real-user-key"
+
+
+def test_seed_cli_configs_claude_is_noop(tmp_path) -> None:
+    """claude-code reads its sentinel from env only — no config file
+    pre-flight is needed. The function should not create stray files."""
+    seed_cli_configs("claude", home=tmp_path)
+    assert not (tmp_path / ".claude").exists()
+
+
+def test_seed_cli_configs_unknown_is_noop(tmp_path) -> None:
+    seed_cli_configs("unknown", home=tmp_path)
+    # No directories created for unknown CLIs.
+    assert list(tmp_path.iterdir()) == []
 
 
 # ─── gateway_healthy ─────────────────────────────────────────────
