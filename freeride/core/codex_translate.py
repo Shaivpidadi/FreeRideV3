@@ -49,6 +49,7 @@ from freeride.core.chat_schema import (
 from freeride.core.codex_schema import (
     FunctionCallItem,
     FunctionCallOutputItem,
+    FunctionTool,
     MessageItem,
     ReasoningItem,
     ResponsesRequest,
@@ -170,21 +171,38 @@ def responses_to_chat_request(req: ResponsesRequest) -> ChatRequest:
             messages.extend(_item_to_chat_messages(item))
 
     # Tools: Responses is FLAT, Chat is NESTED. Wrap each function tool
-    # def in the {type:"function", function:{...}} envelope.
+    # def in the {type:"function", function:{...}} envelope. Codex
+    # traffic also includes built-in tool types (web_search, custom,
+    # mcp, file_search, code_interpreter) which arrive as raw dicts —
+    # free upstream providers don't accept them, so we filter to
+    # function-shape tools only.
     chat_tools: list[ToolDef] | None = None
     if req.tools:
         chat_tools = []
         for t in req.tools:
-            chat_tools.append(
-                ToolDef(
-                    type="function",
-                    function=ToolFunctionDef(
-                        name=t.name,
-                        description=t.description,
-                        parameters=t.parameters or {},
-                    ),
+            if isinstance(t, FunctionTool):
+                chat_tools.append(
+                    ToolDef(
+                        type="function",
+                        function=ToolFunctionDef(
+                            name=t.name,
+                            description=t.description,
+                            parameters=t.parameters or {},
+                        ),
+                    )
                 )
-            )
+            elif isinstance(t, dict) and t.get("type") == "function" and t.get("name"):
+                chat_tools.append(
+                    ToolDef(
+                        type="function",
+                        function=ToolFunctionDef(
+                            name=t["name"],
+                            description=t.get("description"),
+                            parameters=t.get("parameters") or {},
+                        ),
+                    )
+                )
+            # Other tool types (web_search, custom, mcp, ...) drop here.
         if not chat_tools:
             chat_tools = None
 

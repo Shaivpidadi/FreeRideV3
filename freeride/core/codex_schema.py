@@ -134,12 +134,21 @@ class ResponsesRequest(BaseModel):
     """Top-level POST /v1/responses body. ``input`` is either a plain
     string (shorthand for a single user message) or a list of typed
     items. ``instructions`` is a system-prompt-like prefix that's
-    *not* an item but lives separately."""
+    *not* an item but lives separately.
+
+    ``tools`` is intentionally lax: real Codex traffic includes
+    built-in tool types (``web_search``, ``custom``, ``mcp``,
+    ``file_search``, ``code_interpreter``, ...) that don't share the
+    FunctionTool shape — they live alongside function tools in the
+    same list. Accepting them as raw dicts and letting the translator
+    only emit function tools to upstream lets the schema parse real
+    requests instead of 400'ing on the first built-in tool def.
+    """
 
     model: str
     input: Union[str, list[InputItem]] = ""
     instructions: str | None = None
-    tools: list[FunctionTool] | None = None
+    tools: list[Union[FunctionTool, dict[str, Any]]] | None = None
     tool_choice: Any = None  # "auto" | "none" | "required" | {"type":"function","name":"..."}
     max_output_tokens: int | None = None
     temperature: float | None = None

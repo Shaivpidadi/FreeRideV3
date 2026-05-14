@@ -162,6 +162,29 @@ def test_reasoning_items_drop_silently() -> None:
     assert out.messages[0].role == "user"
 
 
+def test_builtin_tools_silently_dropped_from_outbound() -> None:
+    """Real Codex traffic mixes function tools with built-in types
+    (web_search, custom, mcp, ...) that free upstream providers don't
+    accept. The schema accepts them as raw dicts; the translator must
+    filter them out so only function tools forward upstream."""
+    req = ResponsesRequest.model_validate(
+        {
+            "model": "m",
+            "input": "hi",
+            "tools": [
+                {"type": "function", "name": "Write", "parameters": {"type": "object"}},
+                {"type": "web_search"},
+                {"type": "custom", "name": "X"},
+                {"type": "function", "name": "Read", "parameters": {"type": "object"}},
+            ],
+        }
+    )
+    out = responses_to_chat_request(req)
+    assert out.tools is not None
+    names = [t.function.name for t in out.tools]
+    assert names == ["Write", "Read"]  # built-ins filtered
+
+
 def test_tools_unwrap_to_chat_completion_shape() -> None:
     """Responses uses FLAT tool defs ({type:function, name, parameters}).
     Chat Completions wraps that under a 'function' key. Translation
