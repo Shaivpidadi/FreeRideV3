@@ -201,9 +201,17 @@ def build_child_env(
             env["ANTHROPIC_API_KEY"] = _FREERIDE_SENTINEL_KEY
     elif cli_name == "gemini":
         env["GOOGLE_GEMINI_BASE_URL"] = base
-        # No sentinel — gemini-cli's GATEWAY auth mode permits empty
-        # keys. Pass through any real GEMINI_API_KEY untouched (it's
-        # already in env via the copy above).
+        # Newer gemini-cli versions ship a dedicated AuthType.GATEWAY
+        # path that allows empty keys when GOOGLE_GEMINI_BASE_URL is
+        # set — but 0.42.0 and earlier still require *some* auth env
+        # var to be present, otherwise the CLI short-circuits with
+        # "Please set an Auth method" before making any HTTP request.
+        # Inject a sentinel GEMINI_API_KEY when the parent has none,
+        # same pattern as the claude / codex wrappers. The gateway's
+        # has_inbound_auth helper recognizes this value and ignores
+        # it for routing decisions.
+        if not env.get("GEMINI_API_KEY") and not env.get("GOOGLE_API_KEY"):
+            env["GEMINI_API_KEY"] = _FREERIDE_SENTINEL_KEY
     elif cli_name == "codex":
         if not env.get("CODEX_API_KEY"):
             env["CODEX_API_KEY"] = _FREERIDE_SENTINEL_KEY

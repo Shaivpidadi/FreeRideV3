@@ -151,9 +151,11 @@ def test_detect_cli_unknown_falls_through() -> None:
 # ─── build_child_env per-CLI dispatch ────────────────────────────
 
 
-def test_build_child_env_gemini_sets_google_base_url() -> None:
-    """gemini-cli's GATEWAY auth mode reads GOOGLE_GEMINI_BASE_URL and
-    allows empty keys when it's set, so we don't need a sentinel."""
+def test_build_child_env_gemini_sets_google_base_url_and_sentinel() -> None:
+    """gemini-cli short-circuits before making any HTTP request if no
+    GEMINI_API_KEY / GOOGLE_API_KEY is set, even when
+    GOOGLE_GEMINI_BASE_URL points at a gateway. Inject the sentinel
+    when the parent env has neither, same pattern as claude/codex."""
     env = build_child_env(
         base_url="http://localhost:11343",
         parent_env={},
@@ -161,8 +163,7 @@ def test_build_child_env_gemini_sets_google_base_url() -> None:
     )
     assert env["GOOGLE_GEMINI_BASE_URL"] == "http://localhost:11343"
     assert env["FREERIDE_ACTIVE"] == "1"
-    # No sentinel for gemini.
-    assert "GEMINI_API_KEY" not in env
+    assert env["GEMINI_API_KEY"] == "sk-freeride-no-auth"
     # And we must not set ANTHROPIC_BASE_URL — that would leak into
     # other tools that read it.
     assert "ANTHROPIC_BASE_URL" not in env
