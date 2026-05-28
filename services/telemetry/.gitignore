@@ -1,0 +1,5 @@
+# local secrets — wrangler dev reads from .dev.vars; never commit
+.dev.vars
+
+# node deps for the worker bundle
+node_modules/
