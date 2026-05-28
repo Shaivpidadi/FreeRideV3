@@ -316,10 +316,12 @@ async def gemini_generate(model_with_action: str, request: Request):
         endpoint="gemini",
     )
     from freeride.core.telemetry import record_request
+    from freeride.core.usage import Kind, extract_usage
 
-    _total = (response_obj.usage.total_tokens if response_obj.usage else 0) or 0
+    g_usage = extract_usage(Kind.OPENAI, response_obj.model_dump())
     record_request(
-        tokens=int(_total),
+        input_tokens=g_usage.input,
+        output_tokens=g_usage.output,
         provider=chosen_provider.name if chosen_provider else None,
     )
 
@@ -373,12 +375,22 @@ async def _build_gemini_stream_response(
             ),
         )
 
+    # Upstream is OpenAI-compat (we translate to Gemini SSE on the
+    # way out), so the final usage chunk is OpenAI-shape. Capture it
+    # the same way the other streaming routes do.
+    from freeride.core.usage import Kind, extract_usage
+
+    last_usage_box = [extract_usage(Kind.OPENAI, first_event.model_dump())]
+
     async def _merged_chunks() -> AsyncIterator:
         """Re-thread the first event back in front of the rest, so the
         translator sees a single contiguous stream."""
         yield first_event
         try:
             async for evt in rest_or_err:
+                u = extract_usage(Kind.OPENAI, evt.model_dump())
+                if u.has_any:
+                    last_usage_box[0] = u
                 yield evt
         except Exception as e:  # noqa: BLE001
             # Mid-stream failure after first chunk shipped — we can't
@@ -400,16 +412,23 @@ async def _build_gemini_stream_response(
             _merged_chunks(), request_model=requested_model
         ):
             yield byte_chunk
+        final = last_usage_box[0]
         emit_event(
             "request_complete",
             request_id=ctx.request_id,
             provider=chosen.name,
             streaming=True,
             endpoint="gemini",
+            input_tokens=final.input,
+            output_tokens=final.output,
         )
         from freeride.core.telemetry import record_request
 
-        record_request(tokens=0, provider=chosen.name)
+        record_request(
+            input_tokens=final.input,
+            output_tokens=final.output,
+            provider=chosen.name,
+        )
 
     return StreamingResponse(
         _emit_sse(),

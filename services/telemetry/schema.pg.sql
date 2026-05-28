@@ -19,7 +19,14 @@ CREATE TABLE IF NOT EXISTS beacons (
   installation_id   TEXT NOT NULL,
   version           TEXT,
   os                TEXT,
+  -- ``tokens_served`` is the legacy (combined) counter that old
+  -- gateways still ship. New gateways populate ``input_tokens`` and
+  -- ``output_tokens`` separately AND set tokens_served = sum of both
+  -- so callers reading either column get the same answer until the
+  -- legacy field is dropped.
   tokens_served     BIGINT NOT NULL DEFAULT 0,
+  input_tokens      BIGINT NOT NULL DEFAULT 0,
+  output_tokens     BIGINT NOT NULL DEFAULT 0,
   request_count     BIGINT NOT NULL DEFAULT 0,
   providers_active  JSONB,
   uptime_hours      INTEGER NOT NULL DEFAULT 0,

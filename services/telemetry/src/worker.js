@@ -59,6 +59,13 @@ const json = (obj, status = 200) =>
       // a different origin) can client-fetch /v1/stats for the live
       // counter.
       "access-control-allow-origin": "*",
+      // Skip the Cloudflare edge cache. /v1/stats is computed from a
+      // moving target (beacons arrive continuously, the cron upserts
+      // openrouter_* hourly), and any TTL > 0 will make the response
+      // drift behind the underlying DB. The default Cloudflare edge
+      // policy treats unspecified Cache-Control as cacheable, which
+      // was burning us at the URL level.
+      "cache-control": "no-store",
     },
   });
 
@@ -154,7 +161,15 @@ async function handleBeacon(request, env) {
 
   const os = ALLOWED_OS.has(body.os) ? body.os : "other";
   const version = sanitizeVersion(body.version);
-  const tokens_served = clampInt(body.tokens_served);
+  const input_tokens = clampInt(body.input_tokens);
+  const output_tokens = clampInt(body.output_tokens);
+  // Old gateways only ship ``tokens_served``; new gateways ship both
+  // the split fields AND ``tokens_served = input + output``. We
+  // synthesize whichever the client didn't send so every row stays
+  // self-consistent regardless of payload generation.
+  const tokens_served = clampInt(
+    body.tokens_served ?? input_tokens + output_tokens,
+  );
   const request_count = clampInt(body.request_count);
   const uptime_hours = clampInt(body.uptime_hours, 24 * 365 * 10); // <= 10y
   const providers_active = sanitizeProviders(body.providers_active);
@@ -162,9 +177,11 @@ async function handleBeacon(request, env) {
   const sql = getSql(env);
   await sql`
     INSERT INTO beacons
-      (installation_id, version, os, tokens_served, request_count,
-       providers_active, uptime_hours, received_at)
-    VALUES (${installation_id}, ${version}, ${os}, ${tokens_served},
+      (installation_id, version, os,
+       tokens_served, input_tokens, output_tokens,
+       request_count, providers_active, uptime_hours, received_at)
+    VALUES (${installation_id}, ${version}, ${os},
+            ${tokens_served}, ${input_tokens}, ${output_tokens},
             ${request_count}, ${JSON.stringify(providers_active)}::jsonb,
             ${uptime_hours}, ${Math.floor(Date.now() / 1000)})
   `;
@@ -187,21 +204,49 @@ async function handleStats(env) {
   const toNum = (v) => (v == null ? 0 : Number(v));
 
   // ─── beacons ──────────────────────────────────────────────────
+  // Beacons ship CUMULATIVE counters: every hourly heartbeat carries
+  // that install's running total from the start of its lifetime.
+  // Summing across rows would over-count by ~(beacons-per-install)×.
+  // The right aggregate is the LATEST row per installation_id, then
+  // sum across installs. ``DISTINCT ON (installation_id) ... ORDER BY
+  // installation_id, received_at DESC`` is Postgres's native form.
   const [all] = await sql`
+    WITH latest AS (
+      SELECT DISTINCT ON (installation_id)
+        installation_id,
+        tokens_served, input_tokens, output_tokens,
+        request_count
+      FROM beacons
+      ORDER BY installation_id, received_at DESC
+    )
     SELECT
-      COUNT(DISTINCT installation_id) AS installations,
+      COUNT(*) AS installations,
       COALESCE(SUM(tokens_served), 0) AS tokens_served,
+      COALESCE(SUM(input_tokens), 0)  AS input_tokens,
+      COALESCE(SUM(output_tokens), 0) AS output_tokens,
       COALESCE(SUM(request_count), 0) AS request_count
-    FROM beacons
+    FROM latest
   `;
 
+  // 24h breakdown: pick the latest beacon for each install within
+  // the window. Installs that haven't pinged in 24h drop out.
   const [day] = await sql`
+    WITH latest_24h AS (
+      SELECT DISTINCT ON (installation_id)
+        installation_id,
+        tokens_served, input_tokens, output_tokens,
+        request_count
+      FROM beacons
+      WHERE received_at > ${day24Ago}
+      ORDER BY installation_id, received_at DESC
+    )
     SELECT
-      COUNT(DISTINCT installation_id) AS installations_24h,
+      COUNT(*) AS installations_24h,
       COALESCE(SUM(tokens_served), 0) AS tokens_served_24h,
+      COALESCE(SUM(input_tokens), 0)  AS input_tokens_24h,
+      COALESCE(SUM(output_tokens), 0) AS output_tokens_24h,
       COALESCE(SUM(request_count), 0) AS request_count_24h
-    FROM beacons
-    WHERE received_at > ${day24Ago}
+    FROM latest_24h
   `;
 
   // ─── openrouter aggregate (latest snapshot) ───────────────────
@@ -264,11 +309,15 @@ async function handleStats(env) {
     total: {
       installations: toNum(all?.installations),
       tokens_served: toNum(all?.tokens_served),
+      input_tokens:  toNum(all?.input_tokens),
+      output_tokens: toNum(all?.output_tokens),
       request_count: toNum(all?.request_count),
     },
     last_24h: {
       installations: toNum(day?.installations_24h),
       tokens_served: toNum(day?.tokens_served_24h),
+      input_tokens:  toNum(day?.input_tokens_24h),
+      output_tokens: toNum(day?.output_tokens_24h),
       request_count: toNum(day?.request_count_24h),
     },
     installs: {

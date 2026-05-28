@@ -162,9 +162,18 @@ class Stats:
     """Aggregated counters surfaced in the beacon. Always-on locally,
     written to ``~/.freeride/stats.json`` by the gateway when running.
     Telemetry reads them and ships hourly when opted in.
+
+    ``input_tokens`` and ``output_tokens`` track the prompt vs.
+    completion split per response and are the values modern gateways
+    actually report. ``tokens_served`` is preserved as their sum so
+    older Worker code paths keep computing the same totals during the
+    transition; it can be removed once we no longer surface the
+    legacy field on /v1/stats.
     """
 
     tokens_served: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
     request_count: int = 0
     providers_active: tuple[str, ...] = ()
     uptime_hours: int = 0
@@ -177,8 +186,16 @@ class Stats:
         providers = raw.get("providers_active") or []
         if not isinstance(providers, list):
             providers = []
+        input_t = int(raw.get("input_tokens", 0) or 0)
+        output_t = int(raw.get("output_tokens", 0) or 0)
+        # ``tokens_served`` was the only field before the input/output
+        # split landed; load it as the back-compat default for any
+        # stats.json files written by older gateways.
+        legacy = int(raw.get("tokens_served", 0) or 0)
         return cls(
-            tokens_served=int(raw.get("tokens_served", 0) or 0),
+            tokens_served=max(legacy, input_t + output_t),
+            input_tokens=input_t,
+            output_tokens=output_t,
             request_count=int(raw.get("request_count", 0) or 0),
             providers_active=tuple(p for p in providers if isinstance(p, str)),
             uptime_hours=int(raw.get("uptime_hours", 0) or 0),
@@ -187,7 +204,9 @@ class Stats:
 
 def record_request(
     *,
-    tokens: int = 0,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    tokens: int | None = None,
     provider: str | None = None,
 ) -> None:
     """Bump the local counters that the beacon will ship.
@@ -197,36 +216,46 @@ def record_request(
     the read-modify-write window is microseconds and ``atomic_write`` does
     a tmp+rename so a torn write can't leave partial JSON on disk.
 
-    * ``tokens`` — total tokens for this response (prompt + completion). For
-      non-streaming responses this comes from ``response.usage.total_tokens``.
-      For streaming responses where we can't peek at the final-chunk usage
-      cleanly, pass 0; request_count still increments so the install at
-      least shows activity in the per-user telemetry.
+    * ``input_tokens`` / ``output_tokens`` — prompt vs. completion tokens
+      for this response. Pulled from the provider's response (or final
+      stream chunk). Both default to 0 so callers that legitimately don't
+      know — early failure paths, providers that don't expose usage —
+      can still call this to bump ``request_count``.
 
-    * ``provider`` — the resolved provider that served the request, added to
-      ``providers_active`` (deduplicated). Tracks which providers an install
-      has actually exercised at least once, surfaced in the beacon so the
-      community-level stats know which providers are getting real traffic.
+    * ``tokens`` — legacy combined counter. Accepted for back-compat with
+      older route code that hasn't been migrated to the split fields yet.
+      If passed, it goes into ``tokens_served`` directly; input/output
+      stay 0 for that request. Don't pass both ``tokens`` and the split
+      fields — the split fields win.
 
-    Local-only — does NOT involve any network call. The beacon ships these
-    later, on its own schedule, only when telemetry is opted in. A user with
-    ``freeride telemetry off`` still gets correct local counters; they just
-    never leave the machine.
+    * ``provider`` — the resolved provider that served the request, added
+      to ``providers_active`` (deduplicated).
 
-    Why this didn't tick before: ``Stats`` had a ``load()`` method but no
-    code anywhere wrote to ``stats.json``. The doc comment claimed the
-    gateway wrote it "when running" but that code was never shipped, so
-    every beacon read 0 / 0 forever. Hence the 100M-tokens-but-zero-on-
-    every-install picture in the worker DB.
+    Local-only — does NOT involve any network call. The beacon ships
+    these later, on its own schedule, only when telemetry is opted in. A
+    user with ``freeride telemetry off`` still gets correct local
+    counters; they just never leave the machine.
     """
-    if tokens < 0:
-        tokens = 0
+    if input_tokens < 0:
+        input_tokens = 0
+    if output_tokens < 0:
+        output_tokens = 0
+    if input_tokens or output_tokens:
+        # Split fields take precedence; ``tokens_served`` is computed
+        # from them so the legacy column on the Worker stays consistent
+        # with the new split columns.
+        delta_total = input_tokens + output_tokens
+    else:
+        delta_total = max(int(tokens or 0), 0)
+
     try:
         existing = read_json_or(STATS_FILE, {})
         if not isinstance(existing, dict):
             existing = {}
 
         prev_tokens = int(existing.get("tokens_served", 0) or 0)
+        prev_input = int(existing.get("input_tokens", 0) or 0)
+        prev_output = int(existing.get("output_tokens", 0) or 0)
         prev_count = int(existing.get("request_count", 0) or 0)
         prev_providers = existing.get("providers_active") or []
         if not isinstance(prev_providers, list):
@@ -235,7 +264,9 @@ def record_request(
         if provider:
             providers_set.add(provider)
 
-        existing["tokens_served"] = prev_tokens + tokens
+        existing["tokens_served"] = prev_tokens + delta_total
+        existing["input_tokens"] = prev_input + input_tokens
+        existing["output_tokens"] = prev_output + output_tokens
         existing["request_count"] = prev_count + 1
         existing["providers_active"] = sorted(providers_set)
         # Preserve uptime_hours and any other field a future writer adds.
@@ -266,7 +297,11 @@ def build_payload(*, version: str | None = None) -> dict[str, Any]:
         "installation_id": installation_id(),
         "version": version,
         "os": _normalized_os(),
+        # Always include the legacy combined field so older receivers
+        # keep working; new field names sit alongside it.
         "tokens_served": s.tokens_served,
+        "input_tokens": s.input_tokens,
+        "output_tokens": s.output_tokens,
         "request_count": s.request_count,
         "providers_active": list(s.providers_active),
         "uptime_hours": s.uptime_hours,

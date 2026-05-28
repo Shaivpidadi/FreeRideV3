@@ -594,12 +594,19 @@ async def messages(request: Request):
     # exposed via the ``X-FreeRide-Provider`` header.
     anthropic_response = openai_to_anthropic_response(response_obj, requested_model)
 
-    # Local counter bump for the hourly beacon. Same shape as the
-    # chat route — non-streaming has usage on the response.
+    # Local counter bump for the hourly beacon. The upstream response
+    # is still OpenAI-compat (we translate to Anthropic on the way out),
+    # so extract usage in OpenAI shape — prompt_tokens → input,
+    # completion_tokens → output.
     from freeride.core.telemetry import record_request
+    from freeride.core.usage import Kind, extract_usage
 
-    _total = (response_obj.usage.total_tokens if response_obj.usage else 0) or 0
-    record_request(tokens=int(_total), provider=chosen_provider.name)
+    msg_usage = extract_usage(Kind.OPENAI, response_obj.model_dump())
+    record_request(
+        input_tokens=msg_usage.input,
+        output_tokens=msg_usage.output,
+        provider=chosen_provider.name,
+    )
 
     return JSONResponse(
         content=anthropic_response.model_dump(exclude_none=True),
@@ -661,12 +668,24 @@ async def _build_anthropic_stream_response(
 
     rest_iter = rest_or_err  # AsyncIterator[ChatStreamEvent]
 
+    # Telemetry capture — same idea as the chat route. The upstream is
+    # OpenAI-compat (only the response gets translated to Anthropic
+    # SSE on the way out), so the final usage chunk has OpenAI shape.
+    # We grab whichever event carries a usage block last and ship its
+    # values to ``record_request`` after the stream completes.
+    from freeride.core.usage import Kind, extract_usage
+
+    last_usage_box = [extract_usage(Kind.OPENAI, first_event.model_dump())]
+
     async def merged_chunks() -> AsyncIterator:
         """Re-thread the first event back in front of the rest, so the
         translator sees a single contiguous stream."""
         yield first_event
         try:
             async for evt in rest_iter:
+                u = extract_usage(Kind.OPENAI, evt.model_dump())
+                if u.has_any:
+                    last_usage_box[0] = u
                 yield evt
         except Exception as e:  # noqa: BLE001
             # Mid-stream upstream error after the first chunk shipped.
@@ -691,16 +710,23 @@ async def _build_anthropic_stream_response(
             merged_chunks(), request_model=requested_model
         ):
             yield byte_chunk
+        final_usage = last_usage_box[0]
         emit_event(
             "request_complete",
             request_id=ctx.request_id,
             provider=chosen.name,
             streaming=True,
             endpoint="messages",
+            input_tokens=final_usage.input,
+            output_tokens=final_usage.output,
         )
         from freeride.core.telemetry import record_request
 
-        record_request(tokens=0, provider=chosen.name)
+        record_request(
+            input_tokens=final_usage.input,
+            output_tokens=final_usage.output,
+            provider=chosen.name,
+        )
 
     return StreamingResponse(
         emit_anthropic_sse(),
