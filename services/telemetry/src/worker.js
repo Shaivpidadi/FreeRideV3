@@ -1,4 +1,5 @@
-// FreeRide site + telemetry beacon receiver — Cloudflare Worker + D1.
+// FreeRide site + telemetry beacon receiver — Cloudflare Worker +
+// Neon Postgres.
 //
 // Routes (no auth; counters and installer are public-by-design):
 //   GET  /             — 301 → marketing site at https://free-ride.xyz/
@@ -12,12 +13,41 @@
 // `cf-connecting-ip`. Inputs we accept are exactly the public spec
 // (the design plan); anything else is dropped.
 //
+// Storage is Neon Postgres, reached over the HTTP driver bundled by
+// wrangler. The connection string lives in env.DATABASE_URL — a
+// Worker secret in production (`wrangler secret put DATABASE_URL`)
+// and `.dev.vars` for `wrangler dev`. ``getSql(env)`` lazily binds
+// once per cold start.
+//
+// Migrated from Cloudflare D1 on 2026-05-28. Schema lives in
+// ./schema.pg.sql; the old D1 ./schema.sql is kept as historical
+// reference but no longer applied.
+//
 // The installer scripts are embedded as INSTALL_SH and INSTALL_PS1
 // below — KEEP IN SYNC with /install.sh and /install.ps1 at the repo
 // root by hand. The repo files are the source of truth; these are
 // their public-facing copies.
 
+import { neon } from "@neondatabase/serverless";
+
 const ALLOWED_OS = new Set(["darwin", "linux", "windows", "other"]);
+
+// Lazily cache the Neon HTTP client per isolate. Cold starts pay the
+// `neon(...)` cost; subsequent requests on the same isolate reuse the
+// client. The client itself is stateless — every query is a fresh
+// HTTPS request to Neon's pooler — so reusing is purely an
+// allocation win.
+let _sqlClient = null;
+let _sqlClientKey = null;
+function getSql(env) {
+  if (!env.DATABASE_URL) {
+    throw new Error("DATABASE_URL not configured");
+  }
+  if (_sqlClient && _sqlClientKey === env.DATABASE_URL) return _sqlClient;
+  _sqlClient = neon(env.DATABASE_URL);
+  _sqlClientKey = env.DATABASE_URL;
+  return _sqlClient;
+}
 
 const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), {
@@ -29,6 +59,13 @@ const json = (obj, status = 200) =>
       // a different origin) can client-fetch /v1/stats for the live
       // counter.
       "access-control-allow-origin": "*",
+      // Skip the Cloudflare edge cache. /v1/stats is computed from a
+      // moving target (beacons arrive continuously, the cron upserts
+      // openrouter_* hourly), and any TTL > 0 will make the response
+      // drift behind the underlying DB. The default Cloudflare edge
+      // policy treats unspecified Cache-Control as cacheable, which
+      // was burning us at the URL level.
+      "cache-control": "no-store",
     },
   });
 
@@ -90,22 +127,18 @@ async function handleInstallEvent(request, env) {
     ? body.install_method
     : "other";
 
-  // INSERT OR IGNORE: re-running the installer is idempotent. First
-  // install timestamp wins; we don't rewrite version on re-install
-  // (re-install would be a separate event type if we ever need it).
-  await env.DB.prepare(
-    `INSERT OR IGNORE INTO install_events
-       (installation_id, version, os, install_method, installed_at)
-     VALUES (?, ?, ?, ?, ?)`,
-  )
-    .bind(
-      installation_id,
-      version,
-      os,
-      install_method,
-      Math.floor(Date.now() / 1000),
-    )
-    .run();
+  // ON CONFLICT DO NOTHING: re-running the installer is idempotent.
+  // First install timestamp wins; we don't rewrite version on
+  // re-install (re-install would be a separate event type if we
+  // ever need it).
+  const sql = getSql(env);
+  await sql`
+    INSERT INTO install_events
+      (installation_id, version, os, install_method, installed_at)
+    VALUES (${installation_id}, ${version}, ${os}, ${install_method},
+            ${Math.floor(Date.now() / 1000)})
+    ON CONFLICT (installation_id) DO NOTHING
+  `;
 
   return json({ ok: true });
 }
@@ -128,168 +161,199 @@ async function handleBeacon(request, env) {
 
   const os = ALLOWED_OS.has(body.os) ? body.os : "other";
   const version = sanitizeVersion(body.version);
-  const tokens_served = clampInt(body.tokens_served);
+  const input_tokens = clampInt(body.input_tokens);
+  const output_tokens = clampInt(body.output_tokens);
+  // Old gateways only ship ``tokens_served``; new gateways ship both
+  // the split fields AND ``tokens_served = input + output``. We
+  // synthesize whichever the client didn't send so every row stays
+  // self-consistent regardless of payload generation.
+  const tokens_served = clampInt(
+    body.tokens_served ?? input_tokens + output_tokens,
+  );
   const request_count = clampInt(body.request_count);
   const uptime_hours = clampInt(body.uptime_hours, 24 * 365 * 10); // <= 10y
   const providers_active = sanitizeProviders(body.providers_active);
 
-  await env.DB.prepare(
-    `INSERT INTO beacons
-      (installation_id, version, os, tokens_served, request_count,
-       providers_active, uptime_hours, received_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  )
-    .bind(
-      installation_id,
-      version,
-      os,
-      tokens_served,
-      request_count,
-      JSON.stringify(providers_active),
-      uptime_hours,
-      Math.floor(Date.now() / 1000),
-    )
-    .run();
+  const sql = getSql(env);
+  await sql`
+    INSERT INTO beacons
+      (installation_id, version, os,
+       tokens_served, input_tokens, output_tokens,
+       request_count, providers_active, uptime_hours, received_at)
+    VALUES (${installation_id}, ${version}, ${os},
+            ${tokens_served}, ${input_tokens}, ${output_tokens},
+            ${request_count}, ${JSON.stringify(providers_active)}::jsonb,
+            ${uptime_hours}, ${Math.floor(Date.now() / 1000)})
+  `;
 
   return json({ ok: true });
 }
 
 async function handleStats(env) {
-  const all = await env.DB.prepare(
-    `SELECT
-       COUNT(DISTINCT installation_id) AS installations,
-       COALESCE(SUM(tokens_served), 0) AS tokens_served,
-       COALESCE(SUM(request_count), 0) AS request_count
-     FROM beacons`,
-  ).first();
-
-  const day = await env.DB.prepare(
-    `SELECT
-       COUNT(DISTINCT installation_id) AS installations_24h,
-       COALESCE(SUM(tokens_served), 0) AS tokens_served_24h,
-       COALESCE(SUM(request_count), 0) AS request_count_24h
-     FROM beacons
-     WHERE received_at > ?`,
-  )
-    .bind(Math.floor(Date.now() / 1000) - 24 * 3600)
-    .first();
-
-  // Latest OpenRouter aggregate (refreshed by the scheduled handler).
-  // Surfaces the V2+V3 30-day token totals scraped from the public app
-  // pages so the marketing site can show one combined number.
-  const or = await env.DB.prepare(
-    `SELECT v1_tokens, v3_tokens, combined_tokens, fetched_at
-     FROM openrouter_aggregate
-     ORDER BY fetched_at DESC LIMIT 1`,
-  ).first();
-
-  // Per-day per-model breakdown derived from the same OR scrape.
-  // Two rollups for callers that don't want to slice the raw rows:
-  //
-  //   last_7d        — tokens / model count per day, descending date
-  //   top_models_30d — biggest 10 models across both apps, last 30d
-  //
-  // Both pull from openrouter_daily; missing data (e.g. before the
-  // scraper started landing rows) just yields empty arrays.
-  const last7d = await env.DB.prepare(
-    `SELECT date,
-            SUM(tokens) AS tokens,
-            COUNT(DISTINCT model_id) AS models_count
-     FROM openrouter_daily
-     WHERE date >= date('now', '-7 days')
-     GROUP BY date
-     ORDER BY date DESC`,
-  ).all();
-
-  const topModels = await env.DB.prepare(
-    `SELECT model_id,
-            SUM(tokens) AS tokens
-     FROM openrouter_daily
-     WHERE date >= date('now', '-30 days')
-     GROUP BY model_id
-     ORDER BY tokens DESC
-     LIMIT 10`,
-  ).all();
-
-  // Lifetime totals across every day we've ever scraped. `openrouter_daily`
-  // rows are never deleted — when a day rolls past OR's 30-day window the
-  // upsert simply stops touching that row, but the historical tokens count
-  // stays in the table. So a plain SUM() gives us a cumulative number that
-  // grows monotonically over the project's lifetime, suitable for the
-  // homepage "all tokens served" counter.
-  //
-  // The MIN(date) `since` field lets the UI be honest about coverage:
-  // numbers before that date were never recorded by us.
-  const lifetime = await env.DB.prepare(
-    `SELECT
-       SUM(tokens) AS combined_tokens,
-       SUM(CASE WHEN app = 'v1' THEN tokens ELSE 0 END) AS v1_tokens,
-       SUM(CASE WHEN app = 'v3' THEN tokens ELSE 0 END) AS v3_tokens,
-       MIN(date) AS since,
-       MAX(date) AS through
-     FROM openrouter_daily`,
-  ).first();
-
-  // Install velocity from the install_events table (populated by
-  // install.sh / install.ps1, NOT by `freeride serve`). This is the
-  // honest install count — every CLI that ran the installer is here,
-  // regardless of whether the user later ran `freeride serve` long
-  // enough to fire a beacon.
+  const sql = getSql(env);
   const nowSec = Math.floor(Date.now() / 1000);
-  const installs = await env.DB.prepare(
-    `SELECT
-       COUNT(*) AS total,
-       COUNT(CASE WHEN installed_at > ? THEN 1 END) AS last_24h,
-       COUNT(CASE WHEN installed_at > ? THEN 1 END) AS last_7d,
-       COUNT(CASE WHEN installed_at > ? THEN 1 END) AS last_30d
-     FROM install_events`,
-  )
-    .bind(
-      nowSec - 24 * 3600,
-      nowSec - 7 * 24 * 3600,
-      nowSec - 30 * 24 * 3600,
+  const day24Ago = nowSec - 24 * 3600;
+  const day7Ago = nowSec - 7 * 24 * 3600;
+  const day30Ago = nowSec - 30 * 24 * 3600;
+
+  // Postgres counts come back as BIGINT, which the driver returns as
+  // strings to avoid silent JS-number precision loss. We re-cast to
+  // number here because every value we surface fits in 2^53 (token
+  // totals are in the ~billions). If usage hits the 9 quadrillion
+  // mark this needs to switch to BigInt-aware JSON serialization.
+  const toNum = (v) => (v == null ? 0 : Number(v));
+
+  // ─── beacons ──────────────────────────────────────────────────
+  // Beacons ship CUMULATIVE counters: every hourly heartbeat carries
+  // that install's running total from the start of its lifetime.
+  // Summing across rows would over-count by ~(beacons-per-install)×.
+  // The right aggregate is the LATEST row per installation_id, then
+  // sum across installs. ``DISTINCT ON (installation_id) ... ORDER BY
+  // installation_id, received_at DESC`` is Postgres's native form.
+  const [all] = await sql`
+    WITH latest AS (
+      SELECT DISTINCT ON (installation_id)
+        installation_id,
+        tokens_served, input_tokens, output_tokens,
+        request_count
+      FROM beacons
+      ORDER BY installation_id, received_at DESC
     )
-    .first();
+    SELECT
+      COUNT(*) AS installations,
+      COALESCE(SUM(tokens_served), 0) AS tokens_served,
+      COALESCE(SUM(input_tokens), 0)  AS input_tokens,
+      COALESCE(SUM(output_tokens), 0) AS output_tokens,
+      COALESCE(SUM(request_count), 0) AS request_count
+    FROM latest
+  `;
+
+  // 24h breakdown: pick the latest beacon for each install within
+  // the window. Installs that haven't pinged in 24h drop out.
+  const [day] = await sql`
+    WITH latest_24h AS (
+      SELECT DISTINCT ON (installation_id)
+        installation_id,
+        tokens_served, input_tokens, output_tokens,
+        request_count
+      FROM beacons
+      WHERE received_at > ${day24Ago}
+      ORDER BY installation_id, received_at DESC
+    )
+    SELECT
+      COUNT(*) AS installations_24h,
+      COALESCE(SUM(tokens_served), 0) AS tokens_served_24h,
+      COALESCE(SUM(input_tokens), 0)  AS input_tokens_24h,
+      COALESCE(SUM(output_tokens), 0) AS output_tokens_24h,
+      COALESCE(SUM(request_count), 0) AS request_count_24h
+    FROM latest_24h
+  `;
+
+  // ─── openrouter aggregate (latest snapshot) ───────────────────
+  const orRows = await sql`
+    SELECT v1_tokens, v3_tokens, combined_tokens, fetched_at
+    FROM openrouter_aggregate
+    ORDER BY fetched_at DESC
+    LIMIT 1
+  `;
+  const or = orRows[0] ?? null;
+
+  // ─── openrouter daily rollups ─────────────────────────────────
+  // Date strings are ``YYYY-MM-DD``; CURRENT_DATE minus an interval
+  // yields a DATE which `to_char(... 'YYYY-MM-DD')` re-textifies for
+  // the lexical comparison against `openrouter_daily.date`.
+  const last7d = await sql`
+    SELECT date,
+           SUM(tokens) AS tokens,
+           COUNT(DISTINCT model_id) AS models_count
+    FROM openrouter_daily
+    WHERE date >= to_char(CURRENT_DATE - INTERVAL '7 days', 'YYYY-MM-DD')
+    GROUP BY date
+    ORDER BY date DESC
+  `;
+
+  const topModels = await sql`
+    SELECT model_id,
+           SUM(tokens) AS tokens
+    FROM openrouter_daily
+    WHERE date >= to_char(CURRENT_DATE - INTERVAL '30 days', 'YYYY-MM-DD')
+    GROUP BY model_id
+    ORDER BY tokens DESC
+    LIMIT 10
+  `;
+
+  // ─── openrouter lifetime ──────────────────────────────────────
+  const [lifetime] = await sql`
+    SELECT
+      SUM(tokens) AS combined_tokens,
+      SUM(CASE WHEN app = 'v1' THEN tokens ELSE 0 END) AS v1_tokens,
+      SUM(CASE WHEN app = 'v3' THEN tokens ELSE 0 END) AS v3_tokens,
+      MIN(date) AS since,
+      MAX(date) AS through
+    FROM openrouter_daily
+  `;
+
+  // ─── install velocity ─────────────────────────────────────────
+  const [installs] = await sql`
+    SELECT
+      COUNT(*) AS total,
+      COUNT(CASE WHEN installed_at > ${day24Ago} THEN 1 END) AS last_24h,
+      COUNT(CASE WHEN installed_at > ${day7Ago}  THEN 1 END) AS last_7d,
+      COUNT(CASE WHEN installed_at > ${day30Ago} THEN 1 END) AS last_30d
+    FROM install_events
+  `;
 
   return json({
     object: "stats",
     as_of: new Date().toISOString(),
     total: {
-      installations: all?.installations ?? 0,
-      tokens_served: all?.tokens_served ?? 0,
-      request_count: all?.request_count ?? 0,
+      installations: toNum(all?.installations),
+      tokens_served: toNum(all?.tokens_served),
+      input_tokens:  toNum(all?.input_tokens),
+      output_tokens: toNum(all?.output_tokens),
+      request_count: toNum(all?.request_count),
     },
     last_24h: {
-      installations: day?.installations_24h ?? 0,
-      tokens_served: day?.tokens_served_24h ?? 0,
-      request_count: day?.request_count_24h ?? 0,
+      installations: toNum(day?.installations_24h),
+      tokens_served: toNum(day?.tokens_served_24h),
+      input_tokens:  toNum(day?.input_tokens_24h),
+      output_tokens: toNum(day?.output_tokens_24h),
+      request_count: toNum(day?.request_count_24h),
     },
     installs: {
-      total: installs?.total ?? 0,
-      last_24h: installs?.last_24h ?? 0,
-      last_7d: installs?.last_7d ?? 0,
-      last_30d: installs?.last_30d ?? 0,
+      total: toNum(installs?.total),
+      last_24h: toNum(installs?.last_24h),
+      last_7d: toNum(installs?.last_7d),
+      last_30d: toNum(installs?.last_30d),
     },
     openrouter_30d: or
       ? {
-          v1_tokens: or.v1_tokens,
-          v3_tokens: or.v3_tokens,
-          combined_tokens: or.combined_tokens,
-          fetched_at: or.fetched_at,
+          v1_tokens: toNum(or.v1_tokens),
+          v3_tokens: toNum(or.v3_tokens),
+          combined_tokens: toNum(or.combined_tokens),
+          fetched_at: toNum(or.fetched_at),
         }
       : null,
-    openrouter_lifetime: lifetime && lifetime.combined_tokens
-      ? {
-          v1_tokens: lifetime.v1_tokens ?? 0,
-          v3_tokens: lifetime.v3_tokens ?? 0,
-          combined_tokens: lifetime.combined_tokens ?? 0,
-          since: lifetime.since,
-          through: lifetime.through,
-        }
-      : null,
+    openrouter_lifetime:
+      lifetime && lifetime.combined_tokens
+        ? {
+            v1_tokens: toNum(lifetime.v1_tokens),
+            v3_tokens: toNum(lifetime.v3_tokens),
+            combined_tokens: toNum(lifetime.combined_tokens),
+            since: lifetime.since,
+            through: lifetime.through,
+          }
+        : null,
     openrouter_daily: {
-      last_7d: last7d.results ?? [],
-      top_models_30d: topModels.results ?? [],
+      last_7d: last7d.map((r) => ({
+        date: r.date,
+        tokens: toNum(r.tokens),
+        models_count: toNum(r.models_count),
+      })),
+      top_models_30d: topModels.map((r) => ({
+        model_id: r.model_id,
+        tokens: toNum(r.tokens),
+      })),
     },
   });
 }
@@ -367,6 +431,7 @@ function parseOpenRouterDailyBreakdown(html) {
 }
 
 async function refreshOpenRouterAggregate(env) {
+  const sql = getSql(env);
   const results = {};
   const breakdownByApp = {};
   for (const { slug, url } of OR_APP_URLS) {
@@ -381,11 +446,16 @@ async function refreshOpenRouterAggregate(env) {
       // breakdown skipped on this slug — the previously stored rows
       // remain untouched, so the recent days we already have keep
       // serving /v1/stats.
-      const prev = await env.DB.prepare(
-        `SELECT ${slug}_tokens AS t FROM openrouter_aggregate
+      //
+      // Column name has to be interpolated (not parameterized) so
+      // we whitelist it against the OR_APP_URLS slugs first. ``slug``
+      // is one of {'v1','v3'} per the array literal above.
+      const col = slug === "v1" ? "v1_tokens" : "v3_tokens";
+      const prev = await sql.query(
+        `SELECT ${col} AS t FROM openrouter_aggregate
          ORDER BY fetched_at DESC LIMIT 1`,
-      ).first();
-      results[slug] = prev?.t ?? 0;
+      );
+      results[slug] = Number(prev?.[0]?.t ?? 0);
       breakdownByApp[slug] = [];
     }
   }
@@ -394,37 +464,51 @@ async function refreshOpenRouterAggregate(env) {
   const combined = v1 + v3;
   const now = Math.floor(Date.now() / 1000);
 
-  await env.DB.prepare(
-    `INSERT INTO openrouter_aggregate
-       (fetched_at, v1_tokens, v3_tokens, combined_tokens)
-     VALUES (?, ?, ?, ?)`,
-  )
-    .bind(now, v1, v3, combined)
-    .run();
+  await sql`
+    INSERT INTO openrouter_aggregate
+      (fetched_at, v1_tokens, v3_tokens, combined_tokens)
+    VALUES (${now}, ${v1}, ${v3}, ${combined})
+    ON CONFLICT (fetched_at) DO NOTHING
+  `;
 
   // Upsert per-day per-model rows. (date, app, model_id) PK means
   // re-running for the same day replaces the previous tokens count
   // — that's what we want, since OR's page is the source of truth
-  // and may revise yesterday's rollup mid-day. Single batch keeps
-  // the round-trip count small even with ~50 rows.
-  const upserts = [];
+  // and may revise yesterday's rollup mid-day.
+  //
+  // D1 had ``.batch()`` for a single round-trip; the Neon HTTP
+  // driver doesn't. Sequential ``await`` per row pays one HTTPS
+  // round-trip each, so we batch via UNNEST instead — one query
+  // total, no matter how many models OR returns. The arrays are
+  // parallel: index i across all four arrays is one upsert.
+  const dates = [];
+  const apps = [];
+  const modelIds = [];
+  const tokensArr = [];
   for (const [app, rows] of Object.entries(breakdownByApp)) {
     for (const { date, model_id, tokens } of rows) {
-      upserts.push(
-        env.DB.prepare(
-          `INSERT INTO openrouter_daily (date, app, model_id, tokens, scraped_at)
-           VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT(date, app, model_id) DO UPDATE SET
-             tokens = excluded.tokens,
-             scraped_at = excluded.scraped_at`,
-        ).bind(date, app, model_id, tokens, now),
-      );
+      dates.push(date);
+      apps.push(app);
+      modelIds.push(model_id);
+      tokensArr.push(tokens);
     }
   }
   let daily_rows_written = 0;
-  if (upserts.length > 0) {
-    await env.DB.batch(upserts);
-    daily_rows_written = upserts.length;
+  if (dates.length > 0) {
+    await sql`
+      INSERT INTO openrouter_daily (date, app, model_id, tokens, scraped_at)
+      SELECT date, app, model_id, tokens, ${now}::bigint AS scraped_at
+      FROM UNNEST(
+        ${dates}::text[],
+        ${apps}::text[],
+        ${modelIds}::text[],
+        ${tokensArr}::bigint[]
+      ) AS t(date, app, model_id, tokens)
+      ON CONFLICT (date, app, model_id) DO UPDATE SET
+        tokens = EXCLUDED.tokens,
+        scraped_at = EXCLUDED.scraped_at
+    `;
+    daily_rows_written = dates.length;
   }
 
   return { v1, v3, combined, daily_rows_written };

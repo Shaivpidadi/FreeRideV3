@@ -6,6 +6,61 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+## [0.4.0a19] — 2026-05-29
+
+Telemetry pipeline lands its first real numbers. Two bugs that
+combined to make the beacon counter useless are fixed end-to-end:
+the streaming routes were passing `tokens=0` (so every modern agent
+CLI request — claude, codex, gemini, Cursor, Cline, Aider, all of
+which stream by default — went uncounted), and `/v1/stats` was
+summing cumulative per-row snapshots from every beacon, inflating
+whatever it did see by ~150×. Storage is also moved off Cloudflare
+D1 onto Neon Postgres so the marketing site, the gateway, and any
+future SDK callers all read from one place.
+
+### Added
+- `freeride/core/usage.py` — provider-format-aware extractor that
+  parses `usage.prompt_tokens` / `usage.input_tokens` /
+  `usageMetadata.promptTokenCount` etc. into a single
+  `Usage(input, output)` shape. Works on full response objects and
+  on individual SSE chunks. Handles Anthropic prompt-cache fields
+  (`cache_creation_input_tokens`, `cache_read_input_tokens`).
+- `record_request(input_tokens=..., output_tokens=..., provider=...)`
+  signature for separate prompt vs. completion accounting. Legacy
+  `tokens=` keyword still accepted so older route callers keep
+  compiling during the migration.
+- Beacon payload now carries `input_tokens` and `output_tokens`
+  alongside the legacy `tokens_served` sum.
+- `_force_stream_usage(body)` helper in `chat.py` injects
+  `stream_options.include_usage=true` on every outgoing OpenAI-compat
+  streaming request, so providers actually ship the usage chunk.
+
+### Fixed
+- **Streaming routes count tokens.** Chat (`/v1/chat/completions`),
+  Messages (`/v1/messages`), Codex (`/v1/responses`), and Gemini
+  (`/v1beta/models/...`) all hold a `last_usage` box, swap it on
+  every event that carries a usage block, and record the final
+  value on stream completion. Previously every streaming response
+  recorded `tokens=0`.
+- **`/v1/stats` math.** Rewritten to use
+  `DISTINCT ON (installation_id) ... ORDER BY received_at DESC` and
+  sum across the latest beacon per install. Reported totals drop
+  from a ~355M over-count back to the actual ~2.4M.
+- **`/v1/stats` cache.** `Cache-Control: no-store` set on the JSON
+  response so Cloudflare's edge stops serving stale aggregates
+  after a deploy.
+
+### Changed
+- Telemetry receiver Worker (`api.free-ride.xyz`,
+  `telemetry.free-ride.xyz`) moved from Cloudflare D1 to Neon
+  Postgres. Schema `services/telemetry/schema.pg.sql` is the new
+  source of truth; all 5,690 rows from D1 migrated by the one-off
+  `services/telemetry/migrate_d1_to_neon.py`. D1 binding removed
+  from `wrangler.toml`; the connection string is a Worker secret
+  (`wrangler secret put DATABASE_URL`) plus a gitignored
+  `.dev.vars` for local `wrangler dev`. Old D1 database kept as a
+  backup for a week.
+
 ## [0.4.0a4] — 2026-05-10
 
 Adoption-tracking release. Closes the install-vs-token-served blind spot:

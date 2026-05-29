@@ -1,0 +1,16 @@
+{
+  "name": "freeride-telemetry",
+  "version": "0.2.0",
+  "private": true,
+  "description": "FreeRide site + telemetry beacon receiver running on Cloudflare Workers, backed by Neon Postgres.",
+  "type": "module",
+  "main": "src/worker.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^0.10.0"
+  }
+}

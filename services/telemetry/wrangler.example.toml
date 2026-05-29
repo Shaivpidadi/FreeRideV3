@@ -6,12 +6,16 @@ compatibility_date = "2026-04-01"
 # reachable even before / outside of the custom-domain DNS path.
 workers_dev = true
 
-# Bind the D1 database created via `wrangler d1 create freeride-telemetry`.
-# Paste the printed database_id here after `wrangler d1 create`.
-[[d1_databases]]
-binding = "DB" # available as env.DB inside the worker
-database_name = "freeride-telemetry"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"  # paste the UUID printed by `wrangler d1 create freeride-telemetry`
+# Storage moved off Cloudflare D1 onto Neon Postgres on 2026-05-28
+# so the marketing site, future SDK callers, and the Worker all share
+# one source of truth. Connection string lives in env.DATABASE_URL,
+# never in the toml:
+#
+#   wrangler secret put DATABASE_URL    # production (encrypted)
+#   echo 'DATABASE_URL=postgresql://...' > .dev.vars   # `wrangler dev`
+#
+# Both `wrangler.toml` and `.dev.vars` are gitignored — paste the real
+# values once and they stay local.
 
 # Public custom domains.
 #
@@ -30,10 +34,10 @@ custom_domain = true
 pattern = "telemetry.free-ride.xyz"
 custom_domain = true
 
-# Cron trigger: refresh the OpenRouter app-level token aggregate every 6
-# hours. The handler scrapes the public app activity pages for both V2
+# Cron trigger: refresh the OpenRouter app-level token aggregate every
+# hour. The handler scrapes the public app activity pages for both V2
 # (Shaivpidadi/FreeRide) and V3 (Shaivpidadi/FreeRideV3) and stores the
-# combined total in the openrouter_aggregate D1 table for /v1/stats to
-# surface.
+# combined total in the openrouter_aggregate Neon table for /v1/stats
+# to surface.
 [triggers]
-crons = ["0 */6 * * *"]
+crons = ["0 * * * *"]

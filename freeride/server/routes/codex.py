@@ -282,10 +282,12 @@ async def responses(request: Request):
         endpoint="responses",
     )
     from freeride.core.telemetry import record_request
+    from freeride.core.usage import Kind, extract_usage
 
-    _total = (response_obj.usage.total_tokens if response_obj.usage else 0) or 0
+    cd_usage = extract_usage(Kind.OPENAI, response_obj.model_dump())
     record_request(
-        tokens=int(_total),
+        input_tokens=cd_usage.input,
+        output_tokens=cd_usage.output,
         provider=chosen_provider.name if chosen_provider else None,
     )
 
@@ -329,10 +331,20 @@ async def _build_responses_stream(
             ),
         )
 
+    # Upstream is OpenAI-compat; capture the final usage chunk in the
+    # same format and ship to the telemetry layer when the stream
+    # finishes.
+    from freeride.core.usage import Kind, extract_usage
+
+    last_usage_box = [extract_usage(Kind.OPENAI, first_event.model_dump())]
+
     async def _merged_chunks() -> AsyncIterator:
         yield first_event
         try:
             async for evt in rest_or_err:
+                u = extract_usage(Kind.OPENAI, evt.model_dump())
+                if u.has_any:
+                    last_usage_box[0] = u
                 yield evt
         except Exception as e:  # noqa: BLE001
             logger.warning(
@@ -351,16 +363,23 @@ async def _build_responses_stream(
             _merged_chunks(), requested_model=requested_model
         ):
             yield byte_chunk
+        final = last_usage_box[0]
         emit_event(
             "request_complete",
             request_id=ctx.request_id,
             provider=chosen.name,
             streaming=True,
             endpoint="responses",
+            input_tokens=final.input,
+            output_tokens=final.output,
         )
         from freeride.core.telemetry import record_request
 
-        record_request(tokens=0, provider=chosen.name)
+        record_request(
+            input_tokens=final.input,
+            output_tokens=final.output,
+            provider=chosen.name,
+        )
 
     return StreamingResponse(
         _emit_sse(),

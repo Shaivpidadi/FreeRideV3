@@ -193,6 +193,32 @@ def _build_503_detail(ctx: FailoverContext) -> dict[str, Any]:
     }
 
 
+def _force_stream_usage(body: ChatRequest) -> None:
+    """Force ``stream_options.include_usage = true`` on the outgoing
+    OpenAI-compat request so providers ship a final usage chunk.
+
+    Most OpenAI-compatible providers omit usage on the SSE stream by
+    default, returning ``usage: null`` on every chunk. Asking for it
+    explicitly adds one extra ``choices: []`` chunk at the end carrying
+    ``prompt_tokens`` + ``completion_tokens`` — that's what the
+    telemetry layer reads to fix the long-standing streaming-undercount
+    bug. If the caller already passed ``stream_options``, we preserve
+    their other fields and only set ``include_usage``.
+
+    No-op on non-streaming requests (the response object already
+    carries usage).
+    """
+    if not body.is_streaming():
+        return
+    extra = body.__pydantic_extra__ or {}
+    existing = extra.get("stream_options")
+    if isinstance(existing, dict):
+        new_so = {**existing, "include_usage": True}
+    else:
+        new_so = {"include_usage": True}
+    body.__pydantic_extra__ = {**extra, "stream_options": new_so}
+
+
 async def _try_stream_with_failover(
     chain: list[tuple[Provider, list[str]]],
     body: ChatRequest,
@@ -202,6 +228,7 @@ async def _try_stream_with_failover(
     tuple[Provider, ChatStreamEvent, AsyncIterator[ChatStreamEvent]]
     | tuple[None, None, ErrorKind]
 ):
+    _force_stream_usage(body)
     last_error: ErrorKind | None = None
     for provider, keys in chain:
         summary = ctx.attempt(provider.name)
@@ -329,9 +356,22 @@ async def _build_stream_response(
     rest = rest_or_err  # AsyncIterator at this point
 
     async def emit() -> AsyncIterator[bytes]:
+        # Track the latest usage seen on the wire. Most OpenAI-compat
+        # providers emit a single usage-bearing chunk near the end of
+        # the stream (the penultimate event on NIM with ``choices: []``,
+        # or any event when the request included
+        # ``stream_options.include_usage=true``). We grab whichever
+        # arrives last so a provider that updates mid-stream still
+        # gets its final number recorded.
+        from freeride.core.usage import Kind, extract_usage
+
+        last_usage = extract_usage(Kind.OPENAI, first_event.model_dump())
         yield _format_sse(first_event)
         try:
             async for evt in rest:
+                u = extract_usage(Kind.OPENAI, evt.model_dump())
+                if u.has_any:
+                    last_usage = u
                 yield _format_sse(evt)
         except Exception as e:
             logger.warning("mid-stream upstream error after first chunk shipped: %s", e)
@@ -346,14 +386,22 @@ async def _build_stream_response(
             request_id=ctx.request_id,
             provider=chosen.name,
             streaming=True,
+            input_tokens=last_usage.input,
+            output_tokens=last_usage.output,
         )
-        # Bump the local counter that the hourly beacon ships. Streaming
-        # path can't peek the upstream usage cleanly without buffering
-        # the whole response, so we pass tokens=0 — request_count still
-        # ticks so the user's per-install stats reflect activity.
+        # Bump the local counters the hourly beacon ships. If the
+        # upstream emitted usage (most do when we ask for it via
+        # stream_options.include_usage=true), we record input + output
+        # exactly. Otherwise both default to 0 and only request_count
+        # ticks — the install still shows activity even when usage
+        # data was unavailable.
         from freeride.core.telemetry import record_request
 
-        record_request(tokens=0, provider=chosen.name)
+        record_request(
+            input_tokens=last_usage.input,
+            output_tokens=last_usage.output,
+            provider=chosen.name,
+        )
         yield _format_done()
 
     return StreamingResponse(
@@ -570,18 +618,26 @@ async def chat_completions(request: Request, body: ChatRequest):
         )
         return JSONResponse(status_code=503, content=_build_503_detail(ctx))
 
+    # Non-streaming: the full response object carries ``usage``.
+    # Split into input + output so the beacon counts both halves and
+    # the marketing site can break down prompt vs. completion volume.
+    from freeride.core.telemetry import record_request
+    from freeride.core.usage import Kind, extract_usage
+
+    usage = extract_usage(Kind.OPENAI, response.model_dump())
     emit_event(
         "request_complete",
         request_id=ctx.request_id,
         provider=chosen_provider.name,
         streaming=False,
+        input_tokens=usage.input,
+        output_tokens=usage.output,
     )
-    # Bump the local counter that the beacon ships. Non-streaming has
-    # the usage block on the response — use the total when present.
-    from freeride.core.telemetry import record_request
-
-    _total = (response.usage.total_tokens if response.usage else 0) or 0
-    record_request(tokens=int(_total), provider=chosen_provider.name)
+    record_request(
+        input_tokens=usage.input,
+        output_tokens=usage.output,
+        provider=chosen_provider.name,
+    )
     out = response.model_dump(exclude_none=False)
     out["_freeride_provider"] = chosen_provider.name
     out["_freeride_request_id"] = ctx.request_id
