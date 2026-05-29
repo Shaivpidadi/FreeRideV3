@@ -6,6 +6,23 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+## [0.4.0a20] — 2026-05-29
+
+Hotfix for `freeride run codex`. Codex 0.121+ defaults to a WebSocket
+transport on `/v1/responses` and only falls back to HTTP after five
+failed reconnect attempts — which the gateway can't satisfy (it
+speaks HTTP/SSE, not WS). The end-to-end answer still came through
+but stderr was full of `failed to connect to websocket: 403 Forbidden`
+lines that looked like a hard failure.
+
+### Fixed
+- `freeride run codex` no longer logs WebSocket reconnect errors.
+  `prepare_codex_argv` now injects a full custom `model_providers.freeride`
+  block via `-c` flags instead of the old `openai_base_url` shortcut,
+  and sets `supports_websockets=false` on that provider so codex skips
+  the upgrade attempt entirely. Reaching the gateway is just one
+  clean HTTP request per turn.
+
 ## [0.4.0a19] — 2026-05-29
 
 Telemetry pipeline lands its first real numbers. Two bugs that

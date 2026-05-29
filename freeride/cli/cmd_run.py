@@ -321,24 +321,48 @@ _PRESET_BANNER = {
 
 
 def prepare_codex_argv(command_argv: list[str], base_url: str) -> list[str]:
-    """Inject ``-c openai_base_url=<gateway>/v1`` into a codex argv.
+    """Inject a full custom ``model_providers.freeride`` block into a
+    codex argv so the CLI talks to the local gateway over HTTP only.
 
-    Codex CLI reads its base URL from ``~/.codex/config.toml`` (key
-    ``openai_base_url``), not from any env var. To redirect a single
-    invocation without mutating the user's config file, we pass the
-    same key via the ``-c`` CLI flag. Codex's config precedence is
-    last-write-wins per key, so we prepend ours right after the binary
-    name — any explicit user ``-c openai_base_url=...`` later in argv
-    will still override ours.
+    The simpler ``-c openai_base_url=...`` shortcut DOES redirect codex
+    to our gateway — but codex 0.121+ also tries to upgrade
+    ``/v1/responses`` to a WebSocket on the same host. The gateway
+    doesn't speak WebSocket (FastAPI returns 403 on the upgrade), so
+    codex spams 5 reconnect-attempt error lines per turn before
+    falling back to HTTP. The answer still comes through but the
+    terminal looks broken.
 
-    The ``/v1`` suffix is required: codex's default is
-    ``https://api.openai.com/v1`` and it appends ``/responses``
-    directly, so the base must include /v1.
+    The fix is to define a custom provider (codex reserves the
+    ``openai`` id) and set ``supports_websockets=false`` on it, which
+    skips the upgrade attempt entirely. Every -c flag below is
+    required because codex's TOML loader validates the provider
+    struct as a whole:
+
+      * ``name``               — display name for the provider
+      * ``base_url``           — what we actually care about
+      * ``wire_api="responses"`` — codex's modern responses-shaped
+                                   wire format, what /v1/responses
+                                   on the gateway expects
+      * ``supports_websockets=false`` — disable the WS upgrade
+                                        attempt that produced the
+                                        noise
+      * top-level ``model_provider="freeride"`` — point the active
+        request at the custom provider we just defined
+
+    ``-c`` precedence is last-write-wins per key, so a user passing
+    their own ``-c model_provider=...`` later in argv still wins.
     """
     if not command_argv:
         return command_argv
     base = base_url.rstrip("/")
-    return [command_argv[0], "-c", f"openai_base_url={base}/v1"] + command_argv[1:]
+    injected = [
+        "-c", 'model_providers.freeride.name="freeride"',
+        "-c", f'model_providers.freeride.base_url="{base}/v1"',
+        "-c", 'model_providers.freeride.wire_api="responses"',
+        "-c", "model_providers.freeride.supports_websockets=false",
+        "-c", 'model_provider="freeride"',
+    ]
+    return [command_argv[0], *injected, *command_argv[1:]]
 
 
 # ─── command entry ──────────────────────────────────────────────────

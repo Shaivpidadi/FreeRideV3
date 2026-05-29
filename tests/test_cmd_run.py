@@ -219,11 +219,23 @@ def test_build_child_env_unknown_cli_sets_both_base_urls() -> None:
 # ─── prepare_codex_argv ──────────────────────────────────────────
 
 
-def test_prepare_codex_argv_injects_base_url_flag_with_v1_suffix() -> None:
+_CODEX_INJECTED_FLAGS = (
+    "-c", 'model_providers.freeride.name="freeride"',
+    "-c", 'model_providers.freeride.base_url="http://localhost:11343/v1"',
+    "-c", 'model_providers.freeride.wire_api="responses"',
+    "-c", "model_providers.freeride.supports_websockets=false",
+    "-c", 'model_provider="freeride"',
+)
+
+
+def test_prepare_codex_argv_injects_custom_provider_block() -> None:
     """Codex's default base URL is https://api.openai.com/v1 and it
-    appends /responses directly — so the override MUST include /v1."""
+    appends /responses directly — so the override MUST include /v1.
+    The wrapper also flips ``supports_websockets=false`` so codex
+    0.121+ doesn't spam reconnect errors trying to upgrade
+    ``/v1/responses`` to a WebSocket that the gateway doesn't speak."""
     argv = prepare_codex_argv(["codex"], "http://localhost:11343")
-    assert argv == ["codex", "-c", "openai_base_url=http://localhost:11343/v1"]
+    assert argv == ["codex", *_CODEX_INJECTED_FLAGS]
 
 
 def test_prepare_codex_argv_inserts_after_binary_keeps_user_flags() -> None:
@@ -236,8 +248,7 @@ def test_prepare_codex_argv_inserts_after_binary_keeps_user_flags() -> None:
     )
     assert argv == [
         "codex",
-        "-c",
-        "openai_base_url=http://localhost:11343/v1",
+        *_CODEX_INJECTED_FLAGS,
         "exec",
         "--model",
         "gpt-5",
@@ -245,8 +256,13 @@ def test_prepare_codex_argv_inserts_after_binary_keeps_user_flags() -> None:
 
 
 def test_prepare_codex_argv_strips_trailing_slash_on_base_url() -> None:
+    """Trailing slashes in the configured gateway URL must not bleed
+    into the TOML value; otherwise the resulting base URL becomes
+    ``http://localhost:11343//v1`` and codex's URL-joining trips."""
     argv = prepare_codex_argv(["codex"], "http://localhost:11343/")
-    assert argv[2] == "openai_base_url=http://localhost:11343/v1"
+    # Layout: [bin, -c, name=..., -c, base_url=..., -c, wire_api=..., ...]
+    # base_url is the value at index 4.
+    assert argv[4] == 'model_providers.freeride.base_url="http://localhost:11343/v1"'
 
 
 def test_prepare_codex_argv_empty_argv_no_change() -> None:
