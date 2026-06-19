@@ -69,7 +69,20 @@ const json = (obj, status = 200) =>
     },
   });
 
-function clampInt(value, max = 1_000_000_000) {
+// Per-beacon, per-field sanity bound — rejects garbage / malicious
+// payloads, NOT a real usage ceiling. The old default (1e9) was small
+// enough that heavy installs crossed it for real: beacons ship a
+// CUMULATIVE lifetime counter, so any install past a billion lifetime
+// tokens got pinned at the cap and the stored total silently fell
+// behind reality (one install was frozen at exactly 1e9 while its true
+// total was ~1.6B). Columns are BIGINT, so the DB was never the limit.
+//
+// 1e13 (10 trillion) is ~6000× the current heaviest install — no real
+// gateway will approach it for years — while keeping the documented
+// invariant intact: even the pathological case of every install maxed
+// out (≤ a few thousand installs × 1e13) stays under JS's 2^53
+// (~9.0e15), so SUM()s still serialize as exact JS numbers.
+function clampInt(value, max = 10_000_000_000_000) {
   const n = Number.isFinite(value) ? Math.floor(value) : 0;
   if (n < 0) return 0;
   if (n > max) return max;
@@ -206,47 +219,89 @@ async function handleStats(env) {
   // ─── beacons ──────────────────────────────────────────────────
   // Beacons ship CUMULATIVE counters: every hourly heartbeat carries
   // that install's running total from the start of its lifetime.
-  // Summing across rows would over-count by ~(beacons-per-install)×.
-  // The right aggregate is the LATEST row per installation_id, then
-  // sum across installs. ``DISTINCT ON (installation_id) ... ORDER BY
-  // installation_id, received_at DESC`` is Postgres's native form.
+  //
+  // We previously took the LATEST row per install and summed. That was
+  // right only while counters never reset — but they do: a reinstall
+  // or a cleared ~/.freeride/stats.json restarts an install's counter
+  // at zero, and "latest" then reports a value BELOW an earlier peak,
+  // silently dropping everything served before the reset.
+  //
+  // The robust aggregate is a reset-aware DELTA-SUM: order each
+  // install's beacons by time and sum the per-step increments. A step
+  // where the value DROPS below the previous one is a reset, so the
+  // full current value counts as freshly-served. The first beacon of
+  // an install seeds with its full value (no predecessor). This is
+  // monotonic-safe, self-heals after the 1e9-clamp fix (the next
+  // beacon's true cumulative flows straight in), and recovers tokens
+  // the latest-row form was dropping.
+  //
+  // `LAG(... ) OVER (PARTITION BY installation_id ORDER BY received_at)`
+  // gives each row its install's previous value; the delta CASE is
+  // factored into one expression per metric.
   const [all] = await sql`
-    WITH latest AS (
-      SELECT DISTINCT ON (installation_id)
-        installation_id,
-        tokens_served, input_tokens, output_tokens,
-        request_count
+    WITH ordered AS (
+      SELECT
+        installation_id, received_at,
+        tokens_served, input_tokens, output_tokens, request_count,
+        LAG(tokens_served) OVER w AS p_ts,
+        LAG(input_tokens)  OVER w AS p_it,
+        LAG(output_tokens) OVER w AS p_ot,
+        LAG(request_count) OVER w AS p_rc
       FROM beacons
-      ORDER BY installation_id, received_at DESC
+      WINDOW w AS (PARTITION BY installation_id ORDER BY received_at)
     )
     SELECT
-      COUNT(*) AS installations,
-      COALESCE(SUM(tokens_served), 0) AS tokens_served,
-      COALESCE(SUM(input_tokens), 0)  AS input_tokens,
-      COALESCE(SUM(output_tokens), 0) AS output_tokens,
-      COALESCE(SUM(request_count), 0) AS request_count
-    FROM latest
+      COUNT(DISTINCT installation_id) AS installations,
+      COALESCE(SUM(CASE WHEN p_ts IS NULL THEN tokens_served
+                        WHEN tokens_served < p_ts THEN tokens_served
+                        ELSE tokens_served - p_ts END), 0) AS tokens_served,
+      COALESCE(SUM(CASE WHEN p_it IS NULL THEN input_tokens
+                        WHEN input_tokens < p_it THEN input_tokens
+                        ELSE input_tokens - p_it END), 0)  AS input_tokens,
+      COALESCE(SUM(CASE WHEN p_ot IS NULL THEN output_tokens
+                        WHEN output_tokens < p_ot THEN output_tokens
+                        ELSE output_tokens - p_ot END), 0) AS output_tokens,
+      COALESCE(SUM(CASE WHEN p_rc IS NULL THEN request_count
+                        WHEN request_count < p_rc THEN request_count
+                        ELSE request_count - p_rc END), 0) AS request_count
+    FROM ordered
   `;
 
-  // 24h breakdown: pick the latest beacon for each install within
-  // the window. Installs that haven't pinged in 24h drop out.
+  // 24h breakdown: the SAME delta-sum, but counting only increments
+  // whose beacon landed inside the window. LAG is computed over the
+  // FULL history (the CTE has no WHERE), so an install's first
+  // in-window beacon correctly diffs against its last PRE-window
+  // beacon — the result is "tokens actually served in the last 24h",
+  // not (as the old latest-row form gave) the lifetime totals of
+  // whichever installs happened to ping recently.
   const [day] = await sql`
-    WITH latest_24h AS (
-      SELECT DISTINCT ON (installation_id)
-        installation_id,
-        tokens_served, input_tokens, output_tokens,
-        request_count
+    WITH ordered AS (
+      SELECT
+        installation_id, received_at,
+        tokens_served, input_tokens, output_tokens, request_count,
+        LAG(tokens_served) OVER w AS p_ts,
+        LAG(input_tokens)  OVER w AS p_it,
+        LAG(output_tokens) OVER w AS p_ot,
+        LAG(request_count) OVER w AS p_rc
       FROM beacons
-      WHERE received_at > ${day24Ago}
-      ORDER BY installation_id, received_at DESC
+      WINDOW w AS (PARTITION BY installation_id ORDER BY received_at)
     )
     SELECT
-      COUNT(*) AS installations_24h,
-      COALESCE(SUM(tokens_served), 0) AS tokens_served_24h,
-      COALESCE(SUM(input_tokens), 0)  AS input_tokens_24h,
-      COALESCE(SUM(output_tokens), 0) AS output_tokens_24h,
-      COALESCE(SUM(request_count), 0) AS request_count_24h
-    FROM latest_24h
+      COUNT(DISTINCT installation_id) AS installations_24h,
+      COALESCE(SUM(CASE WHEN p_ts IS NULL THEN tokens_served
+                        WHEN tokens_served < p_ts THEN tokens_served
+                        ELSE tokens_served - p_ts END), 0) AS tokens_served_24h,
+      COALESCE(SUM(CASE WHEN p_it IS NULL THEN input_tokens
+                        WHEN input_tokens < p_it THEN input_tokens
+                        ELSE input_tokens - p_it END), 0)  AS input_tokens_24h,
+      COALESCE(SUM(CASE WHEN p_ot IS NULL THEN output_tokens
+                        WHEN output_tokens < p_ot THEN output_tokens
+                        ELSE output_tokens - p_ot END), 0) AS output_tokens_24h,
+      COALESCE(SUM(CASE WHEN p_rc IS NULL THEN request_count
+                        WHEN request_count < p_rc THEN request_count
+                        ELSE request_count - p_rc END), 0) AS request_count_24h
+    FROM ordered
+    WHERE received_at > ${day24Ago}
   `;
 
   // ─── openrouter aggregate (latest snapshot) ───────────────────
