@@ -252,6 +252,7 @@ async function handleStats(env) {
     )
     SELECT
       COUNT(DISTINCT installation_id) AS installations,
+      MIN(received_at) AS since_ts,
       COALESCE(SUM(CASE WHEN p_ts IS NULL THEN tokens_served
                         WHEN tokens_served < p_ts THEN tokens_served
                         ELSE tokens_served - p_ts END), 0) AS tokens_served,
@@ -367,6 +368,11 @@ async function handleStats(env) {
       input_tokens:  toNum(all?.input_tokens),
       output_tokens: toNum(all?.output_tokens),
       request_count: toNum(all?.request_count),
+      // First-ever beacon date (YYYY-MM-DD), so the site can render a
+      // "since" credibility line for the all-time total.
+      since: all?.since_ts
+        ? new Date(toNum(all.since_ts) * 1000).toISOString().slice(0, 10)
+        : null,
     },
     last_24h: {
       installations: toNum(day?.installations_24h),
@@ -605,11 +611,26 @@ export default {
     }
 
     if (url.pathname === "/v1/stats" && request.method === "GET") {
-      try {
-        return await handleStats(env);
-      } catch (e) {
-        return json({ ok: false, error: "internal" }, 500);
+      // Neon free-tier autosuspends the compute after ~5 min idle, so
+      // the first query after a quiet spell can time out while it wakes
+      // (~0.5–2s). A single 500 here freezes the marketing-site counter
+      // on its last value (the client keeps its stale anchor when the
+      // fetch fails) — which is exactly how the homepage got stuck
+      // showing an old number. Retry a couple times with a short
+      // backoff so the wake completes before we give up.
+      let lastErr;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          return await handleStats(env);
+        } catch (e) {
+          lastErr = e;
+          if (attempt < 2) {
+            await new Promise((resolve) => setTimeout(resolve, 800));
+          }
+        }
       }
+      console.error("stats failed after retries:", lastErr);
+      return json({ ok: false, error: "internal" }, 500);
     }
 
     // Manual trigger for the OR aggregate refresh — useful for the
