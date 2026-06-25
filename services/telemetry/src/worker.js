@@ -305,6 +305,25 @@ async function handleStats(env) {
     WHERE received_at > ${day24Ago}
   `;
 
+  // Trailing-7d throughput, for the marketing counter's live tick.
+  // The 24h window alone is too sparse — beacons are hourly and many
+  // installs idle, so a 24h delta is frequently a single beacon (or
+  // zero), which would freeze the "live" number. 7d smooths it; the
+  // caller falls back to the lifetime average when even 7d is dry.
+  const [week] = await sql`
+    WITH ordered AS (
+      SELECT installation_id, received_at, tokens_served,
+        LAG(tokens_served) OVER w AS p_ts
+      FROM beacons
+      WINDOW w AS (PARTITION BY installation_id ORDER BY received_at)
+    )
+    SELECT COALESCE(SUM(CASE WHEN p_ts IS NULL THEN tokens_served
+                             WHEN tokens_served < p_ts THEN tokens_served
+                             ELSE tokens_served - p_ts END), 0) AS tokens_7d
+    FROM ordered
+    WHERE received_at > ${day7Ago}
+  `;
+
   // ─── openrouter aggregate (latest snapshot) ───────────────────
   const orRows = await sql`
     SELECT v1_tokens, v3_tokens, combined_tokens, fetched_at
@@ -359,6 +378,20 @@ async function handleStats(env) {
     FROM install_events
   `;
 
+  // Live-tick rate (tokens/sec): trailing-7d average, falling back to
+  // the lifetime average when 7d has no activity. Always >= 0; the
+  // homepage counter multiplies this by elapsed wall-clock between
+  // fetches so the all-time total ticks up believably.
+  const tokens7d = toNum(week?.tokens_7d);
+  const sinceTs = toNum(all?.since_ts);
+  const lifetimeSpan = sinceTs ? Math.max(1, nowSec - sinceTs) : 0;
+  const ratePerSec =
+    tokens7d > 0
+      ? tokens7d / (7 * 24 * 3600)
+      : lifetimeSpan
+        ? toNum(all?.tokens_served) / lifetimeSpan
+        : 0;
+
   return json({
     object: "stats",
     as_of: new Date().toISOString(),
@@ -373,6 +406,8 @@ async function handleStats(env) {
       since: all?.since_ts
         ? new Date(toNum(all.since_ts) * 1000).toISOString().slice(0, 10)
         : null,
+      // Tokens/sec for the live counter tick (see ratePerSec above).
+      rate_per_sec: ratePerSec,
     },
     last_24h: {
       installations: toNum(day?.installations_24h),
