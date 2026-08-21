@@ -3,8 +3,7 @@ never be world- or group-readable.
 
 Covers:
   - atomic_write defaults to 0o600
-  - cooldown.json (which contains raw key strings as object keys)
-    inherits the secure mode via its dependency on atomic_write
+  - cooldown.json (keys are hashed; file mode still 0o600)
   - freeride init's .env writer also lands at 0o600
 """
 
@@ -21,7 +20,6 @@ import pytest
 from freeride.cli.cmd_init import _write_env
 from freeride.core.cooldown import KeyCooldown
 from freeride.core.state import atomic_write
-
 
 _skip_on_windows = pytest.mark.skipif(
     platform.system() == "Windows",
@@ -72,13 +70,14 @@ class TestKeyCooldownPerms:
         cd = KeyCooldown(path=p)
         cd.mark_rate_limited("openrouter", "sk-or-v1-secret-key")
         assert _mode_bits(p) == 0o600, (
-            "cooldown.json contains raw key strings as object keys; "
-            f"must be 0o600, got {oct(_mode_bits(p))}"
+            "cooldown.json must be 0o600 even though keys are hashed; "
+            f"got {oct(_mode_bits(p))}"
         )
-        # Sanity: the test fixture really did write the secret.
         body = json.loads(p.read_text())
         assert "openrouter" in body
-        assert "sk-or-v1-secret-key" in body["openrouter"]
+        assert "sk-or-v1-secret-key" not in body["openrouter"]
+        from freeride.core.cooldown import hash_key
+        assert hash_key("sk-or-v1-secret-key") in body["openrouter"]
 
 
 @_skip_on_windows

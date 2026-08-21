@@ -23,10 +23,8 @@ UI stays coherent.
 from __future__ import annotations
 
 import logging
-import time
 from typing import AsyncIterator
 
-import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
@@ -39,20 +37,18 @@ from freeride.core.codex_translate import (
     stream_chat_to_responses,
 )
 from freeride.core.cooldown import KeyCooldown
-from freeride.core.errors import ErrorKind
 from freeride.core.events import emit as emit_event
 from freeride.core.events import new_request_id
-from freeride.core.health import sort_by_health, sort_keys_by_health
-from freeride.core.provider import Provider
-from freeride.server.routes.chat import (
+from freeride.core.failover import (
     FailoverContext,
-    _apply_force_provider,
-    _record_health,
-    _resolve_provider_chain,
-    _try_stream_with_failover,
+    apply_force_provider,
+    resolve_provider_chain,
+    try_call_with_failover,
+    try_stream_with_failover,
 )
-from freeride.server.routes.models import get_or_fetch_catalog
-
+from freeride.core.health import sort_by_health
+from freeride.core.provider import Provider
+from freeride.server.routes.models import get_or_fetch_catalog, invalidate_catalog
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -116,7 +112,7 @@ async def responses(request: Request):
     openai_request = responses_to_chat_request(body)
     # The request body's ``stream`` is what the route should honor; the
     # downstream provider call doesn't need it propagated for the
-    # non-streaming branch. For the streaming branch _try_stream_with_failover
+    # non-streaming branch. For the streaming branch try_stream_with_failover
     # sets stream=True on its own copy of the body, so this is moot.
     openai_request.stream = False  # the wrapper helpers manage this
 
@@ -126,7 +122,7 @@ async def responses(request: Request):
     openai_request.model = "auto"
 
     providers: list[Provider] = sort_by_health(list(request.app.state.providers))
-    providers, forced = _apply_force_provider(providers, request)
+    providers, forced = apply_force_provider(providers, request)
     if forced is not None and not providers:
         raise HTTPException(
             status_code=400,
@@ -153,7 +149,7 @@ async def responses(request: Request):
         )
 
     cooldown = KeyCooldown()
-    chain = _resolve_provider_chain(providers)
+    chain = resolve_provider_chain(providers)
     if not chain:
         raise HTTPException(
             status_code=503,
@@ -184,7 +180,7 @@ async def responses(request: Request):
         )
 
     if is_streaming:
-        # _try_stream_with_failover sets stream=True on its copy
+        # try_stream_with_failover sets stream=True on its copy
         openai_request.stream = True
         return await _build_responses_stream(
             chain=chain,
@@ -195,75 +191,17 @@ async def responses(request: Request):
         )
 
     # ─── non-streaming failover loop ───────────────────────────────
-    response_obj = None
-    chosen_provider: Provider | None = None
-    for provider, keys in chain:
-        summary = ctx.attempt(provider.name)
-        ordered_keys = sort_keys_by_health(provider.name, keys)
-        for key_idx, key in enumerate(ordered_keys):
-            summary.keys_tried += 1
-            emit_event(
-                "provider_attempt",
-                request_id=ctx.request_id,
-                provider=provider.name,
-                key_index=key_idx,
-                model=openai_request.model,
-                streaming=False,
-                endpoint="responses",
-            )
-            t0 = time.perf_counter()
-            try:
-                response_obj = await provider.forward_chat(
-                    openai_request, openai_request.model, key
-                )
-            except httpx.HTTPStatusError as e:
-                duration_ms = int((time.perf_counter() - t0) * 1000)
-                kind = provider.classify_error(e.response)
-                if kind in (ErrorKind.RATE_LIMIT, ErrorKind.AUTH):
-                    cooldown.mark_rate_limited(provider.name, key)
-                summary.last_error = kind
-                emit_event(
-                    "provider_response",
-                    request_id=ctx.request_id,
-                    provider=provider.name,
-                    key_index=key_idx,
-                    duration_ms=duration_ms,
-                    status=kind.value,
-                    endpoint="responses",
-                )
-                _record_health(provider.name, ok=False, duration_ms=duration_ms, key=key)
-                continue
-            except (httpx.RequestError, httpx.TimeoutException) as e:
-                duration_ms = int((time.perf_counter() - t0) * 1000)
-                kind = provider.classify_error(e)
-                summary.last_error = kind
-                emit_event(
-                    "provider_response",
-                    request_id=ctx.request_id,
-                    provider=provider.name,
-                    key_index=key_idx,
-                    duration_ms=duration_ms,
-                    status=kind.value,
-                    endpoint="responses",
-                )
-                _record_health(provider.name, ok=False, duration_ms=duration_ms, key=key)
-                continue
-
-            duration_ms = int((time.perf_counter() - t0) * 1000)
-            emit_event(
-                "provider_response",
-                request_id=ctx.request_id,
-                provider=provider.name,
-                key_index=key_idx,
-                duration_ms=duration_ms,
-                status="OK",
-                endpoint="responses",
-            )
-            _record_health(provider.name, ok=True, duration_ms=duration_ms, key=key)
-            chosen_provider = provider
-            break
-        if response_obj is not None:
-            break
+    chosen_provider, response_obj = await try_call_with_failover(
+        chain,
+        cooldown,
+        ctx,
+        call=lambda p, k: p.forward_chat(
+            openai_request, openai_request.model, k
+        ),
+        model=openai_request.model,
+        extra_event={"endpoint": "responses"},
+        on_model_not_found=invalidate_catalog,
+    )
 
     if response_obj is None:
         raise HTTPException(
@@ -312,8 +250,10 @@ async def _build_responses_stream(
     """Pre-flight first chunk through the chat-route failover helper,
     then re-frame Chat-shape deltas into Responses-shape SSE events.
     Same buffer-first-chunk semantics the messages route uses."""
-    chosen, first_event, rest_or_err = await _try_stream_with_failover(
-        chain, openai_request, cooldown, ctx
+    chosen, first_event, rest_or_err = await try_stream_with_failover(
+        chain, openai_request, cooldown, ctx,
+        extra_event={"endpoint": "responses"},
+        on_model_not_found=invalidate_catalog,
     )
     if chosen is None:
         emit_event(

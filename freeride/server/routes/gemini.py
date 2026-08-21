@@ -23,37 +23,32 @@ its UI stays coherent.
 from __future__ import annotations
 
 import logging
-import time
-
 from typing import AsyncIterator
 
-import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
 from freeride.core.auto_model import is_auto_model, resolve_auto_model
 from freeride.core.cooldown import KeyCooldown
-from freeride.core.errors import ErrorKind
 from freeride.core.events import emit as emit_event
 from freeride.core.events import new_request_id
+from freeride.core.failover import (
+    FailoverContext,
+    apply_force_provider,
+    resolve_provider_chain,
+    try_call_with_failover,
+    try_stream_with_failover,
+)
 from freeride.core.gemini_schema import GeminiGenerateRequest
 from freeride.core.gemini_translate import (
     gemini_to_openai_request,
     openai_to_gemini_response,
     stream_openai_to_gemini,
 )
-from freeride.core.health import sort_by_health, sort_keys_by_health
+from freeride.core.health import sort_by_health
 from freeride.core.provider import Provider
-from freeride.server.routes.chat import (
-    FailoverContext,
-    _apply_force_provider,
-    _record_health,
-    _resolve_provider_chain,
-    _try_stream_with_failover,
-)
-from freeride.server.routes.models import get_or_fetch_catalog
-
+from freeride.server.routes.models import get_or_fetch_catalog, invalidate_catalog
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -155,7 +150,7 @@ async def gemini_generate(model_with_action: str, request: Request):
 
     # ─── borrow chat-route plumbing ────────────────────────────────
     providers: list[Provider] = sort_by_health(list(request.app.state.providers))
-    providers, forced = _apply_force_provider(providers, request)
+    providers, forced = apply_force_provider(providers, request)
     if forced is not None and not providers:
         raise HTTPException(
             status_code=400,
@@ -183,7 +178,7 @@ async def gemini_generate(model_with_action: str, request: Request):
         )
 
     cooldown = KeyCooldown()
-    chain = _resolve_provider_chain(providers)
+    chain = resolve_provider_chain(providers)
     if not chain:
         raise HTTPException(
             status_code=503,
@@ -226,76 +221,17 @@ async def gemini_generate(model_with_action: str, request: Request):
         )
 
     # ─── non-streaming failover loop ───────────────────────────────
-    response_obj = None
-    chosen_provider: Provider | None = None
-    for provider, keys in chain:
-        summary = ctx.attempt(provider.name)
-        ordered_keys = sort_keys_by_health(provider.name, keys)
-        for key_idx, key in enumerate(ordered_keys):
-            summary.keys_tried += 1
-            emit_event(
-                "provider_attempt",
-                request_id=ctx.request_id,
-                provider=provider.name,
-                key_index=key_idx,
-                model=openai_request.model,
-                streaming=False,
-                endpoint="gemini",
-            )
-            t0 = time.perf_counter()
-            try:
-                response_obj = await provider.forward_chat(
-                    openai_request, openai_request.model, key
-                )
-            except httpx.HTTPStatusError as e:
-                duration_ms = int((time.perf_counter() - t0) * 1000)
-                kind = provider.classify_error(e.response)
-                if kind in (ErrorKind.RATE_LIMIT, ErrorKind.AUTH):
-                    cooldown.mark_rate_limited(provider.name, key)
-                summary.last_error = kind
-                emit_event(
-                    "provider_response",
-                    request_id=ctx.request_id,
-                    provider=provider.name,
-                    key_index=key_idx,
-                    duration_ms=duration_ms,
-                    status=kind.value,
-                    endpoint="gemini",
-                )
-                _record_health(provider.name, ok=False, duration_ms=duration_ms, key=key)
-                continue
-            except (httpx.RequestError, httpx.TimeoutException) as e:
-                duration_ms = int((time.perf_counter() - t0) * 1000)
-                kind = provider.classify_error(e)
-                summary.last_error = kind
-                emit_event(
-                    "provider_response",
-                    request_id=ctx.request_id,
-                    provider=provider.name,
-                    key_index=key_idx,
-                    duration_ms=duration_ms,
-                    status=kind.value,
-                    endpoint="gemini",
-                )
-                _record_health(provider.name, ok=False, duration_ms=duration_ms, key=key)
-                continue
-
-            # Success.
-            duration_ms = int((time.perf_counter() - t0) * 1000)
-            emit_event(
-                "provider_response",
-                request_id=ctx.request_id,
-                provider=provider.name,
-                key_index=key_idx,
-                duration_ms=duration_ms,
-                status="OK",
-                endpoint="gemini",
-            )
-            _record_health(provider.name, ok=True, duration_ms=duration_ms, key=key)
-            chosen_provider = provider
-            break
-        if response_obj is not None:
-            break
+    chosen_provider, response_obj = await try_call_with_failover(
+        chain,
+        cooldown,
+        ctx,
+        call=lambda p, k: p.forward_chat(
+            openai_request, openai_request.model, k
+        ),
+        model=openai_request.model,
+        extra_event={"endpoint": "gemini"},
+        on_model_not_found=invalidate_catalog,
+    )
 
     if response_obj is None:
         # All providers failed — return the structured 503 Google
@@ -349,15 +285,17 @@ async def _build_gemini_stream_response(
     translator. Same buffer-first-chunk-then-fail-over guarantee
     /v1/messages uses.
 
-    ``_try_stream_with_failover`` returns a 3-tuple:
+    ``try_stream_with_failover`` returns a 3-tuple:
     ``(chosen_provider, first_event, rest_iterator)`` on success, or
     ``(None, None, error_kind)`` when every provider failed before
     producing a first byte. Buffer-first-chunk means we can still
     failover on a pre-first-byte failure; once any byte ships we're
     committed.
     """
-    chosen, first_event, rest_or_err = await _try_stream_with_failover(
-        chain, openai_request, cooldown, ctx
+    chosen, first_event, rest_or_err = await try_stream_with_failover(
+        chain, openai_request, cooldown, ctx,
+        extra_event={"endpoint": "gemini"},
+        on_model_not_found=invalidate_catalog,
     )
     if chosen is None:
         emit_event(

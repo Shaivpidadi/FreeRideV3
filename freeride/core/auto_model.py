@@ -17,10 +17,10 @@ smart routing is a strict superset, never a hard dependency.
 from __future__ import annotations
 
 import logging
-import os
 from typing import TYPE_CHECKING, Any
 
 from freeride.core.cooldown import KeyCooldown
+from freeride.core.provider_env import all_keys_for
 from freeride.core.smart_routing import fetch_leaderboard, rank_catalog
 
 if TYPE_CHECKING:
@@ -33,17 +33,6 @@ logger = logging.getLogger(__name__)
 _AUTO_SENTINELS = frozenset({"", "auto", "freeride/auto", "default"})
 
 
-_PROVIDER_ENV_VAR: dict[str, str] = {
-    "openrouter": "OPENROUTER_API_KEY",
-    "nvidia_nim": "NVIDIA_API_KEY",
-    "groq": "GROQ_API_KEY",
-    "cloudflare_wai": "CLOUDFLARE_API_TOKEN",
-    "huggingface": "HF_TOKEN",
-    "cerebras": "CEREBRAS_API_KEY",
-    "ollama": "OLLAMA_BASE_URL",
-}
-
-
 def is_auto_model(model: str | None) -> bool:
     """True when the request asked us to choose."""
     if model is None:
@@ -51,17 +40,8 @@ def is_auto_model(model: str | None) -> bool:
     return model.strip().lower() in _AUTO_SENTINELS
 
 
-def _env_var_for(provider_name: str) -> str:
-    return _PROVIDER_ENV_VAR.get(provider_name, f"{provider_name.upper()}_API_KEY")
-
-
 def _provider_keys(provider_name: str) -> list[str]:
-    raw = os.environ.get(_env_var_for(provider_name), "")
-    if not raw:
-        return []
-    from freeride.v2compat.models import _parse_api_keys
-
-    return _parse_api_keys(raw)
+    return all_keys_for(provider_name)
 
 
 def _available_provider_names(providers: list[Provider]) -> set[str]:

@@ -12,30 +12,23 @@ plus an actionable ``suggestion``.
 
 from __future__ import annotations
 
-import logging
-import time
-
-import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from freeride.core.cooldown import KeyCooldown
-from freeride.core.embedding_schema import EmbeddingRequest, EmbeddingResponse
-from freeride.core.errors import ErrorKind
+from freeride.core.embedding_schema import EmbeddingRequest
 from freeride.core.events import emit as emit_event
 from freeride.core.events import new_request_id
-from freeride.core.health import sort_by_health, sort_keys_by_health
-from freeride.core.provider import Provider
-from freeride.server.routes.chat import (
+from freeride.core.failover import (
     FailoverContext,
-    _apply_force_provider,
-    _build_503_detail,
-    _record_health,
-    _resolve_provider_chain,
+    apply_force_provider,
+    build_503_detail,
+    resolve_provider_chain,
+    try_call_with_failover,
 )
+from freeride.core.health import sort_by_health
+from freeride.core.provider import Provider
 
-
-logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -50,7 +43,7 @@ def _embedding_capable(p: Provider) -> bool:
 @router.post("/v1/embeddings")
 async def embeddings(request: Request, body: EmbeddingRequest):
     providers: list[Provider] = sort_by_health(list(request.app.state.providers))
-    providers, forced = _apply_force_provider(providers, request)
+    providers, forced = apply_force_provider(providers, request)
     if forced is not None and not providers:
         raise HTTPException(
             status_code=400,
@@ -112,7 +105,7 @@ async def embeddings(request: Request, body: EmbeddingRequest):
         )
 
     cooldown = KeyCooldown()
-    chain = _resolve_provider_chain(capable)
+    chain = resolve_provider_chain(capable)
     if not chain:
         emit_event(
             "request_failed",
@@ -128,83 +121,22 @@ async def embeddings(request: Request, body: EmbeddingRequest):
                     "message": "No embedding-capable providers have usable (non-cooling) API keys.",
                     "request_id": ctx.request_id,
                     "configured_providers": [p.name for p in capable],
-                    "suggestion": "Either set a provider env var (e.g. OPENROUTER_API_KEY) or wait for cooldowns to expire (~120s).",
+                    "suggestion": (
+                        "Either set a provider env var (e.g. OPENROUTER_API_KEY) "
+                        "or wait for cooldowns to expire."
+                    ),
                 }
             },
         )
 
-    # Cross-provider failover loop. Same shape as chat: RATE_LIMIT/AUTH
-    # advance keys; MODEL_NOT_FOUND/QUOTA_EXHAUSTED advance providers.
-    chosen_provider: Provider | None = None
-    response: EmbeddingResponse | None = None
-    for provider, keys in chain:
-        summary = ctx.attempt(provider.name)
-        ordered_keys = sort_keys_by_health(provider.name, keys)
-        for key_idx, key in enumerate(ordered_keys):
-            summary.keys_tried += 1
-            emit_event(
-                "provider_attempt",
-                request_id=ctx.request_id,
-                provider=provider.name,
-                key_index=key_idx,
-                model=body.model,
-                endpoint="embeddings",
-            )
-            t0 = time.perf_counter()
-            try:
-                response = await provider.forward_embeddings(body, body.model, key)
-            except httpx.HTTPStatusError as e:
-                duration_ms = int((time.perf_counter() - t0) * 1000)
-                kind = provider.classify_error(e.response)
-                if kind in (ErrorKind.RATE_LIMIT, ErrorKind.AUTH):
-                    cooldown.mark_rate_limited(provider.name, key)
-                summary.last_error = kind
-                if kind == ErrorKind.RATE_LIMIT:
-                    summary.retry_after_s = provider.retry_after_hint(e.response)
-                emit_event(
-                    "provider_response",
-                    request_id=ctx.request_id,
-                    provider=provider.name,
-                    key_index=key_idx,
-                    duration_ms=duration_ms,
-                    status=kind.value,
-                    **(
-                        {"retry_after_s": summary.retry_after_s}
-                        if summary.retry_after_s
-                        else {}
-                    ),
-                )
-                _record_health(provider.name, ok=False, duration_ms=duration_ms, key=key)
-                if kind in (ErrorKind.MODEL_NOT_FOUND, ErrorKind.QUOTA_EXHAUSTED):
-                    break
-                continue
-            except httpx.HTTPError as e:
-                duration_ms = int((time.perf_counter() - t0) * 1000)
-                summary.last_error = provider.classify_error(e)
-                emit_event(
-                    "provider_response",
-                    request_id=ctx.request_id,
-                    provider=provider.name,
-                    key_index=key_idx,
-                    duration_ms=duration_ms,
-                    status=summary.last_error.value,
-                )
-                _record_health(provider.name, ok=False, duration_ms=duration_ms, key=key)
-                continue
-            duration_ms = int((time.perf_counter() - t0) * 1000)
-            emit_event(
-                "provider_response",
-                request_id=ctx.request_id,
-                provider=provider.name,
-                key_index=key_idx,
-                duration_ms=duration_ms,
-                status="OK",
-            )
-            _record_health(provider.name, ok=True, duration_ms=duration_ms, key=key)
-            chosen_provider = provider
-            break
-        if response is not None:
-            break
+    chosen_provider, response = await try_call_with_failover(
+        chain,
+        cooldown,
+        ctx,
+        call=lambda p, k: p.forward_embeddings(body, body.model, k),
+        model=body.model,
+        extra_event={"endpoint": "embeddings"},
+    )
 
     if response is None or chosen_provider is None:
         emit_event(
@@ -213,7 +145,7 @@ async def embeddings(request: Request, body: EmbeddingRequest):
             phase="all_attempts_exhausted",
             tried=[t.provider for t in ctx.tried],
         )
-        return JSONResponse(status_code=503, content=_build_503_detail(ctx))
+        return JSONResponse(status_code=503, content=build_503_detail(ctx))
 
     emit_event(
         "request_complete",

@@ -23,8 +23,7 @@ hostnames, IP (the HTTPS request reveals an IP at the network layer;
 the FreeRide endpoint discards it server-side).
 
 This module owns the data plumbing. The beacon scheduler that POSTs
-on a 1h tick lives in :mod:`freeride.server.telemetry_loop` (added
-when the gateway needs it).
+on a 1h tick lives in :mod:`freeride.server.app` (`_telemetry_loop`).
 
 the design plan is the canonical spec.
 """
@@ -40,7 +39,6 @@ from pathlib import Path
 from typing import Any
 
 from freeride.core.state import atomic_write, read_json_or, write_json_atomic
-
 
 # ----- paths ---------------------------------------------------------------
 

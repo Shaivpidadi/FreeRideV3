@@ -24,7 +24,21 @@ class GroqModelMeta:
 
 
 GROQ_MODEL_METADATA: dict[str, GroqModelMeta] = {
-    # Llama 3.x family (the bulk of Groq's free chat surface)
+    # Current free-tier chat surface (verified live 2026-08-21 against
+    # GET /openai/v1/models). Groq retires Llama 3.x ids periodically.
+    "openai/gpt-oss-20b": GroqModelMeta(
+        context_length=131_072, supported_parameters=("tools",)
+    ),
+    "openai/gpt-oss-120b": GroqModelMeta(
+        context_length=131_072, supported_parameters=("tools",)
+    ),
+    "qwen/qwen3.6-27b": GroqModelMeta(context_length=131_072),
+    "allam-2-7b": GroqModelMeta(context_length=8_192),
+    "groq/compound": GroqModelMeta(context_length=131_072),
+    "groq/compound-mini": GroqModelMeta(context_length=131_072),
+    # Historical Llama / Gemma / Mixtral ids — kept so mocked unit tests
+    # and older GROQ_FREE_MODELS_OVERRIDE values still intersect. Harmless
+    # if Groq no longer lists them.
     "llama-3.1-8b-instant": GroqModelMeta(
         context_length=131_072, supported_parameters=("tools",)
     ),
@@ -35,11 +49,8 @@ GROQ_MODEL_METADATA: dict[str, GroqModelMeta] = {
     "llama3-70b-8192": GroqModelMeta(context_length=8_192),
     "llama-3.2-1b-preview": GroqModelMeta(context_length=131_072),
     "llama-3.2-3b-preview": GroqModelMeta(context_length=131_072),
-    # Google Gemma
     "gemma2-9b-it": GroqModelMeta(context_length=8_192),
-    # Mistral mixture
     "mixtral-8x7b-32768": GroqModelMeta(context_length=32_768),
-    # DeepSeek distilled
     "deepseek-r1-distill-llama-70b": GroqModelMeta(context_length=131_072),
 }
 

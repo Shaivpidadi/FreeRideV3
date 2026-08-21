@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from freeride.core.cooldown import COOLDOWN_TTL_SECONDS, KeyCooldown
+from freeride.core.cooldown import COOLDOWN_TTL_SECONDS, KeyCooldown, hash_key
+from freeride.core.errors import ErrorKind
 
 
 @pytest.fixture
@@ -27,6 +28,10 @@ class TestKeyCooldown:
         cd.mark_rate_limited("openrouter", "k1")
         assert cd.is_in_cooldown("openrouter", "k1")
         assert cd.cooldown_remaining("openrouter", "k1") is not None
+        # Raw secret never lands on disk.
+        body = cd_path.read_text()
+        assert "k1" not in body
+        assert hash_key("k1") in body
 
     def test_per_provider_isolation(self, cd_path):
         cd = KeyCooldown(cd_path)
@@ -47,6 +52,33 @@ class TestKeyCooldown:
         assert cd.is_in_cooldown("openrouter", "k1", now=1000.0 + COOLDOWN_TTL_SECONDS - 1)
         # Just outside TTL → expired
         assert not cd.is_in_cooldown("openrouter", "k1", now=1000.0 + COOLDOWN_TTL_SECONDS + 1)
+
+    def test_quota_ttl_is_an_hour(self, cd_path):
+        cd = KeyCooldown(cd_path)
+        cd.mark("openrouter", "k1", ErrorKind.QUOTA_EXHAUSTED, now=1000.0)
+        assert cd.is_in_cooldown("openrouter", "k1", now=1000.0 + 3599)
+        assert not cd.is_in_cooldown("openrouter", "k1", now=1000.0 + 3601)
+
+    def test_auth_ttl_is_five_minutes(self, cd_path):
+        cd = KeyCooldown(cd_path)
+        cd.mark("openrouter", "k1", ErrorKind.AUTH, now=1000.0)
+        assert cd.is_in_cooldown("openrouter", "k1", now=1000.0 + 299)
+        assert not cd.is_in_cooldown("openrouter", "k1", now=1000.0 + 301)
+
+    def test_rate_limit_honors_retry_after(self, cd_path):
+        cd = KeyCooldown(cd_path)
+        cd.mark("openrouter", "k1", ErrorKind.RATE_LIMIT, retry_after_s=15, now=1000.0)
+        assert cd.is_in_cooldown("openrouter", "k1", now=1014)
+        assert not cd.is_in_cooldown("openrouter", "k1", now=1016)
+
+    def test_legacy_raw_key_file_is_migrated(self, cd_path):
+        cd_path.parent.mkdir(parents=True, exist_ok=True)
+        cd_path.write_text('{"openrouter": {"sk-or-v1-secret": 1000.0}}')
+        cd = KeyCooldown(cd_path)
+        assert cd.is_in_cooldown("openrouter", "sk-or-v1-secret", now=1100.0)
+        persisted = cd_path.read_text()
+        assert "sk-or-v1-secret" not in persisted
+        assert hash_key("sk-or-v1-secret") in persisted
 
     def test_expiry_evicts_from_state(self, cd_path):
         cd = KeyCooldown(cd_path)

@@ -59,6 +59,26 @@ jobs:
       - name: Run ruff
         run: ruff check freeride/ tests/
 
+  unit-windows:
+    name: pytest (windows, py3.12)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package + dev extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run unit tests
+        run: pytest -q
+
   e2e:
     # Only runs when at least one provider key is present in repo secrets.
     # Forks won't have access — this lane is opt-in for the maintainer.

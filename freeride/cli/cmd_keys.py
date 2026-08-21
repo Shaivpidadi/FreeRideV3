@@ -20,69 +20,27 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Any
 
-
-# Mirror cmd_serve / routes.chat env-var maps. Keep in sync.
-_PROVIDER_ENV_VARS: list[tuple[str, str]] = [
-    ("openrouter", "OPENROUTER_API_KEY"),
-    ("groq", "GROQ_API_KEY"),
-    ("nvidia_nim", "NVIDIA_API_KEY"),
-    ("cloudflare_wai", "CLOUDFLARE_API_TOKEN"),
-    ("huggingface", "HF_TOKEN"),  # HUGGINGFACE_API_KEY also accepted
-    ("cerebras", "CEREBRAS_API_KEY"),
-    ("ollama", "OLLAMA_BASE_URL"),
-]
-
+from freeride.core.cooldown import LEGACY_TTL_SECONDS, hash_key
+from freeride.core.provider_env import BUILTIN_PROVIDERS, all_keys_for
 
 _COOLDOWN_PATH = Path.home() / ".freeride" / "cooldown.json"
 
-# Match cooldown.COOLDOWN_TTL_SECONDS — keep in sync if that changes.
-_COOLDOWN_TTL = 120
+# Used by `_key_status` when the caller passes a legacy *start*
+# timestamp. Matches the pre-hash on-disk format.
+_COOLDOWN_TTL = int(LEGACY_TTL_SECONDS)
 
 
 def _hash_id(secret: str) -> str:
-    """Stable, non-reversible 8-char id for a secret."""
+    """Short display id — 8 chars, independent of the 12-char storage hash."""
     return hashlib.sha256(secret.encode("utf-8")).hexdigest()[:8]
 
 
-def _parse_keys(raw: str) -> list[str]:
-    """Same parser as v2compat.models._parse_api_keys — split JSON-array
-    form OR fall through to a single-string key. Reimplemented here to
-    avoid dragging the v2compat import path.
-    """
-    raw = (raw or "").strip()
-    if not raw:
-        return []
-    if raw.startswith("[") and raw.endswith("]"):
-        try:
-            parsed = json.loads(raw)
-            if isinstance(parsed, list):
-                return [str(k).strip() for k in parsed if str(k).strip()]
-        except json.JSONDecodeError:
-            pass
-    return [raw]
-
-
-def _env_keys_for(provider: str) -> list[str]:
-    """Resolve the configured keys for a provider from env. HuggingFace
-    accepts either HF_TOKEN or HUGGINGFACE_API_KEY (HF_TOKEN wins).
-    """
-    if provider == "huggingface":
-        raw = os.environ.get("HF_TOKEN", "") or os.environ.get("HUGGINGFACE_API_KEY", "")
-    else:
-        env_var = next(v for p, v in _PROVIDER_ENV_VARS if p == provider)
-        raw = os.environ.get(env_var, "")
-    return _parse_keys(raw)
-
-
-def _load_cooldown() -> dict[str, dict[str, float]]:
-    """Read cooldown.json. Returns {} on any read/parse failure (the
-    user might never have started the gateway yet).
-    """
+def _load_cooldown() -> dict[str, dict[str, Any]]:
+    """Read cooldown.json. Returns {} on any read/parse failure."""
     try:
         with _COOLDOWN_PATH.open("r", encoding="utf-8") as fh:
             data = json.load(fh)
@@ -90,12 +48,23 @@ def _load_cooldown() -> dict[str, dict[str, float]]:
         return {}
     if not isinstance(data, dict):
         return {}
-    out: dict[str, dict[str, float]] = {}
+    out: dict[str, dict[str, Any]] = {}
     for prov, keys in data.items():
         if not isinstance(prov, str) or not isinstance(keys, dict):
             continue
-        out[prov] = {k: float(v) for k, v in keys.items() if isinstance(k, str)}
+        out[prov] = dict(keys)
     return out
+
+
+def _until_of(entry: Any) -> float | None:
+    if isinstance(entry, dict) and "until" in entry:
+        try:
+            return float(entry["until"])
+        except (TypeError, ValueError):
+            return None
+    if isinstance(entry, (int, float)):
+        return float(entry) + LEGACY_TTL_SECONDS
+    return None
 
 
 def _key_status(
@@ -103,32 +72,42 @@ def _key_status(
     cooldown_ts: float | None,
     now: float,
 ) -> tuple[str, int | None]:
-    """('available', None) | ('cooling', remaining_seconds)."""
+    """('available', None) | ('cooling', remaining_seconds).
+
+    ``cooldown_ts`` is a *start* timestamp (legacy convention used by
+    tests). Remaining = start + 120s - now.
+    """
     if cooldown_ts is None:
         return "available", None
     elapsed = now - cooldown_ts
     if elapsed > _COOLDOWN_TTL:
-        return "available", None  # expired but not yet evicted
+        return "available", None
     remaining = int(_COOLDOWN_TTL - elapsed)
     return "cooling", remaining
 
 
 def collect_status(now: float) -> list[dict[str, Any]]:
-    """Build a per-provider snapshot of (n_keys, available, cooling, soonest).
-
-    Tested function — pure given (env, cooldown.json, now).
-    """
+    """Build a per-provider snapshot of (n_keys, available, cooling, soonest)."""
     cd_state = _load_cooldown()
     out: list[dict[str, Any]] = []
-    for provider, _ in _PROVIDER_ENV_VARS:
-        keys = _env_keys_for(provider)
+    for spec in BUILTIN_PROVIDERS:
+        provider = spec.name
+        keys = all_keys_for(provider)
         if not keys:
             continue
         prov_cd = cd_state.get(provider, {})
         per_key: list[dict[str, Any]] = []
         for idx, key in enumerate(keys):
-            ts = prov_cd.get(key)
-            status, remaining = _key_status(cooldown_ts=ts, now=now)
+            entry = prov_cd.get(hash_key(key), prov_cd.get(key))
+            until = _until_of(entry)
+            if until is None:
+                status, remaining = "available", None
+            else:
+                rem = int(until - now)
+                if rem > 0:
+                    status, remaining = "cooling", rem
+                else:
+                    status, remaining = "available", None
             per_key.append({
                 "index": idx,
                 "hash": _hash_id(key),
@@ -207,6 +186,9 @@ def cmd_keys(args) -> int:
     verbose = bool(getattr(args, "verbose", False))
     import time
 
+    from freeride.core.dotenv import load_dotenv_into_environ
+
+    load_dotenv_into_environ()
     status = collect_status(now=time.time())
     print(format_summary(status, no_color=no_color, verbose=verbose))
     return 0

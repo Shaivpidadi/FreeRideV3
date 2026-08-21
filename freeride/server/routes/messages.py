@@ -12,7 +12,7 @@ text content blocks, stop_reason and usage mapping, tool-definition
 request-side translation.
 
 **Phase 2 (this commit):** streaming SSE. We pre-flight the first
-chunk through ``_try_stream_with_failover`` (same buffer-first-chunk
+chunk through ``try_stream_with_failover`` (same buffer-first-chunk
 guarantee the chat route uses), then a translator generator turns
 OpenAI streaming chunks into Anthropic SSE events
 (message_start / content_block_start / content_block_delta /
@@ -23,9 +23,8 @@ in this phase; tool_use streaming lands in Phase 3.
 handling, the ``input_json_delta`` partial-JSON streaming state
 machine.
 
-The non-streaming failover loop is inlined to keep scope tight; a
-Phase 4 cleanup will extract the loop into a shared helper so both
-routes stay in lockstep.
+The failover walk lives in :mod:`freeride.core.failover` so this
+route and the other protocol shims stay in lockstep.
 """
 
 from __future__ import annotations
@@ -33,11 +32,8 @@ from __future__ import annotations
 import json
 import logging
 import os
-import time
-
 from typing import AsyncIterator
 
-import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
@@ -53,23 +49,21 @@ from freeride.core.anthropic_translate import (
 )
 from freeride.core.auto_model import is_auto_model, resolve_auto_model
 from freeride.core.cooldown import KeyCooldown
-from freeride.core.errors import ErrorKind
 from freeride.core.events import emit as emit_event
 from freeride.core.events import new_request_id
-from freeride.core.health import sort_by_health, sort_keys_by_health
+from freeride.core.failover import (
+    FailoverContext,
+    apply_force_provider,
+    build_503_detail,
+    resolve_provider_chain,
+    try_call_with_failover,
+    try_stream_with_failover,
+)
+from freeride.core.health import sort_by_health
 from freeride.core.model_router import decide as decide_route
 from freeride.core.model_router import preset_provider_order
 from freeride.core.provider import Provider
-from freeride.server.routes.chat import (
-    FailoverContext,
-    _apply_force_provider,
-    _build_503_detail,
-    _record_health,
-    _resolve_provider_chain,
-    _try_stream_with_failover,
-)
 from freeride.server.routes.models import get_or_fetch_catalog, invalidate_catalog
-
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -269,7 +263,7 @@ async def messages(request: Request):
         # list so the existing failover machinery still finds *some*
         # provider for the model id.
 
-    providers, forced = _apply_force_provider(providers, request)
+    providers, forced = apply_force_provider(providers, request)
     if forced is not None and not providers:
         raise HTTPException(
             status_code=400,
@@ -402,7 +396,7 @@ async def messages(request: Request):
             endpoint="messages",
         )
 
-    chain = _resolve_provider_chain(providers)
+    chain = resolve_provider_chain(providers)
     if not chain:
         raise HTTPException(
             status_code=503,
@@ -458,7 +452,7 @@ async def messages(request: Request):
         )
 
     # ─── streaming branch — Phase 2 ────────────────────────────────
-    # Reuses chat.py's _try_stream_with_failover for the
+    # Reuses chat.py's try_stream_with_failover for the
     # buffer-first-chunk-then-fail-over guarantee. Translation is
     # done by stream_openai_to_anthropic which consumes the
     # ChatStreamEvent iterator and emits Anthropic-shape SSE events.
@@ -472,107 +466,22 @@ async def messages(request: Request):
         )
 
     # ─── failover loop — non-streaming ─────────────────────────────
-    # Mirrors chat_completions(). Phase 4 will extract this into a
-    # shared helper so the chat and messages routes stay in lockstep.
-    chosen_provider: Provider | None = None
-    response_obj = None
-    for provider, keys in chain:
-        summary = ctx.attempt(provider.name)
-        ordered_keys = sort_keys_by_health(provider.name, keys)
-        for key_idx, key in enumerate(ordered_keys):
-            summary.keys_tried += 1
-            emit_event(
-                "provider_attempt",
-                request_id=ctx.request_id,
-                provider=provider.name,
-                key_index=key_idx,
-                model=openai_request.model,
-                streaming=False,
-                endpoint="messages",
-            )
-            t0 = time.perf_counter()
-            try:
-                response_obj = await provider.forward_chat(
-                    openai_request, openai_request.model, key
-                )
-            except httpx.HTTPStatusError as e:
-                duration_ms = int((time.perf_counter() - t0) * 1000)
-                kind = provider.classify_error(e.response)
-                if kind in (ErrorKind.RATE_LIMIT, ErrorKind.AUTH):
-                    cooldown.mark_rate_limited(provider.name, key)
-                summary.last_error = kind
-                if kind == ErrorKind.RATE_LIMIT:
-                    summary.retry_after_s = provider.retry_after_hint(e.response)
-                emit_event(
-                    "provider_response",
-                    request_id=ctx.request_id,
-                    provider=provider.name,
-                    key_index=key_idx,
-                    duration_ms=duration_ms,
-                    status=kind.value,
-                    endpoint="messages",
-                    **(
-                        {"retry_after_s": summary.retry_after_s}
-                        if summary.retry_after_s
-                        else {}
-                    ),
-                )
-                _record_health(
-                    provider.name, ok=False, duration_ms=duration_ms, key=key
-                )
-                if kind == ErrorKind.MODEL_NOT_FOUND:
-                    invalidate_catalog()
-                if kind in (ErrorKind.MODEL_NOT_FOUND, ErrorKind.QUOTA_EXHAUSTED):
-                    break
-                continue
-            except httpx.HTTPError as e:
-                duration_ms = int((time.perf_counter() - t0) * 1000)
-                summary.last_error = provider.classify_error(e)
-                emit_event(
-                    "provider_response",
-                    request_id=ctx.request_id,
-                    provider=provider.name,
-                    key_index=key_idx,
-                    duration_ms=duration_ms,
-                    status=summary.last_error.value,
-                    endpoint="messages",
-                )
-                _record_health(
-                    provider.name, ok=False, duration_ms=duration_ms, key=key
-                )
-                continue
-            except Exception as e:  # noqa: BLE001
-                duration_ms = int((time.perf_counter() - t0) * 1000)
-                logger.warning(
-                    "messages: provider %s raised %s", provider.name, e
-                )
-                summary.last_error = ErrorKind.UNKNOWN
-                _record_health(
-                    provider.name, ok=False, duration_ms=duration_ms, key=key
-                )
-                continue
-            duration_ms = int((time.perf_counter() - t0) * 1000)
-            emit_event(
-                "provider_response",
-                request_id=ctx.request_id,
-                provider=provider.name,
-                key_index=key_idx,
-                duration_ms=duration_ms,
-                status="ok",
-                endpoint="messages",
-            )
-            _record_health(
-                provider.name, ok=True, duration_ms=duration_ms, key=key
-            )
-            chosen_provider = provider
-            break
-        if response_obj is not None:
-            break
+    chosen_provider, response_obj = await try_call_with_failover(
+        chain,
+        cooldown,
+        ctx,
+        call=lambda p, k: p.forward_chat(
+            openai_request, openai_request.model, k
+        ),
+        model=openai_request.model,
+        extra_event={"endpoint": "messages"},
+        on_model_not_found=invalidate_catalog,
+    )
 
     if response_obj is None or chosen_provider is None:
         # Surface the 503 in Anthropic shape so SDK clients see a
         # familiar error envelope.
-        raw = _build_503_detail(ctx)
+        raw = build_503_detail(ctx)
         raw_err = raw.get("error", {})
         raise HTTPException(
             status_code=503,
@@ -629,7 +538,7 @@ async def _build_anthropic_stream_response(
     requested_model: str,
 ) -> StreamingResponse:
     """Pre-flight first chunk through the chat-route's
-    ``_try_stream_with_failover``, then wrap the resulting
+    ``try_stream_with_failover``, then wrap the resulting
     ChatStreamEvent iterator in a translator that emits Anthropic SSE.
 
     The buffer-first-chunk semantics matter: if the first upstream
@@ -638,8 +547,10 @@ async def _build_anthropic_stream_response(
     a mid-stream upstream failure becomes a truncated stream from
     the client's perspective (rare in practice; documented limit).
     """
-    chosen, first_event, rest_or_err = await _try_stream_with_failover(
-        chain, openai_request, cooldown, ctx
+    chosen, first_event, rest_or_err = await try_stream_with_failover(
+        chain, openai_request, cooldown, ctx,
+        extra_event={"endpoint": "messages"},
+        on_model_not_found=invalidate_catalog,
     )
     if chosen is None:
         # All providers failed before producing a first chunk.
@@ -650,7 +561,7 @@ async def _build_anthropic_stream_response(
             tried=[t.provider for t in ctx.tried],
             endpoint="messages",
         )
-        raw = _build_503_detail(ctx)
+        raw = build_503_detail(ctx)
         raw_err = raw.get("error", {})
         raise HTTPException(
             status_code=503,

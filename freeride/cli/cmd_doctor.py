@@ -24,6 +24,7 @@ from pathlib import Path
 
 import httpx
 
+from freeride.core.provider_env import BUILTIN_PROVIDERS
 
 # ANSI escapes — single source so the formatter and tests agree.
 _GREEN = "\033[32m"
@@ -31,18 +32,6 @@ _YELLOW = "\033[33m"
 _RED = "\033[31m"
 _DIM = "\033[2m"
 _RESET = "\033[0m"
-
-
-# Provider env var matrix. Keep in sync with cmd_serve.build_provider_registry().
-_PROVIDER_ENV_VARS: list[tuple[str, list[str]]] = [
-    ("openrouter", ["OPENROUTER_API_KEY"]),
-    ("groq", ["GROQ_API_KEY"]),
-    ("nvidia_nim", ["NVIDIA_API_KEY"]),
-    ("cloudflare_wai", ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]),
-    ("huggingface", ["HF_TOKEN", "HUGGINGFACE_API_KEY"]),  # either accepted
-    ("cerebras", ["CEREBRAS_API_KEY"]),
-    ("ollama", ["OLLAMA_BASE_URL"]),
-]
 
 
 class _Check:
@@ -103,30 +92,61 @@ def _check_provider_env_vars() -> list[_Check]:
     """
     out: list[_Check] = []
     any_set = False
-    for provider, env_vars in _PROVIDER_ENV_VARS:
-        if provider == "huggingface":
-            # HF accepts either env var.
-            set_var = next((v for v in env_vars if os.environ.get(v)), None)
+    for spec in BUILTIN_PROVIDERS:
+        provider = spec.name
+        env_vars = list(spec.env_vars) + list(spec.extra_required)
+        if spec.extra_required:
+            # Cloudflare-style: a key plus extra required config.
+            key_set = any(os.environ.get(v) for v in spec.env_vars)
+            extra_unset = [v for v in spec.extra_required if not os.environ.get(v)]
+            if key_set and not extra_unset:
+                any_set = True
+                out.append(_Check("ok", f"{provider}: " + ", ".join(f"${v} set" for v in env_vars)))
+            elif not key_set and extra_unset == list(spec.extra_required):
+                out.append(
+                    _Check(
+                        "info",
+                        f"{provider}: not configured",
+                        f"set ${spec.env_vars[0]} to enable (also needs ${spec.extra_required[0]})",
+                    )
+                )
+            elif key_set:
+                out.append(
+                    _Check(
+                        "warn",
+                        f"{provider}: partially configured",
+                        f"missing: {', '.join('$' + v for v in extra_unset)}",
+                    )
+                )
+            else:
+                out.append(
+                    _Check(
+                        "warn",
+                        f"{provider}: partially configured",
+                        f"missing: {', '.join('$' + v for v in spec.env_vars)}",
+                    )
+                )
+            continue
+
+        if len(spec.env_vars) > 1:
+            # HF-style: any alias is enough.
+            set_var = next((v for v in spec.env_vars if os.environ.get(v)), None)
             if set_var:
                 any_set = True
                 out.append(_Check("ok", f"{provider}: ${set_var} set"))
             else:
-                out.append(_Check("info", f"{provider}: no env var set", f"set ${env_vars[0]} to enable"))
+                out.append(
+                    _Check("info", f"{provider}: no env var set", f"set ${spec.env_vars[0]} to enable")
+                )
             continue
 
-        unset = [v for v in env_vars if not os.environ.get(v)]
+        unset = [v for v in spec.env_vars if not os.environ.get(v)]
         if not unset:
             any_set = True
-            out.append(_Check("ok", f"{provider}: " + ", ".join(f"${v} set" for v in env_vars)))
-        elif len(unset) == len(env_vars):
-            out.append(
-                _Check("info", f"{provider}: not configured", f"set ${env_vars[0]} to enable"
-                + (f" (also needs ${env_vars[1]})" if len(env_vars) > 1 else ""))
-            )
+            out.append(_Check("ok", f"{provider}: " + ", ".join(f"${v} set" for v in spec.env_vars)))
         else:
             out.append(
-                _Check("warn", f"{provider}: partially configured",
-                       f"missing: {', '.join('$' + v for v in unset)}")
+                _Check("info", f"{provider}: not configured", f"set ${spec.env_vars[0]} to enable")
             )
 
     if not any_set:

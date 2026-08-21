@@ -1,9 +1,8 @@
 """freeride — Free-AI gateway CLI.
 
-Phase 1: dispatches v2 subcommands (auto, list, switch, status, refresh,
-fallbacks, rotate) to the v2compat package so existing v2 users get an
-in-place upgrade. Phase 2+ adds ``serve`` for the gateway and ``bind``
-for agent setup helpers.
+Dispatches v2-parity subcommands (list, switch, auto, status, …) to
+the v2compat package, and gateway commands (serve, run, bind, doctor,
+keys, …) to their dedicated modules.
 """
 
 from __future__ import annotations
@@ -54,8 +53,8 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Rotate even if the current primary is healthy")
     p_rot.add_argument("--fallback-count", "-c", type=int, default=5)
 
-    # ---- gateway commands (stubs; impl in Phase 2/4/5) --------------------
-    p_serve = sub.add_parser("serve", help="Start the FreeRide gateway server (Phase 2)")
+    # ---- gateway commands --------------------------------------------------
+    p_serve = sub.add_parser("serve", help="Start the FreeRide gateway server")
     p_serve.add_argument("--port", type=int, default=11343)
     p_serve.add_argument("--host", default="127.0.0.1")
     p_serve.add_argument("--verbose", action="store_true")

@@ -6,6 +6,42 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+## [0.4.0a21] — 2026-08-21
+
+Fixes from the architecture review: cooldown no longer stores raw API
+keys, TTL now matches the documented per-kind policy, and the failover
+walk lives in one module instead of five copies.
+
+### Added
+- `freeride/core/failover.py` — shared `try_call_with_failover` /
+  `try_stream_with_failover` used by chat, messages, responses, gemini,
+  and embeddings.
+- `freeride/core/provider_env.py` — single provider ↔ env-var registry.
+  Numbered suffixes (`OPENROUTER_API_KEY_2`) actually work now.
+- Windows unit-test job (`windows-latest`, Python 3.12).
+
+### Fixed
+- Cooldown JSON keys are SHA-256 prefixes, not the raw secret. Legacy
+  files migrate on first read.
+- Cooldown TTL is per error kind: Retry-After (else 60s) for rate
+  limit, 5 min for auth, 60 min for quota. Previously everything was
+  a flat 120s and quota keys got retried immediately.
+- Docs/comments that still talked about Phase-2 stubs, a missing
+  `docs/agent-binders.md` link, and a cooldown table that didn't match
+  the code.
+- `freeride keys` now loads `~/.freeride/.env` (same as `doctor` /
+  `serve`) instead of only process env.
+- Groq free allowlist updated for current catalog ids (`openai/gpt-oss-20b`,
+  `qwen/qwen3.6-27b`, …). Retired Llama ids no longer match Groq's API.
+
+### Changed
+- `KeyCooldown.mark(provider, key, kind, retry_after_s=...)` is the
+  new mutation. `mark_rate_limited` remains as a RATE_LIMIT wrapper.
+- NVIDIA NIM also accepts `NIM_API_KEY` as an alias of `NVIDIA_API_KEY`.
+- Pin ruff to the pre-0.16 E/F default set (0.16 enabled 413 rules and
+  broke CI). Windows pytest uses `USERPROFILE` for `Path.home()`.
+
+
 ## [0.4.0a20] — 2026-05-29
 
 Hotfix for `freeride run codex`. Codex 0.121+ defaults to a WebSocket

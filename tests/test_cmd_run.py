@@ -14,6 +14,7 @@ decisions, and surfaces actionable errors on the failure paths.
 from __future__ import annotations
 
 import argparse
+import os
 from unittest.mock import patch
 
 from freeride.cli.cmd_run import (
@@ -425,7 +426,16 @@ def test_cmd_run_strips_leading_double_dash() -> None:
 def test_cmd_run_exec_inherits_parent_env_plus_overrides() -> None:
     """Child env = parent env + ANTHROPIC_BASE_URL + FREERIDE_ACTIVE.
     Mock os.environ to a known parent state and check the exec call."""
-    parent_env = {"PATH": "/usr/local/bin:/usr/bin", "ANTHROPIC_AUTH_TOKEN": "user-token"}
+    # cmd_run → seed_cli_configs → Path.home(). Replacing os.environ
+    # wholesale must keep the vars pathlib uses to find the user home
+    # (HOME on POSIX, USERPROFILE / HOMEDRIVE+HOMEPATH on Windows).
+    parent_env = {
+        "PATH": "/usr/local/bin:/usr/bin",
+        "ANTHROPIC_AUTH_TOKEN": "user-token",
+    }
+    for key in ("HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"):
+        if key in os.environ:
+            parent_env[key] = os.environ[key]
     with patch("freeride.cli.cmd_run.gateway_healthy", return_value=True):
         with patch("freeride.cli.cmd_run.os.environ", parent_env):
             with patch("freeride.cli.cmd_run.os.execvpe") as mock_exec:

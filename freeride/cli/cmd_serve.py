@@ -1,25 +1,19 @@
 """``freeride serve`` — start the FastAPI gateway under uvicorn.
 
-Refuses to start if the requested port is already in use. v3.0 doesn't
-auto-pick a different port because client config (Aider's
+Refuses to start if the requested port is already in use. FreeRide
+does not auto-pick a different port because client config (Aider's
 ``OPENAI_API_BASE``, Continue's ``apiBase``, etc.) is hard-coded to a
 specific value; silently switching ports would break the bind.
-
-For the gateway to actually serve free models, we instantiate
-:class:`OpenRouterProvider` (and later NIM) and pass to
-:func:`~freeride.server.app.create_app`. NIM is registered only when
-``NVIDIA_API_KEY`` is in the environment so casual users with only an
-OpenRouter key don't see startup spam.
 """
 
 from __future__ import annotations
 
-import os
 import socket
 import sys
 
 import uvicorn
 
+from freeride.core.provider_env import all_keys_for, is_configured
 from freeride.providers.cerebras import CerebrasProvider
 from freeride.providers.cloudflare_wai import CloudflareWAIProvider
 from freeride.providers.groq import GroqProvider
@@ -62,17 +56,17 @@ def build_provider_registry() -> list:
     load_dotenv_into_environ()
 
     providers: list = [OpenRouterProvider()]
-    if os.environ.get("NVIDIA_API_KEY"):
+    if is_configured("nvidia_nim"):
         providers.append(NVIDIANIMProvider())
-    if os.environ.get("GROQ_API_KEY"):
+    if is_configured("groq"):
         providers.append(GroqProvider())
-    if os.environ.get("CLOUDFLARE_API_TOKEN") and os.environ.get("CLOUDFLARE_ACCOUNT_ID"):
+    if is_configured("cloudflare_wai"):
         providers.append(CloudflareWAIProvider())
-    if os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_API_KEY"):
+    if is_configured("huggingface"):
         providers.append(HuggingFaceProvider())
-    if ollama_url := os.environ.get("OLLAMA_BASE_URL"):
-        providers.append(OllamaProvider(base_url=ollama_url))
-    if os.environ.get("CEREBRAS_API_KEY"):
+    if is_configured("ollama"):
+        providers.append(OllamaProvider(base_url=all_keys_for("ollama")[0]))
+    if is_configured("cerebras"):
         providers.append(CerebrasProvider())
 
     # Third-party plugins registered under the freeride.providers entry
