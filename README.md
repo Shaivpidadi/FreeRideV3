@@ -2,7 +2,7 @@
 
 **The OpenAI-compatible gateway for every free-tier provider.**
 
-<img width="800" height="468" alt="freeride-now-supports-claudecode" src="https://github.com/user-attachments/assets/8fac89b2-9d31-4aa9-b349-7d6769fa63a5" />
+<img width="800" height="468" alt="FreeRide failing over from an OpenRouter 429 to Groq in 42ms; the agent never knew" src="docs/assets/freeride-failover.gif" />
 
 One local endpoint that fans out across **OpenRouter, Groq, NVIDIA NIM, HuggingFace, Cerebras, Cloudflare Workers AI**, and **your own Ollama**. Hit a rate limit, fail over to the next provider. Your agent never knows.
 
