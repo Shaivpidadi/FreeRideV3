@@ -91,23 +91,31 @@ class TestReloadEndpoint:
         assert body["error"] == "factory_failed"
         assert "env var parse failed" in body["message"]
 
-    def test_reload_actually_picks_up_new_env_var(self, monkeypatch):
+    def test_reload_actually_picks_up_new_env_var(self, monkeypatch, tmp_path):
         """Integration-style: use the real build_provider_registry to
         prove that flipping an env var between calls flips the
         registered provider list.
         """
         from freeride.cli.cmd_serve import build_provider_registry
+        from freeride.core import dotenv as dotenv_mod
 
-        # Start with only the OPENROUTER_API_KEY set (always-on default
-        # plus the explicit default). Important: clear other providers
-        # so we know the pre-reload state is clean.
+        # load_dotenv_into_environ() reads DEFAULT_DOTENV_PATH at call
+        # time (captured from Path.home() at import). Point it at an
+        # empty tmp dir so the developer's real ~/.freeride/.env cannot
+        # refill keys we just deleted.
+        monkeypatch.setattr(
+            dotenv_mod, "DEFAULT_DOTENV_PATH", tmp_path / ".freeride" / ".env"
+        )
+
         for var in (
             "GROQ_API_KEY",
             "NVIDIA_API_KEY",
+            "NIM_API_KEY",
             "CLOUDFLARE_API_TOKEN",
             "CLOUDFLARE_ACCOUNT_ID",
             "HF_TOKEN",
             "HUGGINGFACE_API_KEY",
+            "CEREBRAS_API_KEY",
             "OLLAMA_BASE_URL",
         ):
             monkeypatch.delenv(var, raising=False)

@@ -26,6 +26,17 @@ def _strip_ansi(s: str) -> str:
     return re.sub(r"\x1b\[[0-9;]*m", "", s)
 
 
+def _set_home(monkeypatch, tmp_path) -> None:
+    """Point Path.home() at tmp_path on both POSIX and Windows.
+
+    pathlib uses HOME on Unix and USERPROFILE (then HOMEDRIVE+HOMEPATH)
+    on Windows. Setting only HOME is a no-op in the Windows CI job.
+    """
+    home = str(tmp_path)
+    monkeypatch.setenv("HOME", home)
+    monkeypatch.setenv("USERPROFILE", home)
+
+
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     """Strip all provider env vars so each test starts deterministic."""
@@ -33,6 +44,7 @@ def _clean_env(monkeypatch):
         "OPENROUTER_API_KEY",
         "GROQ_API_KEY",
         "NVIDIA_API_KEY",
+        "NIM_API_KEY",
         "CLOUDFLARE_API_TOKEN",
         "CLOUDFLARE_ACCOUNT_ID",
         "HF_TOKEN",
@@ -59,13 +71,13 @@ class TestPythonVersion:
 
 class TestFreerideDir:
     def test_creates_when_missing(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HOME", str(tmp_path))
+        _set_home(monkeypatch, tmp_path)
         c = _check_freeride_dir()
         assert c.severity == "ok"
         assert (tmp_path / ".freeride").exists()
 
     def test_passes_when_already_exists(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HOME", str(tmp_path))
+        _set_home(monkeypatch, tmp_path)
         (tmp_path / ".freeride").mkdir()
         c = _check_freeride_dir()
         assert c.severity == "ok"

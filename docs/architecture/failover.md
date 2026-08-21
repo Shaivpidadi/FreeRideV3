@@ -111,10 +111,11 @@ The chain is filtered to just `groq` before walking. If groq isn't registered or
 
 The failover loop is shared across routes:
 
-* `freeride/server/routes/chat.py` — `_try_stream_with_failover()`, `_resolve_provider_chain()`, `_apply_force_provider()`, `_record_health()`, `FailoverContext`.
-* `freeride/server/routes/messages.py`, `codex.py`, `gemini.py` — import the chat helpers, add their own translation, otherwise reuse.
+* `freeride/core/failover.py` — the walk (`try_stream_with_failover`, `try_call_with_failover`), chain construction, 503 builder, health recording.
+* `freeride/core/provider_env.py` — the single provider ↔ env-var registry (including `OPENROUTER_API_KEY_2` numbered suffixes).
+* `freeride/core/cooldown.py` — hashed per-key cooldowns with TTL by error kind.
+* `freeride/server/routes/chat.py` — OpenAI Chat Completions envelope; sibling routes (`messages.py`, `codex.py`, `gemini.py`, `embeddings.py`) keep their translators and call the shared walk.
 
-A future cleanup will extract the failover walk into a dedicated module so each route only has to declare its translator pair. Right now it's inlined in chat.py for historical reasons.
 
 ## Observability
 

@@ -16,7 +16,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 
 from freeride.core.model_health import (
@@ -26,7 +25,7 @@ from freeride.core.model_health import (
     load_cache,
     save_cache,
 )
-
+from freeride.core.provider_env import all_keys_for
 
 _GREEN = "\033[32m"
 _RED = "\033[31m"
@@ -35,36 +34,9 @@ _DIM = "\033[2m"
 _RESET = "\033[0m"
 
 
-# Same env-var matrix the /v1/models route uses; kept here so the CLI
-# can run audits without importing the FastAPI route module.
-_PROVIDER_ENV_VAR: dict[str, str] = {
-    "openrouter": "OPENROUTER_API_KEY",
-    "nvidia_nim": "NVIDIA_API_KEY",
-    "groq": "GROQ_API_KEY",
-    "cloudflare_wai": "CLOUDFLARE_API_TOKEN",
-    "huggingface": "HF_TOKEN",
-    "cerebras": "CEREBRAS_API_KEY",
-    "ollama": "OLLAMA_BASE_URL",
-}
-
-
 def _key_for(provider_name: str) -> str | None:
-    raw = os.environ.get(_PROVIDER_ENV_VAR.get(provider_name, ""), "")
-    if not raw:
-        # Some providers accept multiple env-var aliases; check the
-        # alternate for HF.
-        if provider_name == "huggingface":
-            raw = os.environ.get("HUGGINGFACE_API_KEY", "")
-    if not raw:
-        return None
-    # If multi-key JSON syntax is used, take the first.
-    try:
-        from freeride.v2compat.models import _parse_api_keys
-
-        keys = _parse_api_keys(raw)
-        return keys[0] if keys else None
-    except Exception:  # noqa: BLE001
-        return raw.strip() or None
+    keys = all_keys_for(provider_name)
+    return keys[0] if keys else None
 
 
 def _color(use_color: bool, code: str) -> str:

@@ -22,10 +22,12 @@ def _clean_env(monkeypatch, tmp_path):
         "OPENROUTER_API_KEY",
         "GROQ_API_KEY",
         "NVIDIA_API_KEY",
+        "NIM_API_KEY",
         "CLOUDFLARE_API_TOKEN",
         "CLOUDFLARE_ACCOUNT_ID",
         "HF_TOKEN",
         "HUGGINGFACE_API_KEY",
+        "CEREBRAS_API_KEY",
         "OLLAMA_BASE_URL",
     ):
         monkeypatch.delenv(var, raising=False)

@@ -1,10 +1,6 @@
-# Future-provider Protocol-fit survey
+# Provider Protocol fit survey
 
-> Phase 0 design validation: confirming the Provider Protocol from
-> the design plan absorbs Groq, Cloudflare Workers AI, and HuggingFace
-> Inference Providers without redesign. Not for immediate implementation —
-> Phases 1–3 ship with OpenRouter and NVIDIA NIM only. This is the
-> seam-quality stress test.
+> How Groq, Cloudflare Workers AI, HuggingFace, Cerebras, and Ollama map onto the Provider Protocol. All five now ship in-tree alongside OpenRouter and NVIDIA NIM. This document is the seam-quality record of *why* they fit without Protocol changes.
 
 ## Groq
 

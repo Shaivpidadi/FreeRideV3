@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from typing import Any
 
 from fastapi import APIRouter, Query, Request
@@ -25,7 +24,7 @@ from freeride.core.cache import TTLCache
 from freeride.core.canonicalize import canonicalize
 from freeride.core.cooldown import KeyCooldown
 from freeride.core.provider import Provider
-
+from freeride.core.provider_env import all_keys_for
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -51,22 +50,7 @@ def _key_for(provider: Provider) -> str | None:
     keys currently in cooldown. Centralized here so the resolver and the
     models endpoint pick keys the same way.
     """
-    env_var = {
-        "openrouter": "OPENROUTER_API_KEY",
-        "nvidia_nim": "NVIDIA_API_KEY",
-        "groq": "GROQ_API_KEY",
-        "cloudflare_wai": "CLOUDFLARE_API_TOKEN",
-        "huggingface": "HF_TOKEN",
-        "cerebras": "CEREBRAS_API_KEY",
-        "ollama": "OLLAMA_BASE_URL",
-    }.get(provider.name, f"{provider.name.upper()}_API_KEY")
-    raw = os.environ.get(env_var, "")
-    if not raw:
-        return None
-    # Reuse the v2compat parser since multi-key JSON syntax is shared.
-    from freeride.v2compat.models import _parse_api_keys
-
-    keys = _parse_api_keys(raw)
+    keys = all_keys_for(provider.name)
     if not keys:
         return None
     cd = KeyCooldown()

@@ -249,7 +249,7 @@ that spins up the gateway and runs a real prompt.
 ## Roadmap visibility
 
 - [`docs/providers/SURVEY.md`](docs/providers/SURVEY.md) — Provider Protocol fit per provider
-- [`docs/agent-binders.md`](docs/agent-binders.md) — agent bind reference
+- [`docs/agents/binders.md`](docs/agents/binders.md) — agent bind reference
 - [GitHub Issues](https://github.com/Shaivpidadi/FreeRideV3/issues) — current backlog and roadmap
 
 For new product directions, open a GitHub issue first to discuss.

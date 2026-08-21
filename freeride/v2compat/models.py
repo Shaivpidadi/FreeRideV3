@@ -14,19 +14,18 @@ import os
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
 
 import httpx
 
 from freeride.core.cooldown import KeyCooldown
+from freeride.core.provider_env import parse_api_keys as _parse_api_keys
 from freeride.core.state import write_json_atomic
 from freeride.providers.openrouter import (
+    OPENROUTER_APP_TITLE,
     OPENROUTER_MODELS_URL,
     OPENROUTER_REFERER,
-    OPENROUTER_APP_TITLE,
     filter_free_chat_models,
 )
-
 
 _PROVIDER_NAME = "openrouter"
 
@@ -62,23 +61,6 @@ def _openrouter_headers(api_key: str) -> dict:
         "HTTP-Referer": OPENROUTER_REFERER,
         "X-Title": OPENROUTER_APP_TITLE,
     }
-
-
-def _parse_api_keys(raw: Any) -> list[str]:
-    """Single key string, JSON-array literal, or real Python list."""
-    if isinstance(raw, list):
-        return [k.strip() for k in raw if isinstance(k, str) and k.strip()]
-    if not isinstance(raw, str):
-        return []
-    raw = raw.strip()
-    if raw.startswith("["):
-        try:
-            keys = json.loads(raw)
-            if isinstance(keys, list):
-                return [k.strip() for k in keys if isinstance(k, str) and k.strip()]
-        except (json.JSONDecodeError, ValueError):
-            pass
-    return [raw] if raw else []
 
 
 def get_api_keys() -> list[str]:
