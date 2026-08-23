@@ -39,6 +39,14 @@ CREATE INDEX IF NOT EXISTS idx_beacons_received_at
 CREATE INDEX IF NOT EXISTS idx_beacons_installation_id
   ON beacons(installation_id);
 
+-- Natural key for the dual-DB setup: the Worker stamps one
+-- received_at per beacon and writes the identical row to both Neon
+-- projects, and sync_dbs.py reconciles quota-outage gaps by this key.
+-- Beacons are hourly per install, so same-second collisions from one
+-- install don't occur in practice.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_beacons_install_received
+  ON beacons(installation_id, received_at);
+
 
 -- ─── openrouter_aggregate ───────────────────────────────────────
 -- Per-fetch snapshot of OpenRouter app-level token totals for V1 +

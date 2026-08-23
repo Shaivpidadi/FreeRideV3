@@ -16,7 +16,7 @@
 // Storage is Neon Postgres, reached over the HTTP driver bundled by
 // wrangler. The connection string lives in env.DATABASE_URL — a
 // Worker secret in production (`wrangler secret put DATABASE_URL`)
-// and `.dev.vars` for `wrangler dev`. ``getSql(env)`` lazily binds
+// and `.dev.vars` for `wrangler dev`. ``getDbs(env)`` lazily binds
 // once per cold start.
 //
 // Migrated from Cloudflare D1 on 2026-05-28. Schema lives in
@@ -37,16 +37,61 @@ const ALLOWED_OS = new Set(["darwin", "linux", "windows", "other"]);
 // client. The client itself is stateless — every query is a fresh
 // HTTPS request to Neon's pooler — so reusing is purely an
 // allocation win.
-let _sqlClient = null;
-let _sqlClientKey = null;
-function getSql(env) {
+// Dual-database mode: DATABASE_URL (primary) + DATABASE_URL_B
+// (optional fallback) point at two Neon projects on SEPARATE accounts.
+// Neon free-tier compute quotas pool per account and exhaust mid-month
+// under our load; with two accounts one side is always inside quota.
+// Reads try primary then fall back; writes go to BOTH best-effort so
+// the surviving side keeps a complete record and a quota flip has no
+// data gap. services/telemetry/sync_dbs.py reconciles whatever rows a
+// quota-dead side missed once its quota resets.
+let _dbs = null;
+let _dbsKey = null;
+function getDbs(env) {
   if (!env.DATABASE_URL) {
     throw new Error("DATABASE_URL not configured");
   }
-  if (_sqlClient && _sqlClientKey === env.DATABASE_URL) return _sqlClient;
-  _sqlClient = neon(env.DATABASE_URL);
-  _sqlClientKey = env.DATABASE_URL;
-  return _sqlClient;
+  const urls = [env.DATABASE_URL, env.DATABASE_URL_B].filter(Boolean);
+  const key = urls.join("|");
+  if (!_dbs || _dbsKey !== key) {
+    _dbs = urls.map((u, i) => ({
+      name: i === 0 ? "db-a" : "db-b",
+      sql: neon(u),
+    }));
+    _dbsKey = key;
+  }
+  return _dbs;
+}
+
+// Run a write against every configured DB. Succeeds if AT LEAST ONE
+// side accepted the row — a quota-dead side just logs. Never let the
+// slow/dead side's error mask a good write.
+async function dualWrite(env, fn) {
+  const dbs = getDbs(env);
+  const results = await Promise.allSettled(dbs.map((d) => fn(d.sql)));
+  results.forEach((r, i) => {
+    if (r.status === "rejected") {
+      console.error(`write failed on ${dbs[i].name}:`, r.reason);
+    }
+  });
+  if (!results.some((r) => r.status === "fulfilled")) {
+    throw results[0].reason;
+  }
+}
+
+// Run a read against the primary, falling back to the secondary.
+async function readFailover(env, fn) {
+  const dbs = getDbs(env);
+  let lastErr;
+  for (const db of dbs) {
+    try {
+      return await fn(db.sql);
+    } catch (e) {
+      console.error(`read failed on ${db.name}:`, e);
+      lastErr = e;
+    }
+  }
+  throw lastErr;
 }
 
 const json = (obj, status = 200) =>
@@ -144,14 +189,16 @@ async function handleInstallEvent(request, env) {
   // First install timestamp wins; we don't rewrite version on
   // re-install (re-install would be a separate event type if we
   // ever need it).
-  const sql = getSql(env);
-  await sql`
-    INSERT INTO install_events
-      (installation_id, version, os, install_method, installed_at)
-    VALUES (${installation_id}, ${version}, ${os}, ${install_method},
-            ${Math.floor(Date.now() / 1000)})
-    ON CONFLICT (installation_id) DO NOTHING
-  `;
+  await dualWrite(
+    env,
+    (sql) => sql`
+      INSERT INTO install_events
+        (installation_id, version, os, install_method, installed_at)
+      VALUES (${installation_id}, ${version}, ${os}, ${install_method},
+              ${Math.floor(Date.now() / 1000)})
+      ON CONFLICT (installation_id) DO NOTHING
+    `,
+  );
 
   return json({ ok: true });
 }
@@ -187,23 +234,29 @@ async function handleBeacon(request, env) {
   const uptime_hours = clampInt(body.uptime_hours, 24 * 365 * 10); // <= 10y
   const providers_active = sanitizeProviders(body.providers_active);
 
-  const sql = getSql(env);
-  await sql`
-    INSERT INTO beacons
-      (installation_id, version, os,
-       tokens_served, input_tokens, output_tokens,
-       request_count, providers_active, uptime_hours, received_at)
-    VALUES (${installation_id}, ${version}, ${os},
-            ${tokens_served}, ${input_tokens}, ${output_tokens},
-            ${request_count}, ${JSON.stringify(providers_active)}::jsonb,
-            ${uptime_hours}, ${Math.floor(Date.now() / 1000)})
-  `;
+  // One received_at stamped up front so both DBs store the SAME row —
+  // (installation_id, received_at) is the natural key sync_dbs.py uses
+  // to reconcile the two sides.
+  const received_at = Math.floor(Date.now() / 1000);
+  await dualWrite(
+    env,
+    (sql) => sql`
+      INSERT INTO beacons
+        (installation_id, version, os,
+         tokens_served, input_tokens, output_tokens,
+         request_count, providers_active, uptime_hours, received_at)
+      VALUES (${installation_id}, ${version}, ${os},
+              ${tokens_served}, ${input_tokens}, ${output_tokens},
+              ${request_count}, ${JSON.stringify(providers_active)}::jsonb,
+              ${uptime_hours}, ${received_at})
+      ON CONFLICT (installation_id, received_at) DO NOTHING
+    `,
+  );
 
   return json({ ok: true });
 }
 
-async function handleStats(env) {
-  const sql = getSql(env);
+async function handleStats(sql) {
   const nowSec = Math.floor(Date.now() / 1000);
   const day24Ago = nowSec - 24 * 3600;
   const day7Ago = nowSec - 7 * 24 * 3600;
@@ -527,7 +580,6 @@ function parseOpenRouterDailyBreakdown(html) {
 }
 
 async function refreshOpenRouterAggregate(env) {
-  const sql = getSql(env);
   const results = {};
   const breakdownByApp = {};
   for (const { slug, url } of OR_APP_URLS) {
@@ -547,9 +599,11 @@ async function refreshOpenRouterAggregate(env) {
       // we whitelist it against the OR_APP_URLS slugs first. ``slug``
       // is one of {'v1','v3'} per the array literal above.
       const col = slug === "v1" ? "v1_tokens" : "v3_tokens";
-      const prev = await sql.query(
-        `SELECT ${col} AS t FROM openrouter_aggregate
-         ORDER BY fetched_at DESC LIMIT 1`,
+      const prev = await readFailover(env, (sql) =>
+        sql.query(
+          `SELECT ${col} AS t FROM openrouter_aggregate
+           ORDER BY fetched_at DESC LIMIT 1`,
+        ),
       );
       results[slug] = Number(prev?.[0]?.t ?? 0);
       breakdownByApp[slug] = [];
@@ -560,12 +614,15 @@ async function refreshOpenRouterAggregate(env) {
   const combined = v1 + v3;
   const now = Math.floor(Date.now() / 1000);
 
-  await sql`
-    INSERT INTO openrouter_aggregate
-      (fetched_at, v1_tokens, v3_tokens, combined_tokens)
-    VALUES (${now}, ${v1}, ${v3}, ${combined})
-    ON CONFLICT (fetched_at) DO NOTHING
-  `;
+  await dualWrite(
+    env,
+    (sql) => sql`
+      INSERT INTO openrouter_aggregate
+        (fetched_at, v1_tokens, v3_tokens, combined_tokens)
+      VALUES (${now}, ${v1}, ${v3}, ${combined})
+      ON CONFLICT (fetched_at) DO NOTHING
+    `,
+  );
 
   // Upsert per-day per-model rows. (date, app, model_id) PK means
   // re-running for the same day replaces the previous tokens count
@@ -591,19 +648,22 @@ async function refreshOpenRouterAggregate(env) {
   }
   let daily_rows_written = 0;
   if (dates.length > 0) {
-    await sql`
-      INSERT INTO openrouter_daily (date, app, model_id, tokens, scraped_at)
-      SELECT date, app, model_id, tokens, ${now}::bigint AS scraped_at
-      FROM UNNEST(
-        ${dates}::text[],
-        ${apps}::text[],
-        ${modelIds}::text[],
-        ${tokensArr}::bigint[]
-      ) AS t(date, app, model_id, tokens)
-      ON CONFLICT (date, app, model_id) DO UPDATE SET
-        tokens = EXCLUDED.tokens,
-        scraped_at = EXCLUDED.scraped_at
-    `;
+    await dualWrite(
+      env,
+      (sql) => sql`
+        INSERT INTO openrouter_daily (date, app, model_id, tokens, scraped_at)
+        SELECT date, app, model_id, tokens, ${now}::bigint AS scraped_at
+        FROM UNNEST(
+          ${dates}::text[],
+          ${apps}::text[],
+          ${modelIds}::text[],
+          ${tokensArr}::bigint[]
+        ) AS t(date, app, model_id, tokens)
+        ON CONFLICT (date, app, model_id) DO UPDATE SET
+          tokens = EXCLUDED.tokens,
+          scraped_at = EXCLUDED.scraped_at
+      `,
+    );
     daily_rows_written = dates.length;
   }
 
@@ -621,7 +681,7 @@ export default {
     );
   },
 
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     if (url.pathname === "/health" && request.method === "GET") {
@@ -646,25 +706,87 @@ export default {
     }
 
     if (url.pathname === "/v1/stats" && request.method === "GET") {
-      // Neon free-tier autosuspends the compute after ~5 min idle, so
-      // the first query after a quiet spell can time out while it wakes
-      // (~0.5–2s). A single 500 here freezes the marketing-site counter
-      // on its last value (the client keeps its stale anchor when the
-      // fetch fails) — which is exactly how the homepage got stuck
-      // showing an old number. Retry a couple times with a short
-      // backoff so the wake completes before we give up.
+      // Edge cache, 5-min TTL. /v1/stats is polled every 5 minutes by
+      // every open homepage tab; hitting Neon per request keeps its
+      // compute awake 24/7 and burns the free-tier monthly quota in
+      // ~2 weeks (that outage is how the homepage once extrapolated a
+      // fabricated 8B). Underlying data moves hourly at most, so a
+      // 5-min cache changes nothing user-visible.
+      const cache = caches.default;
+      const CACHE_KEY = new Request("https://api.free-ride.xyz/__stats-cache");
+      const LKG_KEY = new Request("https://api.free-ride.xyz/__stats-lkg");
+      // Everything SERVED to clients goes out no-store: the stored
+      // copies' s-maxage is for the Cache API entries only. Serving
+      // it verbatim would make the zone edge cache /v1/stats a second
+      // time (plus a 4h browser TTL from zone settings) — two stacked
+      // caches re-serving each other's stale copies.
+      const serve = (resp, marker) =>
+        new Response(resp.body, {
+          headers: {
+            "content-type": "application/json",
+            "access-control-allow-origin": "*",
+            "cache-control": "no-store",
+            "x-freeride-stats": marker,
+          },
+        });
+      const hit = await cache.match(CACHE_KEY);
+      if (hit) return serve(hit, "cached");
+
+      // Miss: compute from the first DB that answers. Keep a short
+      // in-DB retry for Neon's autosuspend wake (~0.5-2s), then fail
+      // over to the other side.
+      const dbs = getDbs(env);
       let lastErr;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          return await handleStats(env);
-        } catch (e) {
-          lastErr = e;
-          if (attempt < 2) {
-            await new Promise((resolve) => setTimeout(resolve, 800));
+      for (const db of dbs) {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            const resp = await handleStats(db.sql);
+            const body = await resp.clone().text();
+            const cacheHeaders = {
+              "content-type": "application/json",
+              "access-control-allow-origin": "*",
+            };
+            const put = Promise.all([
+              cache.put(
+                CACHE_KEY,
+                new Response(body, {
+                  headers: {
+                    ...cacheHeaders,
+                    "cache-control": "s-maxage=300",
+                    "x-freeride-stats": "cached",
+                  },
+                }),
+              ),
+              // Last-known-good copy with a week of TTL — served when
+              // BOTH DBs are down so the homepage plateaus on a real
+              // number instead of erroring for the whole outage.
+              cache.put(
+                LKG_KEY,
+                new Response(body, {
+                  headers: {
+                    ...cacheHeaders,
+                    "cache-control": "s-maxage=604800",
+                    "x-freeride-stats": "stale",
+                  },
+                }),
+              ),
+            ]);
+            if (ctx?.waitUntil) ctx.waitUntil(put);
+            else await put;
+            return resp;
+          } catch (e) {
+            lastErr = e;
+            if (attempt < 1) {
+              await new Promise((resolve) => setTimeout(resolve, 800));
+            }
           }
         }
+        console.error(`stats failed on ${db.name}:`, lastErr);
       }
-      console.error("stats failed after retries:", lastErr);
+
+      const lkg = await cache.match(LKG_KEY);
+      if (lkg) return serve(lkg, "stale");
+      console.error("stats failed on all DBs, no cached copy:", lastErr);
       return json({ ok: false, error: "internal" }, 500);
     }
 
