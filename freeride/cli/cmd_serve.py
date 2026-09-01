@@ -27,9 +27,15 @@ from freeride.server.app import create_app
 def _port_in_use(host: str, port: int) -> bool:
     """True if something is already bound at ``host:port``. Used so we can
     refuse to start with a clear error rather than silently failing in uvicorn.
+
+    SO_REUSEADDR matters: uvicorn binds with it set, so a socket left in
+    TIME_WAIT by a just-stopped gateway does NOT block a real bind. Probing
+    without it made ``ridex restart`` (stop → immediate start) fail with a
+    spurious "already in use".
     """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(1.0)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind((host, port))
         except OSError:
