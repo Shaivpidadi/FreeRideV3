@@ -60,6 +60,31 @@ Key files:
 - **FreeRide (Python, where the real work lands):** new `freeride/core/fx_translate.py` + `freeride/core/fx_schema.py`, new `freeride/server/routes/fx.py`, router wired in `freeride/server/app.py:225-230`. Reuse `freeride/core/failover.py` (`try_call_with_failover`, `try_stream_with_failover`), `freeride/core/model_router.py` presets, `freeride/core/auto_model.py`.
 - **Daemon + keys:** supervisor per OS (launchd / systemd user unit; decide Windows scope explicitly), `ridex start|stop|restart|doctor`; keys flow shells out to `freeride init` + reload (`freeride/cli/cmd_init.py`, `cmd_reload.py`).
 
+## Verification log
+
+**2026-09-01 — FreeRide side landed and live-verified** (fx dialect
+routes: `POST /v3/ai/language-model`, `GET /coding-agent/v1/models`):
+
+- `GET /coding-agent/v1/models` with a dummy Bearer → 200, presets
+  first + 145 live catalog models. This is fx's key-validation probe.
+- Streaming pong through `freeride/coding` (pinned to openrouter/free)
+  → correct fx event framing (`response-metadata` → `text-delta` →
+  `finish{unified:stop}` → `[DONE]`).
+- Streaming tool call → full `tool-input-start/delta/end` →
+  `tool-call` with parsed input object → `finish{unified:tool-calls}`.
+- Multi-turn history with an fx `tool-result` part → model reads the
+  result and answers in text.
+- Non-streaming (`ai-language-model-streaming: false`) → plain OpenAI
+  `choices[0].message` JSON, which is what fx's
+  `parseGatewayCompletion` reads.
+- **Go/no-go gate: 10/10 tool-call pass rate** on the
+  "create hello.txt containing hi" benchmark via the coding pin.
+  Free-tier models can drive the loop; the pivot stands.
+- Note from setup: the OpenRouter key in `~/.freeride/.env` was stale
+  ("User not found") while the working key sat in the repo `.env` the
+  gateway never reads — exactly the keys-UX failure the ridex
+  `doctor` + `freeride init` flow must catch.
+
 ## Verification
 
 1. **Translator unit tests** (`tests/test_fx_translate.py`): request/response/stream fixtures captured from `vercel_protocol.zig` inline tests and fx's e2e mocks; hermetic, same style as `test_codex_translate.py`.
