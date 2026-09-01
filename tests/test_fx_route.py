@@ -134,3 +134,15 @@ def test_full_agent_turn_shape_validates() -> None:
         headers={"ai-language-model-id": "freeride/coding"},
     )
     assert r.status_code == 503
+
+
+def test_sse_error_events_shape() -> None:
+    """In-stream terminal failures must stay inside fx's closed
+    finishReason enum ('error') — an unknown value kills the stream
+    parser on the agent side."""
+    from freeride.server.routes.fx import _sse_error_events
+
+    frames = _sse_error_events("all providers exhausted").decode().split("\n\n")
+    assert frames[0].startswith('data: {"type":"error"')
+    assert '"unified":"error"' in frames[1]
+    assert frames[2] == "data: [DONE]"

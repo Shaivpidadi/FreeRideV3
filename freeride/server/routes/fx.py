@@ -32,6 +32,8 @@ semantics from :mod:`freeride.core.model_router`.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
 from typing import Any, AsyncIterator
@@ -330,51 +332,69 @@ async def _build_fx_stream(
     ctx: FailoverContext,
 ) -> StreamingResponse:
     """Pre-flight the first chunk through the shared failover helper,
-    then re-frame Chat-shape deltas into fx AI-SDK stream parts."""
-    chosen, first_event, rest_or_err = await try_stream_with_failover(
-        chain, openai_request, cooldown, ctx,
-        extra_event={"endpoint": "fx"},
-        on_model_not_found=invalidate_catalog,
-    )
-    if chosen is None:
-        emit_event(
-            "request_failed",
-            request_id=ctx.request_id,
-            phase="pre_first_chunk",
-            tried=[t.provider for t in ctx.tried],
-            endpoint="fx",
-        )
-        raise HTTPException(
-            status_code=503,
-            detail=_error_payload(
-                "All providers exhausted without producing a streaming response.",
-                "service_unavailable",
-            ),
-        )
+    then re-frame Chat-shape deltas into fx AI-SDK stream parts.
 
+    Unlike the other streaming routes, the 200 + headers ship
+    IMMEDIATELY and SSE keepalive comments flow while the failover
+    pre-flight waits for the upstream's first token. fx enforces a
+    time-to-first-byte budget and free-tier TTFB regularly exceeds it,
+    which made every agent turn eat one or two visible retries; comment
+    frames are fx's own hold-the-line mechanism (its e2e fake gateway
+    sends ``: hold-response``). The cost: a total pre-flight failure is
+    reported in-stream as an ``error`` part + ``finish`` with
+    ``unified: "error"`` instead of an HTTP 503 — fx classifies both as
+    a retryable provider failure."""
     from freeride.core.usage import Kind, extract_usage
 
-    last_usage_box = [extract_usage(Kind.OPENAI, first_event.model_dump())]
+    async def _emit_sse() -> AsyncIterator[bytes]:
+        preflight = asyncio.ensure_future(
+            try_stream_with_failover(
+                chain, openai_request, cooldown, ctx,
+                extra_event={"endpoint": "fx"},
+                on_model_not_found=invalidate_catalog,
+            )
+        )
+        while True:
+            try:
+                chosen, first_event, rest_or_err = await asyncio.wait_for(
+                    asyncio.shield(preflight), timeout=5.0
+                )
+                break
+            except asyncio.TimeoutError:
+                yield b": preflight\n\n"
 
-    async def _merged_chunks() -> AsyncIterator:
-        yield first_event
-        try:
-            async for evt in rest_or_err:
-                u = extract_usage(Kind.OPENAI, evt.model_dump())
-                if u.has_any:
-                    last_usage_box[0] = u
-                yield evt
-        except Exception as e:  # noqa: BLE001
-            logger.warning("fx: mid-stream upstream error after first chunk: %s", e)
+        if chosen is None:
             emit_event(
-                "request_mid_stream_error",
+                "request_failed",
                 request_id=ctx.request_id,
-                provider=chosen.name,
-                error=str(e)[:200],
+                phase="pre_first_chunk",
+                tried=[t.provider for t in ctx.tried],
                 endpoint="fx",
             )
+            message = "All providers exhausted without producing a streaming response."
+            yield _sse_error_events(message)
+            return
 
-    async def _emit_sse() -> AsyncIterator[bytes]:
+        last_usage_box = [extract_usage(Kind.OPENAI, first_event.model_dump())]
+
+        async def _merged_chunks() -> AsyncIterator:
+            yield first_event
+            try:
+                async for evt in rest_or_err:
+                    u = extract_usage(Kind.OPENAI, evt.model_dump())
+                    if u.has_any:
+                        last_usage_box[0] = u
+                    yield evt
+            except Exception as e:  # noqa: BLE001
+                logger.warning("fx: mid-stream upstream error after first chunk: %s", e)
+                emit_event(
+                    "request_mid_stream_error",
+                    request_id=ctx.request_id,
+                    provider=chosen.name,
+                    error=str(e)[:200],
+                    endpoint="fx",
+                )
+
         async for byte_chunk in stream_chat_to_fx(
             _merged_chunks(), resolved_model=openai_request.model
         ):
@@ -397,12 +417,31 @@ async def _build_fx_stream(
             provider=chosen.name,
         )
 
+    # Headers ship before the pre-flight resolves, so the chosen
+    # provider can't be stamped here; telemetry has it via
+    # request_complete and the debug event stream.
     return StreamingResponse(
         _emit_sse(),
         media_type="text/event-stream",
         headers={
-            "X-FreeRide-Provider": chosen.name,
             "X-FreeRide-Request-Id": ctx.request_id,
             "Cache-Control": "no-cache",
         },
+    )
+
+
+def _sse_error_events(message: str) -> bytes:
+    """Terminal in-stream failure: an ``error`` part (fx captures the
+    detail for its notice line) followed by ``finish`` with
+    ``unified: "error"`` and ``[DONE]``."""
+    error_event = json.dumps(
+        {"type": "error", "error": {"type": "service_unavailable", "message": message}},
+        separators=(",", ":"),
+    )
+    finish_event = json.dumps(
+        {"type": "finish", "finishReason": {"unified": "error", "raw": "error"}},
+        separators=(",", ":"),
+    )
+    return (
+        f"data: {error_event}\n\ndata: {finish_event}\n\ndata: [DONE]\n\n".encode()
     )
