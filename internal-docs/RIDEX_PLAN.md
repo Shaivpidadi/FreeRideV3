@@ -128,6 +128,13 @@ routes: `POST /v3/ai/language-model`, `GET /coding-agent/v1/models`):
   normal flow; chained commands forfeit the pre-approval). Verified:
   "run the diagnostics yourself" executes the full chain autonomously
   and reports accurately.
+- **Fallback ladder (2026-09-01)**: `freeride/coding`/`auto` no longer
+  narrow to the pinned provider. The fx route walks an internal ladder
+  of (provider, tools-capable model) candidates — pin first, then per-
+  provider fallbacks filtered by the `tools` capability and the model-
+  health cache — silently, under the streaming keepalives. Verified
+  with a bogus pinned model: turns completed via groq with correct tool
+  calls and no agent-visible failure.
 - Still open for later cuts: real crash-restart supervision
   (launchd/systemd units — today a crashed daemon restarts on the next
   ridex command), the public `ridex` rename (binary still builds as
