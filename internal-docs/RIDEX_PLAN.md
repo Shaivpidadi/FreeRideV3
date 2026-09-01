@@ -112,6 +112,15 @@ routes: `POST /v3/ai/language-model`, `GET /coding-agent/v1/models`):
   immediately with `: preflight` keepalive comments so free-tier TTFB
   no longer trips fx's first-byte timeout (previously every turn ate
   1–2 visible retries).
+- **Self-diagnosis skill**: the fork ships
+  `assets/skills/freeride/SKILL.md` (fx skill format), installed by the
+  launcher into `~/.fx/skills/freeride/` on every run. It gives the
+  agent full operational knowledge of its own model chain — daemon
+  lifecycle, /health + keyed_providers, the structured-503 tried-list
+  error taxonomy with cooldown durations, key management commands, and
+  an escalation order — so when requests break, ridex diagnoses and
+  fixes FreeRide itself. Verified: handed a 503 with auth+quota
+  failures, the agent produced the exact per-provider fixes unprompted.
 - Still open for later cuts: real crash-restart supervision
   (launchd/systemd units — today a crashed daemon restarts on the next
   ridex command), the public `ridex` rename (binary still builds as
