@@ -85,6 +85,39 @@ routes: `POST /v3/ai/language-model`, `GET /coding-agent/v1/models`):
   gateway never reads — exactly the keys-UX failure the ridex
   `doctor` + `freeride init` flow must catch.
 
+**2026-09-01 — ridex fork landed, both greens pass** (local repo
+`~/Desktop/oss/ridex`, branch `feat/freeride-provider`, not pushed):
+
+- `.freeride` is a real fourth `ProviderId` and the default. Diff:
+  +133/−10 over 18 files (plus launcher/tests) — no new wire code; the
+  stock gateway transport is reused with URL resolution switched on a
+  core-level `active_transport_provider` published from the provider
+  runtime's `adoptOwned` boundary. Credential is synthetic
+  (`freeride-local`), so no login gates the agent. Vercel
+  gateway/Codex/Grok stay selectable and untouched.
+- **Green 1**: `fx ask "reply with the single word pong"` → `pong`
+  (~2s, no Vercel login, no env vars, no second terminal).
+- **Green 2**: `fx ask "create hello.txt containing hi"` → agent
+  emitted the write_file tool call, executed it, read the file back to
+  verify, and reported completion (~15s end to end).
+- Fork test suite matches the stock-fx baseline exactly (8661/8668;
+  the same 5 environment-dependent `run_command` failures fail on
+  unmodified upstream on this machine).
+- `scripts/ridex` launcher: auto-starts the FreeRide daemon, `ridex
+  start|stop|restart|doctor`, stop-sticks marker, socket-probe drains,
+  local `freeride init` prompt when `/health.keyed_providers` is empty.
+- FreeRide fixes found by the integration: `/health` gained
+  `keyed_providers`; serve's port probe now binds with `SO_REUSEADDR`
+  (stop-then-start raced TIME_WAIT); the fx stream route ships headers
+  immediately with `: preflight` keepalive comments so free-tier TTFB
+  no longer trips fx's first-byte timeout (previously every turn ate
+  1–2 visible retries).
+- Still open for later cuts: real crash-restart supervision
+  (launchd/systemd units — today a crashed daemon restarts on the next
+  ridex command), the public `ridex` rename (binary still builds as
+  `fx`; internal `FX_*` env names kept for cheap upstream rebases),
+  stats flush, Windows.
+
 ## Verification
 
 1. **Translator unit tests** (`tests/test_fx_translate.py`): request/response/stream fixtures captured from `vercel_protocol.zig` inline tests and fx's e2e mocks; hermetic, same style as `test_codex_translate.py`.
