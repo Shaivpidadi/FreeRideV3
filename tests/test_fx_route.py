@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import json
+
+import pytest
 from fastapi.testclient import TestClient
 
 from freeride.server.app import create_app
@@ -214,3 +217,147 @@ def test_agent_candidates_skips_health_broken_models(monkeypatch) -> None:
         _catalog_entry("groq", "groq-good"),
     ]
     assert fx_module._agent_candidates(providers, catalog) == [("groq", "groq-good")]
+
+
+def test_materialize_attempts_concrete_model_gets_ladder_backstop() -> None:
+    """The req_8533b4a7 failure: a /models pick of an OpenRouter-only id
+    while OpenRouter cooled had nowhere to go. Concrete models now walk
+    the full chain first, then fall through to the tools ladder."""
+    from freeride.server.routes.fx import _materialize_attempts
+
+    chain = [(_FakeProvider("groq"), ["k"]), (_FakeProvider("nvidia_nim"), ["k"])]
+    ladder = [("openrouter", "openrouter/free"), ("groq", "groq-tools-model")]
+    attempts = _materialize_attempts(
+        chain, ladder, primary_model="minimax/minimax-m3:free", is_agent_default=False
+    )
+    # Primary: requested model over the whole chain. Backstop: groq's
+    # tools model (openrouter has no usable keys → no scoped chain).
+    assert [(len(c), m) for c, m in attempts] == [
+        (2, "minimax/minimax-m3:free"),
+        (1, "groq-tools-model"),
+    ]
+
+
+def test_materialize_attempts_agent_default_is_ladder_only() -> None:
+    from freeride.server.routes.fx import _materialize_attempts
+
+    chain = [(_FakeProvider("openrouter"), ["k"]), (_FakeProvider("groq"), ["k"])]
+    ladder = [("openrouter", "openrouter/free"), ("groq", "groq-tools-model")]
+    attempts = _materialize_attempts(
+        chain, ladder, primary_model="openrouter/free", is_agent_default=True
+    )
+    assert [(c[0][0].name, m) for c, m in attempts] == [
+        ("openrouter", "openrouter/free"),
+        ("groq", "groq-tools-model"),
+    ]
+
+
+def _stream_event(**kw):
+    from freeride.core.chat_schema import ChatStreamEvent
+
+    delta = {}
+    if "content" in kw:
+        delta["content"] = kw["content"]
+    choices = [{"index": 0, "delta": delta, "finish_reason": kw.get("finish_reason")}]
+    return ChatStreamEvent.model_validate(
+        {"id": "c", "created": 1, "model": "m", "choices": choices}
+    )
+
+
+async def _collect_stream(monkeypatch, outcomes):
+    """Drive _build_fx_stream with scripted try_stream_with_failover
+    outcomes; return the decoded SSE payloads ([DONE] as 'DONE')."""
+    import freeride.server.routes.fx as fx_module
+    from freeride.core.chat_schema import ChatRequest
+    from freeride.core.cooldown import KeyCooldown
+    from freeride.core.failover import FailoverContext
+
+    calls = iter(outcomes)
+
+    async def fake_failover(chain, body, cooldown, ctx, **kwargs):
+        outcome = next(calls)
+        if outcome is None:
+            return None, None, None
+        first, rest_events, die = outcome
+
+        async def rest():
+            for evt in rest_events:
+                yield evt
+            if die:
+                raise RuntimeError("connection reset by upstream")
+
+        return _FakeProvider("fake"), first, rest()
+
+    monkeypatch.setattr(fx_module, "try_stream_with_failover", fake_failover)
+    monkeypatch.setattr(
+        "freeride.core.telemetry.record_request", lambda **kw: None
+    )
+    request = ChatRequest(model="m", messages=[])
+    resp = await fx_module._build_fx_stream(
+        attempts=[([("chain1", ["k"])], "model-a"), ([("chain2", ["k"])], "model-b")],
+        openai_request=request,
+        cooldown=KeyCooldown(),
+        ctx=FailoverContext(request_id="req_test"),
+    )
+    out = []
+    async for raw in resp.body_iterator:
+        for frame in raw.decode().split("\n\n"):
+            if not frame.startswith("data: "):
+                continue
+            payload = frame[len("data: ") :]
+            out.append("DONE" if payload == "[DONE]" else json.loads(payload))
+    return out
+
+
+@pytest.mark.asyncio
+async def test_stream_mid_death_after_content_ends_turn_as_error(monkeypatch) -> None:
+    """Once real content shipped, a dying upstream must NOT be dressed
+    up as a clean finish — fx retries an error, but trusts a finish."""
+    events = await _collect_stream(
+        monkeypatch,
+        [(_stream_event(content="partial answer"), [], True)],
+    )
+    kinds = [e["type"] for e in events if isinstance(e, dict)]
+    assert "error" in kinds
+    finish = next(e for e in events if isinstance(e, dict) and e["type"] == "finish")
+    assert finish["finishReason"]["unified"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_stream_mid_death_before_content_switches_candidate(monkeypatch) -> None:
+    """An upstream that dies before producing anything semantic is
+    absorbed: the walk moves to the next (provider, model) candidate
+    inside the same response."""
+    events = await _collect_stream(
+        monkeypatch,
+        [
+            (_stream_event(), [], True),  # role-only first chunk, then dies
+            (
+                _stream_event(content="pong"),
+                [_stream_event(finish_reason="stop")],
+                False,
+            ),
+        ],
+    )
+    deltas = [e for e in events if isinstance(e, dict) and e["type"] == "text-delta"]
+    assert [d["delta"] for d in deltas] == ["pong"]
+    finish = next(e for e in events if isinstance(e, dict) and e["type"] == "finish")
+    assert finish["finishReason"]["unified"] == "stop"
+    assert events[-1] == "DONE"
+
+
+@pytest.mark.asyncio
+async def test_stream_preflight_failure_walks_to_next_candidate(monkeypatch) -> None:
+    events = await _collect_stream(
+        monkeypatch,
+        [
+            None,  # candidate 1: all keys failed pre-first-chunk
+            (
+                _stream_event(content="pong"),
+                [_stream_event(finish_reason="stop")],
+                False,
+            ),
+        ],
+    )
+    finish = next(e for e in events if isinstance(e, dict) and e["type"] == "finish")
+    assert finish["finishReason"]["unified"] == "stop"

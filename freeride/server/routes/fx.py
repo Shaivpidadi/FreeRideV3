@@ -83,6 +83,41 @@ _FX_PRESET_IDS = (
 )
 
 
+class _UpstreamStreamDied(Exception):
+    """Upstream provider died mid-stream, after the first chunk."""
+
+
+def _materialize_attempts(
+    chain: list,
+    agent_candidates: list[tuple[str, str]],
+    *,
+    primary_model: str,
+    is_agent_default: bool,
+) -> list[tuple[list, str]]:
+    """Turn the ladder into ordered (scoped_chain, model) attempts.
+
+    For the agent default the ladder IS the plan (the pin's model id
+    only exists on its own provider, so a full-chain walk would just
+    burn MODEL_NOT_FOUNDs). For explicit models/presets the primary
+    request walks the FULL chain first and the ladder backstops it —
+    this is what keeps an OpenRouter-only model pick working while
+    OpenRouter cools. A candidate whose provider has no usable keys
+    right now contributes nothing.
+    """
+    attempts: list[tuple[list, str]] = []
+    if not is_agent_default:
+        attempts.append((chain, primary_model))
+    for prov_name, cand_model in agent_candidates:
+        if cand_model == primary_model and not is_agent_default:
+            continue  # the primary attempt already covers it, chain-wide
+        scoped = [link for link in chain if link[0].name == prov_name]
+        if scoped:
+            attempts.append((scoped, cand_model))
+    if not attempts:
+        attempts = [(chain, primary_model)]
+    return attempts
+
+
 def _error_payload(message: str, code: str = "invalid_request_error") -> dict:
     """fx's failure diagnostics read ``error.message`` when present and
     otherwise show the raw body; OpenAI's envelope covers both."""
@@ -228,37 +263,40 @@ async def fx_chat(request: Request):
     providers: list[Provider] = sort_by_health(list(request.app.state.providers))
 
     # ─── model resolution ───────────────────────────────────────────
-    # coding preset / auto → an internal fallback LADDER of
-    # (provider, tools-capable model) candidates, pinned model first.
-    # The pin is a preference, not a cage: when the pinned provider
-    # can't serve (rate limit, no free inference right now, dead key),
-    # the walk falls through to the best tools-capable model on each
-    # remaining provider — silently, inside the same response. Other
-    # presets → provider re-order + auto-resolution scoped to the
-    # preferred providers, same shape as the messages route. A
-    # concrete model id passes through untouched.
+    # Every fx request gets an internal fallback LADDER of (provider,
+    # tools-capable model) candidates so a single provider going cold
+    # (rate limit, no free inference right now, dead key, retired
+    # model) never surfaces as a failed turn:
+    #
+    #   coding preset / auto → the pinned agent model is candidate #1.
+    #   concrete model id    → the requested model over the full chain
+    #                          is candidate #1; the ladder backstops it.
+    #                          (This is how a /models pick of an
+    #                          OpenRouter-only id keeps working while
+    #                          OpenRouter cools.)
+    #   fast/quality/free    → provider re-order + scoped auto
+    #                          resolution as before; ladder backstops.
     auto_resolution_providers = providers
-    agent_candidates: list[tuple[str, str]] | None = None
-    if preset == PRESET_CODING or is_auto_model(requested_model):
-        try:
-            ladder_catalog = await get_or_fetch_catalog(providers, group=False)
-        except Exception as e:  # noqa: BLE001 — a cold catalog must not kill the turn
-            logger.warning("fx: ladder catalog fetch failed: %s", e)
-            ladder_catalog = []
-        agent_candidates = _agent_candidates(providers, ladder_catalog)
+    is_agent_default = preset == PRESET_CODING or is_auto_model(requested_model)
+    try:
+        ladder_catalog = await get_or_fetch_catalog(providers, group=False)
+    except Exception as e:  # noqa: BLE001 — a cold catalog must not kill the turn
+        logger.warning("fx: ladder catalog fetch failed: %s", e)
+        ladder_catalog = []
+    agent_candidates = _agent_candidates(providers, ladder_catalog)
+    emit_event(
+        "fx_agent_ladder",
+        request_id=request_id,
+        candidates=[f"{prov}:{model}" for prov, model in agent_candidates],
+        original_model=requested_model,
+        endpoint="fx",
+    )
+    if is_agent_default:
         if agent_candidates:
             openai_request.model = agent_candidates[0][1]
-        emit_event(
-            "fx_agent_ladder",
-            request_id=request_id,
-            candidates=[f"{prov}:{model}" for prov, model in agent_candidates],
-            original_model=requested_model,
-            endpoint="fx",
-        )
-        if not agent_candidates:
+        else:
             # No catalog and no registered pin provider — fall back to
             # plain auto-resolution over the full chain.
-            agent_candidates = None
             openai_request.model = "auto"
     elif preset is not None:
         preferred = preset_provider_order(preset)
@@ -330,18 +368,12 @@ async def fx_chat(request: Request):
             endpoint="fx",
         )
 
-    # Materialize the ladder into per-candidate (scoped_chain, model)
-    # attempts. A candidate whose provider has no usable keys right now
-    # contributes nothing; without a ladder there is one attempt over
-    # the whole chain (legacy behavior for presets/concrete ids).
-    attempts: list[tuple[list, str]] = []
-    if agent_candidates:
-        for prov_name, cand_model in agent_candidates:
-            scoped = [link for link in chain if link[0].name == prov_name]
-            if scoped:
-                attempts.append((scoped, cand_model))
-    if not attempts:
-        attempts = [(chain, openai_request.model)]
+    attempts = _materialize_attempts(
+        chain,
+        agent_candidates,
+        primary_model=openai_request.model,
+        is_agent_default=is_agent_default,
+    )
 
     if is_streaming:
         openai_request.stream = True
@@ -430,14 +462,21 @@ async def _build_fx_stream(
     frames are fx's own hold-the-line mechanism (its e2e fake gateway
     sends ``: hold-response``). Candidate fallbacks ride the same
     mechanism, so a provider with no free inference right now costs
-    keepalive time, never a visible failure. The cost: a total
-    pre-flight failure is reported in-stream as an ``error`` part +
-    ``finish`` with ``unified: "error"`` instead of an HTTP 503 — fx
-    classifies both as a retryable provider failure."""
+    keepalive time, never a visible failure.
+
+    Mid-stream upstream death is handled in two tiers: if nothing
+    semantic has shipped yet (only keepalives / ``response-metadata``),
+    the walk moves to the next candidate silently; once real content
+    has shipped, the turn ends with an in-stream ``error`` part +
+    ``finish`` ``unified: "error"`` — fx retries the turn — instead of
+    the old behavior of fabricating a clean ``finish`` that made a
+    truncated answer look complete. Total pre-flight failure uses the
+    same in-stream error shape (headers already shipped, a 503 is no
+    longer possible)."""
     from freeride.core.usage import Kind, extract_usage
 
     async def _emit_sse() -> AsyncIterator[bytes]:
-        chosen, first_event, rest_or_err = None, None, None
+        emitted_semantic = False
         for scoped_chain, cand_model in attempts:
             openai_request.model = cand_model
             preflight = asyncio.ensure_future(
@@ -455,67 +494,95 @@ async def _build_fx_stream(
                     break
                 except asyncio.TimeoutError:
                     yield b": preflight\n\n"
-            if chosen is not None:
-                break
-            emit_event(
-                "fx_candidate_failed",
-                request_id=ctx.request_id,
-                model=cand_model,
-                endpoint="fx",
-            )
-
-        if chosen is None:
-            emit_event(
-                "request_failed",
-                request_id=ctx.request_id,
-                phase="pre_first_chunk",
-                tried=[t.provider for t in ctx.tried],
-                endpoint="fx",
-            )
-            message = "All providers exhausted without producing a streaming response."
-            yield _sse_error_events(message)
-            return
-
-        last_usage_box = [extract_usage(Kind.OPENAI, first_event.model_dump())]
-
-        async def _merged_chunks() -> AsyncIterator:
-            yield first_event
-            try:
-                async for evt in rest_or_err:
-                    u = extract_usage(Kind.OPENAI, evt.model_dump())
-                    if u.has_any:
-                        last_usage_box[0] = u
-                    yield evt
-            except Exception as e:  # noqa: BLE001
-                logger.warning("fx: mid-stream upstream error after first chunk: %s", e)
+            if chosen is None:
                 emit_event(
-                    "request_mid_stream_error",
+                    "fx_candidate_failed",
                     request_id=ctx.request_id,
-                    provider=chosen.name,
-                    error=str(e)[:200],
+                    model=cand_model,
+                    phase="pre_first_chunk",
                     endpoint="fx",
                 )
+                continue
 
-        async for byte_chunk in stream_chat_to_fx(
-            _merged_chunks(), resolved_model=openai_request.model
-        ):
-            yield byte_chunk
-        final = last_usage_box[0]
+            last_usage_box = [extract_usage(Kind.OPENAI, first_event.model_dump())]
+
+            async def _merged_chunks(
+                first=first_event, rest=rest_or_err, provider=chosen
+            ) -> AsyncIterator:
+                yield first
+                try:
+                    async for evt in rest:
+                        u = extract_usage(Kind.OPENAI, evt.model_dump())
+                        if u.has_any:
+                            last_usage_box[0] = u
+                        yield evt
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "fx: mid-stream upstream error after first chunk: %s", e
+                    )
+                    emit_event(
+                        "request_mid_stream_error",
+                        request_id=ctx.request_id,
+                        provider=provider.name,
+                        error=str(e)[:200],
+                        endpoint="fx",
+                    )
+                    raise _UpstreamStreamDied(str(e)[:200]) from e
+
+            try:
+                async for frame in stream_chat_to_fx(
+                    _merged_chunks(), resolved_model=cand_model
+                ):
+                    if not frame.startswith(b'data: {"type":"response-metadata"'):
+                        emitted_semantic = True
+                    yield frame
+            except _UpstreamStreamDied as died:
+                if emitted_semantic:
+                    # Bytes can't be unshipped. Ending the turn as an
+                    # explicit error makes fx retry it; a fabricated
+                    # clean finish would make the agent trust a
+                    # truncated answer.
+                    yield _sse_error_events(
+                        f"upstream provider failed mid-stream: {died}"
+                    )
+                    return
+                emit_event(
+                    "fx_candidate_failed",
+                    request_id=ctx.request_id,
+                    model=cand_model,
+                    phase="mid_stream_before_output",
+                    endpoint="fx",
+                )
+                continue
+
+            final = last_usage_box[0]
+            emit_event(
+                "request_complete",
+                request_id=ctx.request_id,
+                provider=chosen.name,
+                streaming=True,
+                endpoint="fx",
+                input_tokens=final.input,
+                output_tokens=final.output,
+            )
+            from freeride.core.telemetry import record_request
+
+            record_request(
+                input_tokens=final.input,
+                output_tokens=final.output,
+                provider=chosen.name,
+            )
+            return
+
         emit_event(
-            "request_complete",
+            "request_failed",
             request_id=ctx.request_id,
-            provider=chosen.name,
-            streaming=True,
+            phase="pre_first_chunk",
+            tried=[t.provider for t in ctx.tried],
             endpoint="fx",
-            input_tokens=final.input,
-            output_tokens=final.output,
         )
-        from freeride.core.telemetry import record_request
-
-        record_request(
-            input_tokens=final.input,
-            output_tokens=final.output,
-            provider=chosen.name,
+        yield _sse_error_events(
+            "All providers exhausted without producing a streaming response."
         )
 
     # Headers ship before the pre-flight resolves, so the chosen
