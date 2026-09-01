@@ -22,7 +22,9 @@ from fastapi import FastAPI
 
 from freeride import __version__
 from freeride.core import telemetry
+from freeride.core.cooldown import KeyCooldown
 from freeride.core.provider import Provider
+from freeride.core.provider_env import all_keys_for
 
 
 _TELEMETRY_INTERVAL_SECONDS = 3600  # hourly
@@ -150,6 +152,16 @@ def create_app(
             "ok": True,
             "version": __version__,
             "providers": [p.name for p in app.state.providers],
+            # Providers that actually hold a usable (non-cooling) key.
+            # Registration alone doesn't imply keys — openrouter is
+            # always registered — so clients checking "can this gateway
+            # serve anything?" (the ridex launcher's key prompt) must
+            # read this list, not ``providers``.
+            "keyed_providers": [
+                p.name
+                for p in app.state.providers
+                if KeyCooldown().available_keys(p.name, all_keys_for(p.name))
+            ],
         }
 
     @app.post("/v1/_freeride/reload")
