@@ -121,6 +121,13 @@ routes: `POST /v3/ai/language-model`, `GET /coding-agent/v1/models`):
   an escalation order — so when requests break, ridex diagnoses and
   fixes FreeRide itself. Verified: handed a 503 with auth+quota
   failures, the agent produced the exact per-provider fixes unprompted.
+- **Pre-approved diagnostics**: built-in permission rules let the
+  agent run `freeride doctor|keys|providers|telemetry|--version`,
+  `ridex doctor`, and the health curl without prompts or safety
+  review (user deny rules still override; mutating commands keep the
+  normal flow; chained commands forfeit the pre-approval). Verified:
+  "run the diagnostics yourself" executes the full chain autonomously
+  and reports accurately.
 - Still open for later cuts: real crash-restart supervision
   (launchd/systemd units — today a crashed daemon restarts on the next
   ridex command), the public `ridex` rename (binary still builds as
