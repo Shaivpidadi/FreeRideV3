@@ -102,6 +102,59 @@ def _agent_pin() -> tuple[str, str]:
     return model, provider
 
 
+# The pin plus at most this many tools-capable fallbacks. Each candidate
+# already carries its own per-key failover, so the ladder bounds worst-
+# case pre-flight latency rather than reliability.
+_MAX_AGENT_CANDIDATES = 4
+
+
+def _agent_candidates(
+    providers: list[Provider], catalog: list[dict[str, Any]]
+) -> list[tuple[str, str]]:
+    """Ordered (provider_name, model_id) fallback ladder for agent
+    traffic: the pinned agent model first, then the first tools-capable
+    catalog model on each remaining provider, in health order.
+
+    ``catalog`` must be UNGROUPED (one entry per provider+model) so ids
+    are valid on the provider they're paired with — grouped entries lose
+    the per-provider alias mapping. Providers with no tools-capable
+    entries (or whose entries the model-health cache marks broken) are
+    skipped: an agent without tool calls is useless, so falling over to
+    a text-only model would trade a visible failure for a silent one.
+    """
+    from freeride.core.model_health import is_model_known_broken, load_cache
+
+    registered = {p.name for p in providers}
+    pinned_model, pinned_provider = _agent_pin()
+    ladder: list[tuple[str, str]] = []
+    if pinned_provider in registered:
+        ladder.append((pinned_provider, pinned_model))
+
+    health_cache = load_cache()
+    tools_by_provider: dict[str, str] = {}
+    for entry in catalog:
+        entry_providers = entry.get("available_providers") or []
+        if not entry_providers:
+            continue
+        prov = entry_providers[0]
+        if prov in tools_by_provider or prov not in registered:
+            continue
+        if "tools" not in (entry.get("supported_parameters") or ()):
+            continue
+        if is_model_known_broken(prov, entry["id"], cache=health_cache):
+            continue
+        tools_by_provider[prov] = entry["id"]
+
+    for p in providers:  # already health-sorted by the route
+        if len(ladder) >= _MAX_AGENT_CANDIDATES:
+            break
+        if p.name == pinned_provider:
+            continue
+        if p.name in tools_by_provider:
+            ladder.append((p.name, tools_by_provider[p.name]))
+    return ladder
+
+
 @router.get("/coding-agent/v1/models")
 async def fx_models(request: Request) -> dict[str, Any]:
     """fx model catalog. Presets first (always present, so ridex works
@@ -175,28 +228,38 @@ async def fx_chat(request: Request):
     providers: list[Provider] = sort_by_health(list(request.app.state.providers))
 
     # ─── model resolution ───────────────────────────────────────────
-    # coding preset / auto → pin to the tools-capable agent model and
-    # narrow to its provider (full list stays as fallback if the
-    # pinned provider isn't registered). Other presets → provider
-    # re-order + auto-resolution scoped to the preferred providers,
-    # same shape as the messages route. A concrete model id passes
-    # through untouched.
+    # coding preset / auto → an internal fallback LADDER of
+    # (provider, tools-capable model) candidates, pinned model first.
+    # The pin is a preference, not a cage: when the pinned provider
+    # can't serve (rate limit, no free inference right now, dead key),
+    # the walk falls through to the best tools-capable model on each
+    # remaining provider — silently, inside the same response. Other
+    # presets → provider re-order + auto-resolution scoped to the
+    # preferred providers, same shape as the messages route. A
+    # concrete model id passes through untouched.
     auto_resolution_providers = providers
+    agent_candidates: list[tuple[str, str]] | None = None
     if preset == PRESET_CODING or is_auto_model(requested_model):
-        pinned_model, pinned_provider = _agent_pin()
-        openai_request.model = pinned_model
-        narrowed = [p for p in providers if p.name == pinned_provider]
-        if narrowed:
-            providers = narrowed
-            auto_resolution_providers = narrowed
+        try:
+            ladder_catalog = await get_or_fetch_catalog(providers, group=False)
+        except Exception as e:  # noqa: BLE001 — a cold catalog must not kill the turn
+            logger.warning("fx: ladder catalog fetch failed: %s", e)
+            ladder_catalog = []
+        agent_candidates = _agent_candidates(providers, ladder_catalog)
+        if agent_candidates:
+            openai_request.model = agent_candidates[0][1]
         emit_event(
-            "fx_agent_pin",
+            "fx_agent_ladder",
             request_id=request_id,
-            pinned_model=pinned_model,
-            pinned_provider=pinned_provider,
+            candidates=[f"{prov}:{model}" for prov, model in agent_candidates],
             original_model=requested_model,
             endpoint="fx",
         )
+        if not agent_candidates:
+            # No catalog and no registered pin provider — fall back to
+            # plain auto-resolution over the full chain.
+            agent_candidates = None
+            openai_request.model = "auto"
     elif preset is not None:
         preferred = preset_provider_order(preset)
         if preferred:
@@ -267,10 +330,23 @@ async def fx_chat(request: Request):
             endpoint="fx",
         )
 
+    # Materialize the ladder into per-candidate (scoped_chain, model)
+    # attempts. A candidate whose provider has no usable keys right now
+    # contributes nothing; without a ladder there is one attempt over
+    # the whole chain (legacy behavior for presets/concrete ids).
+    attempts: list[tuple[list, str]] = []
+    if agent_candidates:
+        for prov_name, cand_model in agent_candidates:
+            scoped = [link for link in chain if link[0].name == prov_name]
+            if scoped:
+                attempts.append((scoped, cand_model))
+    if not attempts:
+        attempts = [(chain, openai_request.model)]
+
     if is_streaming:
         openai_request.stream = True
         return await _build_fx_stream(
-            chain=chain,
+            attempts=attempts,
             openai_request=openai_request,
             cooldown=cooldown,
             ctx=ctx,
@@ -279,15 +355,26 @@ async def fx_chat(request: Request):
     # ─── non-streaming ──────────────────────────────────────────────
     # fx's parseGatewayCompletion reads the plain OpenAI
     # ``choices[0].message`` shape — the upstream body IS the response.
-    chosen_provider, response_obj = await try_call_with_failover(
-        chain,
-        cooldown,
-        ctx,
-        call=lambda p, k: p.forward_chat(openai_request, openai_request.model, k),
-        model=openai_request.model,
-        extra_event={"endpoint": "fx"},
-        on_model_not_found=invalidate_catalog,
-    )
+    chosen_provider, response_obj = None, None
+    for scoped_chain, cand_model in attempts:
+        openai_request.model = cand_model
+        chosen_provider, response_obj = await try_call_with_failover(
+            scoped_chain,
+            cooldown,
+            ctx,
+            call=lambda p, k: p.forward_chat(openai_request, openai_request.model, k),
+            model=cand_model,
+            extra_event={"endpoint": "fx"},
+            on_model_not_found=invalidate_catalog,
+        )
+        if response_obj is not None:
+            break
+        emit_event(
+            "fx_candidate_failed",
+            request_id=ctx.request_id,
+            model=cand_model,
+            endpoint="fx",
+        )
 
     if response_obj is None:
         raise HTTPException(
@@ -326,13 +413,14 @@ async def fx_chat(request: Request):
 
 async def _build_fx_stream(
     *,
-    chain,
+    attempts: list[tuple[list, str]],
     openai_request,
     cooldown: KeyCooldown,
     ctx: FailoverContext,
 ) -> StreamingResponse:
-    """Pre-flight the first chunk through the shared failover helper,
-    then re-frame Chat-shape deltas into fx AI-SDK stream parts.
+    """Walk the (scoped_chain, model) attempts through the shared
+    failover helper until one produces a first chunk, then re-frame
+    Chat-shape deltas into fx AI-SDK stream parts.
 
     Unlike the other streaming routes, the 200 + headers ship
     IMMEDIATELY and SSE keepalive comments flow while the failover
@@ -340,28 +428,41 @@ async def _build_fx_stream(
     time-to-first-byte budget and free-tier TTFB regularly exceeds it,
     which made every agent turn eat one or two visible retries; comment
     frames are fx's own hold-the-line mechanism (its e2e fake gateway
-    sends ``: hold-response``). The cost: a total pre-flight failure is
-    reported in-stream as an ``error`` part + ``finish`` with
-    ``unified: "error"`` instead of an HTTP 503 — fx classifies both as
-    a retryable provider failure."""
+    sends ``: hold-response``). Candidate fallbacks ride the same
+    mechanism, so a provider with no free inference right now costs
+    keepalive time, never a visible failure. The cost: a total
+    pre-flight failure is reported in-stream as an ``error`` part +
+    ``finish`` with ``unified: "error"`` instead of an HTTP 503 — fx
+    classifies both as a retryable provider failure."""
     from freeride.core.usage import Kind, extract_usage
 
     async def _emit_sse() -> AsyncIterator[bytes]:
-        preflight = asyncio.ensure_future(
-            try_stream_with_failover(
-                chain, openai_request, cooldown, ctx,
-                extra_event={"endpoint": "fx"},
-                on_model_not_found=invalidate_catalog,
-            )
-        )
-        while True:
-            try:
-                chosen, first_event, rest_or_err = await asyncio.wait_for(
-                    asyncio.shield(preflight), timeout=5.0
+        chosen, first_event, rest_or_err = None, None, None
+        for scoped_chain, cand_model in attempts:
+            openai_request.model = cand_model
+            preflight = asyncio.ensure_future(
+                try_stream_with_failover(
+                    scoped_chain, openai_request, cooldown, ctx,
+                    extra_event={"endpoint": "fx"},
+                    on_model_not_found=invalidate_catalog,
                 )
+            )
+            while True:
+                try:
+                    chosen, first_event, rest_or_err = await asyncio.wait_for(
+                        asyncio.shield(preflight), timeout=5.0
+                    )
+                    break
+                except asyncio.TimeoutError:
+                    yield b": preflight\n\n"
+            if chosen is not None:
                 break
-            except asyncio.TimeoutError:
-                yield b": preflight\n\n"
+            emit_event(
+                "fx_candidate_failed",
+                request_id=ctx.request_id,
+                model=cand_model,
+                endpoint="fx",
+            )
 
         if chosen is None:
             emit_event(

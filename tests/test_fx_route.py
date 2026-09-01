@@ -146,3 +146,71 @@ def test_sse_error_events_shape() -> None:
     assert frames[0].startswith('data: {"type":"error"')
     assert '"unified":"error"' in frames[1]
     assert frames[2] == "data: [DONE]"
+
+
+class _FakeProvider:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+def _catalog_entry(provider: str, model_id: str, *, tools: bool = True) -> dict:
+    return {
+        "id": model_id,
+        "available_providers": [provider],
+        "supported_parameters": ["tools"] if tools else [],
+    }
+
+
+def test_agent_candidates_pin_first_then_tools_capable_fallbacks(monkeypatch) -> None:
+    from freeride.server.routes.fx import _agent_candidates
+
+    monkeypatch.delenv("FREERIDE_FX_MODEL", raising=False)
+    monkeypatch.delenv("FREERIDE_FX_PROVIDER", raising=False)
+    monkeypatch.delenv("FREERIDE_CLAUDE_CODE_MODEL", raising=False)
+    monkeypatch.delenv("FREERIDE_CLAUDE_CODE_PROVIDER", raising=False)
+    providers = [_FakeProvider("openrouter"), _FakeProvider("groq"), _FakeProvider("huggingface")]
+    catalog = [
+        _catalog_entry("openrouter", "some/or-model:free"),
+        _catalog_entry("groq", "groq-chat-model", tools=False),
+        _catalog_entry("groq", "groq-tools-model"),
+        _catalog_entry("huggingface", "hf-text-model", tools=False),
+    ]
+    ladder = _agent_candidates(providers, catalog)
+    # Pin first; groq falls back to its first TOOLS-capable model; HF has
+    # none and is skipped — a tool-less fallback would silently break the
+    # agent loop.
+    assert ladder == [
+        ("openrouter", "openrouter/free"),
+        ("groq", "groq-tools-model"),
+    ]
+
+
+def test_agent_candidates_skip_unregistered_pin_and_respect_cap(monkeypatch) -> None:
+    from freeride.server.routes import fx as fx_module
+
+    monkeypatch.setenv("FREERIDE_FX_PROVIDER", "openrouter")
+    providers = [_FakeProvider(f"p{i}") for i in range(6)]  # pin provider absent
+    catalog = [_catalog_entry(f"p{i}", f"m{i}") for i in range(6)]
+    ladder = fx_module._agent_candidates(providers, catalog)
+    assert ladder == [(f"p{i}", f"m{i}") for i in range(fx_module._MAX_AGENT_CANDIDATES)]
+
+
+def test_agent_candidates_skips_health_broken_models(monkeypatch) -> None:
+    from freeride.server.routes import fx as fx_module
+
+    monkeypatch.delenv("FREERIDE_FX_MODEL", raising=False)
+    monkeypatch.delenv("FREERIDE_FX_PROVIDER", raising=False)
+    import freeride.core.model_health as mh
+
+    monkeypatch.setattr(mh, "load_cache", lambda: {"sentinel": True})
+    monkeypatch.setattr(
+        mh,
+        "is_model_known_broken",
+        lambda prov, mid, cache=None: mid == "groq-broken",
+    )
+    providers = [_FakeProvider("groq")]
+    catalog = [
+        _catalog_entry("groq", "groq-broken"),
+        _catalog_entry("groq", "groq-good"),
+    ]
+    assert fx_module._agent_candidates(providers, catalog) == [("groq", "groq-good")]
