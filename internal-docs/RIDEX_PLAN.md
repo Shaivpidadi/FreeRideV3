@@ -135,6 +135,13 @@ routes: `POST /v3/ai/language-model`, `GET /coding-agent/v1/models`):
   health cache — silently, under the streaming keepalives. Verified
   with a bogus pinned model: turns completed via groq with correct tool
   calls and no agent-visible failure.
+- **Ladder hardening (2026-09-01, from a real failed turn)**: the
+  tools ladder now backstops every fx request — concrete /models picks
+  and typed presets included (req_8533b4a7: an OpenRouter-only model
+  requested while OpenRouter cooled now answers via the next
+  provider). Mid-stream upstream death switches candidates silently
+  before any output, and after output ends the turn as an explicit
+  in-stream error (fx retries) instead of a fabricated clean finish.
 - Still open for later cuts: real crash-restart supervision
   (launchd/systemd units — today a crashed daemon restarts on the next
   ridex command), the public `ridex` rename (binary still builds as
