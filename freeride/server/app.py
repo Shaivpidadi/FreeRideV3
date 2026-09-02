@@ -22,7 +22,9 @@ from fastapi import FastAPI
 
 from freeride import __version__
 from freeride.core import telemetry
+from freeride.core.cooldown import KeyCooldown
 from freeride.core.provider import Provider
+from freeride.core.provider_env import all_keys_for
 
 
 _TELEMETRY_INTERVAL_SECONDS = 3600  # hourly
@@ -150,6 +152,16 @@ def create_app(
             "ok": True,
             "version": __version__,
             "providers": [p.name for p in app.state.providers],
+            # Providers that actually hold a usable (non-cooling) key.
+            # Registration alone doesn't imply keys — openrouter is
+            # always registered — so clients checking "can this gateway
+            # serve anything?" (the ridex launcher's key prompt) must
+            # read this list, not ``providers``.
+            "keyed_providers": [
+                p.name
+                for p in app.state.providers
+                if KeyCooldown().available_keys(p.name, all_keys_for(p.name))
+            ],
         }
 
     @app.post("/v1/_freeride/reload")
@@ -218,6 +230,7 @@ def create_app(
     from freeride.server.routes import chat as chat_route
     from freeride.server.routes import codex as codex_route
     from freeride.server.routes import embeddings as embeddings_route
+    from freeride.server.routes import fx as fx_route
     from freeride.server.routes import gemini as gemini_route
     from freeride.server.routes import messages as messages_route
     from freeride.server.routes import models as models_route
@@ -228,5 +241,6 @@ def create_app(
     app.include_router(messages_route.router)
     app.include_router(gemini_route.router)
     app.include_router(codex_route.router)
+    app.include_router(fx_route.router)
 
     return app

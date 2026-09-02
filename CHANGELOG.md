@@ -6,6 +6,44 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+## [0.4.0a22] — 2026-09-02
+
+The fx gateway dialect: FreeRide now natively serves ridex, our fork
+of vercel-labs/fx, making it a first-class coding-agent backend.
+
+### Added
+- `POST /v3/ai/language-model` + `GET /coding-agent/v1/models` —
+  the Vercel AI SDK language-model wire dialect fx's stock transport
+  speaks. Requests translate to Chat Completions; responses stream
+  back as AI SDK parts (`text-delta`, `tool-input-*`, `tool-call`,
+  `finish` with the unified-enum reason object). Model id rides the
+  `ai-language-model-id` header (`freeride/core/fx_translate.py`,
+  `fx_schema.py`, `server/routes/fx.py`).
+- **Universal fallback ladder**: every fx request carries an ordered
+  ladder of (provider, tools-capable model) candidates — the coding
+  pin or the concretely requested model first, then per-provider
+  fallbacks filtered by the `tools` capability and the model-health
+  cache. A provider with no free inference right now (rate limit,
+  dead key, retired model) is absorbed silently inside the same
+  response.
+- `/health` reports `keyed_providers` — providers that actually hold
+  a usable, non-cooling key (registration alone doesn't imply keys).
+
+### Fixed
+- fx streaming ships the 200 + headers immediately and holds the line
+  with `: preflight` SSE keepalive comments while failover waits for
+  the upstream's first token — free-tier TTFT no longer trips the
+  agent's first-byte timeout (previously 1–2 visible retries per
+  turn).
+- Mid-stream upstream death is reported honestly: before any output
+  the walk switches candidates silently; after output the turn ends
+  with an in-stream `error` part + `finish` `unified: "error"` so
+  the agent retries — no more fabricated clean finishes on truncated
+  answers.
+- `freeride serve`'s port probe binds with `SO_REUSEADDR`, so
+  stop-then-start no longer false-positives "already in use" on
+  TIME_WAIT sockets.
+
 ## [0.4.0a21] — 2026-08-21
 
 Fixes from the architecture review: cooldown no longer stores raw API
