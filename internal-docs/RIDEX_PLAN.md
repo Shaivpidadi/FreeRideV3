@@ -161,8 +161,10 @@ routes: `POST /v3/ai/language-model`, `GET /coding-agent/v1/models`):
   through the fx dialect). Fork releases **ridex-v0.1.0/v0.1.1** with
   4-platform tarballs (ridex-agent + launcher + skill, checksummed;
   macOS asset verified standalone). **One-command installer**
-  (fork install.sh; served at api.free-ride.xyz/ridex.sh once the
-  worker is deployed — `cd services/telemetry && npx wrangler deploy`).
+  (fork install.sh; **live at api.free-ride.xyz/ridex.sh** — worker
+  version 3e73fc90 deployed 2026-09-02, existing routes intact;
+  verified end-to-end from a fresh HOME:
+  `curl -sSL https://api.free-ride.xyz/ridex.sh | sh` → pong).
   **Supervised daemon**: launchd KeepAlive (kill -9 → back in ~2s) /
   systemd user unit, nohup fallback; fresh-HOME E2E surfaced and fixed
   three launchd bugs (absolute argv[0], HOME env, bootout race).
