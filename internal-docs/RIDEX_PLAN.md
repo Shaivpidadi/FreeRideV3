@@ -142,6 +142,19 @@ routes: `POST /v3/ai/language-model`, `GET /coding-agent/v1/models`):
   provider). Mid-stream upstream death switches candidates silently
   before any output, and after output ends the turn as an explicit
   in-stream error (fx retries) instead of a fabricated clean finish.
+- **Upstream recon (2026-09-02)**: vercel-labs/fx has an unmerged
+  `add-openai-base-url` branch ("Add direct OpenAI Responses
+  provider") plus open PRs #553/#168/#159 for an OpenAI-compatible
+  provider. It adds `.openai` to ProviderId with `OPENAI_BASE_URL`
+  accepting loopback HTTP and speaks the **Responses API** — which
+  FreeRide already serves at `/v1/responses` (the Codex shim). If it
+  merges: (a) stock fx could reach FreeRide with zero fork via
+  `OPENAI_BASE_URL=http://127.0.0.1:11343/v1` + dummy key — worth
+  verifying then; (b) our rebase will conflict in exactly the
+  provider-enum switch files (mechanical: their `.openai` arm next to
+  our `.freeride` arm). The fork remains worth keeping for the
+  FreeRide-default UX (no env setup, catalog, skill, launcher), but
+  the provider surface may shrink to near-zero.
 - Still open for later cuts: real crash-restart supervision
   (launchd/systemd units — today a crashed daemon restarts on the next
   ridex command), the public `ridex` rename (binary still builds as
