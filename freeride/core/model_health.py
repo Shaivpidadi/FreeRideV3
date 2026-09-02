@@ -57,6 +57,13 @@ logger = logging.getLogger(__name__)
 CACHE_PATH = Path.home() / ".freeride" / "cache" / "model_health.json"
 CACHE_TTL_SEC = 24 * 3600  # 24h — daily-cap providers (OR free) recover sooner
 
+# Runtime failure marks (written when a live request's ladder candidate
+# fails) expire much faster than audit verdicts: a rate-limited model is
+# usually back within minutes, and we only want to stop RE-TRYING it
+# first on every consecutive turn.
+RECENT_FAILURE_STATUS = "recent_failure"
+RECENT_FAILURE_TTL_SEC = 300
+
 
 # Statuses that should disqualify a model from auto-resolution. Note
 # that RATE_LIMIT is *included* — a rate-limited model isn't broken
@@ -167,7 +174,28 @@ def is_model_known_broken(
     e = cache.get(_key(provider, model_id))
     if e is None:
         return False
+    if e.status == RECENT_FAILURE_STATUS:
+        return time.time() - e.checked_at <= RECENT_FAILURE_TTL_SEC
     return e.status in _BROKEN_STATUSES
+
+
+def mark_recent_failure(provider: str, model_id: str) -> None:
+    """Record that a live request just failed on (provider, model_id).
+
+    Written from the fx route's ladder walk so the next few turns'
+    candidate ordering skips the pair instead of burning pre-flight
+    seconds re-trying it first. Self-expires after
+    ``RECENT_FAILURE_TTL_SEC`` (see :func:`is_model_known_broken`);
+    an audit verdict for the same pair is simply overwritten — the
+    next ``freeride audit-models`` run restores it.
+    """
+    results = load_cache()
+    results[_key(provider, model_id)] = HealthEntry(
+        status=RECENT_FAILURE_STATUS,
+        latency_ms=0,
+        checked_at=int(time.time()),
+    )
+    save_cache(results)
 
 
 # ─── audit core ───────────────────────────────────────────────────

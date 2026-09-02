@@ -91,13 +91,15 @@ def _record_candidate_failure(scoped_chain: list, model: str) -> None:
     """Count a ladder candidate failure in the local per-model stats
     (model_usage fail counter only — request/token totals stay
     success-only)."""
+    from freeride.core.model_health import mark_recent_failure
     from freeride.core.telemetry import record_request
 
-    record_request(
-        provider=getattr(scoped_chain[0][0], "name", None) if scoped_chain else None,
-        model=model,
-        success=False,
-    )
+    provider = getattr(scoped_chain[0][0], "name", None) if scoped_chain else None
+    record_request(provider=provider, model=model, success=False)
+    if provider:
+        # Deprioritize the pair for the next few minutes so consecutive
+        # turns don't re-burn pre-flight time on a cold candidate.
+        mark_recent_failure(provider, model)
 
 
 def _materialize_attempts(
@@ -175,10 +177,16 @@ def _agent_candidates(
     registered = {p.name for p in providers}
     pinned_model, pinned_provider = _agent_pin()
     ladder: list[tuple[str, str]] = []
-    if pinned_provider in registered:
-        ladder.append((pinned_provider, pinned_model))
-
     health_cache = load_cache()
+    pin_demoted = False
+    if pinned_provider in registered:
+        # A pin that just failed goes to the END of the ladder rather
+        # than being dropped: it stays the preferred route once its
+        # recent-failure mark expires.
+        if is_model_known_broken(pinned_provider, pinned_model, cache=health_cache):
+            pin_demoted = True
+        else:
+            ladder.append((pinned_provider, pinned_model))
     tools_by_provider: dict[str, str] = {}
     for entry in catalog:
         entry_providers = entry.get("available_providers") or []
@@ -200,6 +208,8 @@ def _agent_candidates(
             continue
         if p.name in tools_by_provider:
             ladder.append((p.name, tools_by_provider[p.name]))
+    if pin_demoted and len(ladder) < _MAX_AGENT_CANDIDATES:
+        ladder.append((pinned_provider, pinned_model))
     return ladder
 
 
