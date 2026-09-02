@@ -2,8 +2,8 @@
 
 ## Project Overview
 - **Project Name**: FreeRide
-- **Version**: 0.4.0a21
-- **Last Updated**: 2026-08-21
+- **Version**: 0.4.0a22
+- **Last Updated**: 2026-09-02
 - **Primary Purpose**: Local OpenAI-compatible gateway that failovers across free-tier LLM providers and translates Claude Code, Codex, and Gemini CLI wire protocols.
 - **Target Audience**: Developers running coding agents without paying vendor inference.
 
@@ -50,6 +50,7 @@ services/telemetry Cloudflare Worker + Neon schema
 - **Telemetry**: default-on aggregate beacon; opt out with `freeride telemetry off`
 
 ## Recent Changes Log
+- **2026-09-02**: fx gateway dialect (`/v3/ai/language-model`, `/coding-agent/v1/models`) serving the ridex agent; universal provider/model fallback ladder; keepalive streaming pre-flight; honest mid-stream errors; `/health.keyed_providers`; SO_REUSEADDR port probe
 - **2026-08-21**: Pin ruff to pre-0.16 E/F defaults; Windows tests set USERPROFILE for Path.home()
 - **2026-08-21**: `freeride keys` loads `~/.freeride/.env` (same as `doctor` / `serve`) so CLI status matches configured keys
 - **2026-08-21**: `NIM_API_KEY` accepted as alias for NVIDIA NIM (canonical remains `NVIDIA_API_KEY`)
