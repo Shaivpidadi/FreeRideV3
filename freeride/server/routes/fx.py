@@ -87,6 +87,19 @@ class _UpstreamStreamDied(Exception):
     """Upstream provider died mid-stream, after the first chunk."""
 
 
+def _record_candidate_failure(scoped_chain: list, model: str) -> None:
+    """Count a ladder candidate failure in the local per-model stats
+    (model_usage fail counter only — request/token totals stay
+    success-only)."""
+    from freeride.core.telemetry import record_request
+
+    record_request(
+        provider=getattr(scoped_chain[0][0], "name", None) if scoped_chain else None,
+        model=model,
+        success=False,
+    )
+
+
 def _materialize_attempts(
     chain: list,
     agent_candidates: list[tuple[str, str]],
@@ -407,6 +420,13 @@ async def fx_chat(request: Request):
             model=cand_model,
             endpoint="fx",
         )
+        from freeride.core.telemetry import record_request as _record
+
+        _record(
+            provider=getattr(scoped_chain[0][0], "name", None) if scoped_chain else None,
+            model=cand_model,
+            success=False,
+        )
 
     if response_obj is None:
         raise HTTPException(
@@ -432,6 +452,7 @@ async def fx_chat(request: Request):
         input_tokens=cd_usage.input,
         output_tokens=cd_usage.output,
         provider=chosen_provider.name if chosen_provider else None,
+        model=openai_request.model,
     )
 
     return JSONResponse(
@@ -502,6 +523,7 @@ async def _build_fx_stream(
                     phase="pre_first_chunk",
                     endpoint="fx",
                 )
+                _record_candidate_failure(scoped_chain, cand_model)
                 continue
 
             last_usage_box = [extract_usage(Kind.OPENAI, first_event.model_dump())]
@@ -553,6 +575,7 @@ async def _build_fx_stream(
                     phase="mid_stream_before_output",
                     endpoint="fx",
                 )
+                _record_candidate_failure(scoped_chain, cand_model)
                 continue
 
             final = last_usage_box[0]
@@ -571,6 +594,7 @@ async def _build_fx_stream(
                 input_tokens=final.input,
                 output_tokens=final.output,
                 provider=chosen.name,
+                model=cand_model,
             )
             return
 

@@ -206,6 +206,8 @@ def record_request(
     output_tokens: int = 0,
     tokens: int | None = None,
     provider: str | None = None,
+    model: str | None = None,
+    success: bool = True,
 ) -> None:
     """Bump the local counters that the beacon will ship.
 
@@ -228,6 +230,13 @@ def record_request(
 
     * ``provider`` — the resolved provider that served the request, added
       to ``providers_active`` (deduplicated).
+
+    * ``model`` / ``success`` — when both a provider and model are known,
+      a per-``provider::model`` ok/fail counter accumulates under
+      ``model_usage``. LOCAL-ONLY: build_payload does not ship it — the
+      beacon schema stays aggregate-only. Failed requests update only
+      ``model_usage`` (request_count and token totals stay success-only,
+      preserving their existing meaning).
 
     Local-only — does NOT involve any network call. The beacon ships
     these later, on its own schedule, only when telemetry is opted in. A
@@ -262,11 +271,25 @@ def record_request(
         if provider:
             providers_set.add(provider)
 
-        existing["tokens_served"] = prev_tokens + delta_total
-        existing["input_tokens"] = prev_input + input_tokens
-        existing["output_tokens"] = prev_output + output_tokens
-        existing["request_count"] = prev_count + 1
+        if success:
+            existing["tokens_served"] = prev_tokens + delta_total
+            existing["input_tokens"] = prev_input + input_tokens
+            existing["output_tokens"] = prev_output + output_tokens
+            existing["request_count"] = prev_count + 1
         existing["providers_active"] = sorted(providers_set)
+
+        if provider and model:
+            usage = existing.get("model_usage")
+            if not isinstance(usage, dict):
+                usage = {}
+            key = f"{provider}::{model}"
+            entry = usage.get(key)
+            if not isinstance(entry, dict):
+                entry = {"ok": 0, "fail": 0}
+            field = "ok" if success else "fail"
+            entry[field] = int(entry.get(field, 0) or 0) + 1
+            usage[key] = entry
+            existing["model_usage"] = usage
         # Preserve uptime_hours and any other field a future writer adds.
         write_json_atomic(STATS_FILE, existing)
     except OSError as e:
