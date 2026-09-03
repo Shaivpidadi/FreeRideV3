@@ -90,16 +90,41 @@ class _UpstreamStreamDied(Exception):
 def _record_candidate_failure(scoped_chain: list, model: str) -> None:
     """Count a ladder candidate failure in the local per-model stats
     (model_usage fail counter only — request/token totals stay
-    success-only)."""
+    success-only) and demote every provider that failed on this model.
+
+    A candidate attempt can span several providers (the primary
+    explicit-model attempt walks the FULL chain). All of them just
+    failed on ``model``, so all of them get marked — otherwise the next
+    turn re-tries the same dead model on the un-demoted providers.
+    """
     from freeride.core.model_health import mark_recent_failure
     from freeride.core.telemetry import record_request
 
-    provider = getattr(scoped_chain[0][0], "name", None) if scoped_chain else None
-    record_request(provider=provider, model=model, success=False)
-    if provider:
-        # Deprioritize the pair for the next few minutes so consecutive
-        # turns don't re-burn pre-flight time on a cold candidate.
-        mark_recent_failure(provider, model)
+    provider_names = [
+        name
+        for link in (scoped_chain or [])
+        if (name := getattr(link[0], "name", None))
+    ]
+    # Telemetry: attribute the failure to the first provider (the one the
+    # attempt led with) so the per-model fail counter isn't multiplied by
+    # chain length.
+    record_request(
+        provider=provider_names[0] if provider_names else None,
+        model=model,
+        success=False,
+    )
+    # Deprioritize every failed pair for the next few minutes so
+    # consecutive turns don't re-burn pre-flight time on a cold candidate.
+    for name in provider_names:
+        mark_recent_failure(name, model)
+
+
+async def _record_candidate_failure_async(scoped_chain: list, model: str) -> None:
+    """``_record_candidate_failure`` off the event loop. The failure path
+    lives inside the streaming SSE generator, and the mark does blocking
+    cache-file I/O; running it in a thread keeps other in-flight streams'
+    keepalives from stalling."""
+    await asyncio.to_thread(_record_candidate_failure, scoped_chain, model)
 
 
 def _materialize_attempts(
@@ -430,13 +455,10 @@ async def fx_chat(request: Request):
             model=cand_model,
             endpoint="fx",
         )
-        from freeride.core.telemetry import record_request as _record
-
-        _record(
-            provider=getattr(scoped_chain[0][0], "name", None) if scoped_chain else None,
-            model=cand_model,
-            success=False,
-        )
+        # Same demotion the streaming path applies: record the fail AND
+        # mark the pair recently-failed so the next non-streaming turn
+        # doesn't lead with the same dead candidate.
+        await _record_candidate_failure_async(scoped_chain, cand_model)
 
     if response_obj is None:
         raise HTTPException(
@@ -508,116 +530,143 @@ async def _build_fx_stream(
 
     async def _emit_sse() -> AsyncIterator[bytes]:
         emitted_semantic = False
-        for scoped_chain, cand_model in attempts:
-            openai_request.model = cand_model
-            preflight = asyncio.ensure_future(
-                try_stream_with_failover(
-                    scoped_chain, openai_request, cooldown, ctx,
-                    extra_event={"endpoint": "fx"},
-                    on_model_not_found=invalidate_catalog,
-                )
-            )
-            while True:
-                try:
-                    chosen, first_event, rest_or_err = await asyncio.wait_for(
-                        asyncio.shield(preflight), timeout=5.0
+        # fx must receive exactly one response-metadata frame per stream.
+        # stream_chat_to_fx emits one at the top of every candidate, so on
+        # a mid-stream failover (candidate died after metadata, before any
+        # semantic output) the second candidate's metadata would be a
+        # duplicate — some SSE consumers reject that. Emit the first, drop
+        # the rest.
+        metadata_sent = False
+        # The in-flight pre-flight task, tracked so a client disconnect
+        # (which cancels this generator) can cancel the shielded task in
+        # `finally` instead of orphaning it with an open upstream stream.
+        preflight: asyncio.Future | None = None
+        try:
+            for scoped_chain, cand_model in attempts:
+                openai_request.model = cand_model
+                preflight = asyncio.ensure_future(
+                    try_stream_with_failover(
+                        scoped_chain, openai_request, cooldown, ctx,
+                        extra_event={"endpoint": "fx"},
+                        on_model_not_found=invalidate_catalog,
                     )
-                    break
-                except asyncio.TimeoutError:
-                    yield b": preflight\n\n"
-            if chosen is None:
-                emit_event(
-                    "fx_candidate_failed",
-                    request_id=ctx.request_id,
-                    model=cand_model,
-                    phase="pre_first_chunk",
-                    endpoint="fx",
                 )
-                _record_candidate_failure(scoped_chain, cand_model)
-                continue
-
-            last_usage_box = [extract_usage(Kind.OPENAI, first_event.model_dump())]
-
-            async def _merged_chunks(
-                first=first_event, rest=rest_or_err, provider=chosen
-            ) -> AsyncIterator:
-                yield first
-                try:
-                    async for evt in rest:
-                        u = extract_usage(Kind.OPENAI, evt.model_dump())
-                        if u.has_any:
-                            last_usage_box[0] = u
-                        yield evt
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        "fx: mid-stream upstream error after first chunk: %s", e
-                    )
+                while True:
+                    try:
+                        chosen, first_event, rest_or_err = await asyncio.wait_for(
+                            asyncio.shield(preflight), timeout=5.0
+                        )
+                        break
+                    except asyncio.TimeoutError:
+                        yield b": preflight\n\n"
+                if chosen is None:
                     emit_event(
-                        "request_mid_stream_error",
+                        "fx_candidate_failed",
                         request_id=ctx.request_id,
-                        provider=provider.name,
-                        error=str(e)[:200],
+                        model=cand_model,
+                        phase="pre_first_chunk",
                         endpoint="fx",
                     )
-                    raise _UpstreamStreamDied(str(e)[:200]) from e
+                    await _record_candidate_failure_async(scoped_chain, cand_model)
+                    continue
 
-            try:
-                async for frame in stream_chat_to_fx(
-                    _merged_chunks(), resolved_model=cand_model
-                ):
-                    if not frame.startswith(b'data: {"type":"response-metadata"'):
-                        emitted_semantic = True
-                    yield frame
-            except _UpstreamStreamDied as died:
-                if emitted_semantic:
-                    # Bytes can't be unshipped. Ending the turn as an
-                    # explicit error makes fx retry it; a fabricated
-                    # clean finish would make the agent trust a
-                    # truncated answer.
-                    yield _sse_error_events(
-                        f"upstream provider failed mid-stream: {died}"
+                last_usage_box = [extract_usage(Kind.OPENAI, first_event.model_dump())]
+
+                async def _merged_chunks(
+                    first=first_event, rest=rest_or_err, provider=chosen
+                ) -> AsyncIterator:
+                    yield first
+                    try:
+                        async for evt in rest:
+                            u = extract_usage(Kind.OPENAI, evt.model_dump())
+                            if u.has_any:
+                                last_usage_box[0] = u
+                            yield evt
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "fx: mid-stream upstream error after first chunk: %s", e
+                        )
+                        emit_event(
+                            "request_mid_stream_error",
+                            request_id=ctx.request_id,
+                            provider=provider.name,
+                            error=str(e)[:200],
+                            endpoint="fx",
+                        )
+                        raise _UpstreamStreamDied(str(e)[:200]) from e
+
+                try:
+                    async for frame in stream_chat_to_fx(
+                        _merged_chunks(), resolved_model=cand_model
+                    ):
+                        is_metadata = frame.startswith(
+                            b'data: {"type":"response-metadata"'
+                        )
+                        if is_metadata:
+                            # One metadata frame per stream: drop a second
+                            # candidate's after a mid-stream failover.
+                            if metadata_sent:
+                                continue
+                            metadata_sent = True
+                        else:
+                            emitted_semantic = True
+                        yield frame
+                except _UpstreamStreamDied as died:
+                    if emitted_semantic:
+                        # Bytes can't be unshipped. Ending the turn as an
+                        # explicit error makes fx retry it; a fabricated
+                        # clean finish would make the agent trust a
+                        # truncated answer.
+                        yield _sse_error_events(
+                            f"upstream provider failed mid-stream: {died}"
+                        )
+                        return
+                    emit_event(
+                        "fx_candidate_failed",
+                        request_id=ctx.request_id,
+                        model=cand_model,
+                        phase="mid_stream_before_output",
+                        endpoint="fx",
                     )
-                    return
+                    await _record_candidate_failure_async(scoped_chain, cand_model)
+                    continue
+
+                final = last_usage_box[0]
                 emit_event(
-                    "fx_candidate_failed",
+                    "request_complete",
                     request_id=ctx.request_id,
-                    model=cand_model,
-                    phase="mid_stream_before_output",
+                    provider=chosen.name,
+                    streaming=True,
                     endpoint="fx",
+                    input_tokens=final.input,
+                    output_tokens=final.output,
                 )
-                _record_candidate_failure(scoped_chain, cand_model)
-                continue
+                from freeride.core.telemetry import record_request
 
-            final = last_usage_box[0]
+                record_request(
+                    input_tokens=final.input,
+                    output_tokens=final.output,
+                    provider=chosen.name,
+                    model=cand_model,
+                )
+                return
+
             emit_event(
-                "request_complete",
+                "request_failed",
                 request_id=ctx.request_id,
-                provider=chosen.name,
-                streaming=True,
+                phase="pre_first_chunk",
+                tried=[t.provider for t in ctx.tried],
                 endpoint="fx",
-                input_tokens=final.input,
-                output_tokens=final.output,
             )
-            from freeride.core.telemetry import record_request
-
-            record_request(
-                input_tokens=final.input,
-                output_tokens=final.output,
-                provider=chosen.name,
-                model=cand_model,
+            yield _sse_error_events(
+                "All providers exhausted without producing a streaming response."
             )
-            return
-
-        emit_event(
-            "request_failed",
-            request_id=ctx.request_id,
-            phase="pre_first_chunk",
-            tried=[t.provider for t in ctx.tried],
-            endpoint="fx",
-        )
-        yield _sse_error_events(
-            "All providers exhausted without producing a streaming response."
-        )
+        finally:
+            # Client disconnect cancels this generator; the shielded
+            # pre-flight would otherwise keep running detached, holding an
+            # open upstream stream. Cancel it if it's still in flight.
+            if preflight is not None and not preflight.done():
+                preflight.cancel()
 
     # Headers ship before the pre-flight resolves, so the chosen
     # provider can't be stamped here; telemetry has it via
