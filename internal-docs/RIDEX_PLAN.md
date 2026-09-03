@@ -178,6 +178,18 @@ routes: `POST /v3/ai/language-model`, `GET /coding-agent/v1/models`):
   failed pin demotes to the ladder's end. **Rename completed** for all
   user-visible text (314 literals; model-facing tool contracts kept
   byte-exact).
+- **Fork CI fully green (2026-09-02)**: nine rounds of rename/default
+  fallout triage ended with BOTH workflows passing — main CI (build,
+  4 SDK surfaces, deterministic e2e, cross-compiles) and Full CI
+  (4-platform sharded tmux e2e). Notable real fixes along the way:
+  gateway_only gave the wasm/SDK surfaces an empty freeride bundle
+  (dead on boot); FX_DEFAULT_PROVIDER runtime override lets upstream
+  suites run gateway-pinned while the product defaults to freeride;
+  non-interactive CLI paths now publish the transport provider
+  (settings/env provider choices actually route); FX_AUTO_UPGRADE
+  became tri-state ('1' force-enables — upstream tests relied on the
+  old default-on); model-facing prompt/tool text is kept byte-exact
+  upstream. Releases: ridex-v0.1.2, ridex-v0.1.3 (green tree).
 - Deferred, with reasons: `~/.fx` → `~/.ridex` state-dir migration
   (a dozen path sites bypass profile_paths.zig; flipping now would
   split user state across two dirs — centralize first), RIDEX_* env
