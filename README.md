@@ -1,48 +1,31 @@
 # FreeRide
 
-**The OpenAI-compatible gateway for every free-tier provider.**
+**Your own coding agent, running entirely on free-tier inference.**
 
-<img width="800" height="468" alt="FreeRide failing over from an OpenRouter 429 to Groq in 42ms; the agent never knew" src="docs/assets/freeride-failover.gif" />
+```bash
+curl -sSL https://api.free-ride.xyz/ridex.sh | sh
+ridex
+```
 
-One local endpoint that fans out across **OpenRouter, Groq, NVIDIA NIM, HuggingFace, Cerebras, Cloudflare Workers AI**, and **your own Ollama**. Hit a rate limit, fail over to the next provider. Your agent never knows.
-
-Also wraps **Claude Code**, **OpenAI Codex**, and **Google Gemini CLI** — run all three without paying any of their vendors.
+That's the whole setup. **ridex** is a fast, native coding agent (our fork of [vercel-labs/fx](https://github.com/vercel-labs/fx), Apache-2.0) that reads files, edits code, and runs commands — and every one of its model calls is served by **FreeRide**, a local gateway that fans out across free-tier providers: **OpenRouter, Groq, NVIDIA NIM, HuggingFace, Cerebras, Cloudflare Workers AI**, and **your own Ollama**. No vendor subscription, no Vercel account, no cloud middleman — your machine talks to the providers directly with your own free keys.
 
 > **102M+ tokens served in 35 days. $0 spent.**
 > Routed through community free-tier keys via this gateway.
 > Daily traffic: [free-ride.xyz/models](https://free-ride.xyz/models)
 
-```bash
-curl -sSL https://api.free-ride.xyz/install.sh | sh
-freeride run claude    # or: freeride run codex / freeride run gemini
-```
-
-That's it. No accounts, no subscriptions, no FreeRide cloud. Local-first, BYO keys, your machine talks to providers directly.
+<img width="800" height="468" alt="FreeRide failing over from an OpenRouter 429 to Groq in 42ms; the agent never knew" src="docs/assets/freeride-failover.gif" />
 
 ---
 
-## Install
-
-**macOS / Linux:**
+## Quick start
 
 ```bash
-curl -sSL https://api.free-ride.xyz/install.sh | sh
+curl -sSL https://api.free-ride.xyz/ridex.sh | sh   # installs ridex + the FreeRide gateway
+ridex ask "reply with the single word pong"          # first run prompts for a key if you have none
+ridex                                                # full interactive agent
 ```
 
-**Windows (PowerShell):**
-
-```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://api.free-ride.xyz/install.ps1 | iex"
-```
-
-The installer picks up `uv`, then `pipx`, then plain `pip` — whichever is on your system. Or [install from source](docs/install.md).
-
-```bash
-freeride init           # interactive — collects keys, writes ~/.freeride/.env
-freeride serve          # gateway listens on localhost:11343
-```
-
-**Get keys (any one is enough; more = better failover):**
+**Keys** (any one is enough; more = better failover — all stored locally in `~/.freeride/.env`):
 
 | Provider | Free tier | Get a key |
 |---|---|---|
@@ -54,58 +37,45 @@ freeride serve          # gateway listens on localhost:11343
 | Cloudflare Workers AI | 10K neurons/day | [dash.cloudflare.com](https://dash.cloudflare.com) |
 | Ollama (local) | no quota | install from [ollama.com](https://ollama.com) |
 
+macOS and Linux (arm64 + x86_64). Windows: gateway only for now. Prefer the pieces separately? Agent releases live at [github.com/Shaivpidadi/ridex](https://github.com/Shaivpidadi/ridex); the gateway alone installs with `curl -sSL https://api.free-ride.xyz/install.sh | sh` or `uv tool install freeride-gateway`.
+
+## Why this doesn't fall over
+
+Free tiers are flaky — that's the whole reason FreeRide exists. The stack is built so a single provider having a bad minute never reaches you:
+
+- **The gateway is a supervised daemon.** The installer registers it with launchd (macOS) or a systemd user unit (Linux); a crash restarts it in seconds. `ridex start|stop|restart|doctor` manage it — you never run a second terminal, and `ridex stop` sticks until you say otherwise.
+- **Every request carries a fallback ladder.** If the serving provider rate-limits, runs out of free inference, or retires the model mid-session, the gateway silently retries on the next provider's best tool-capable model — inside the same response. Failed candidates are remembered for a few minutes so consecutive turns don't re-pay the cost.
+- **The agent can diagnose its own plumbing.** ridex ships with a `freeride` skill: when requests fail it runs the (pre-approved, read-only) diagnostics — `freeride doctor`, `freeride keys`, the health probe — reads the structured error taxonomy, and tells you the exact fix.
+- **Tool calls are non-negotiable.** The default `freeride/coding` route pins to models proven to emit correct tool calls; providers whose catalogs can't do tools are never handed agent traffic.
+
+Inside a session, `/model` switches routing per request: `freeride/coding` (default), `freeride/fast` (Groq-first, low TTFT), `freeride/quality` (OpenRouter-first, widest catalog), `freeride/free` / `auto` (pure smart-routing), or any concrete model id from `ridex models`.
+
 ---
 
-## Run a coding agent — free
+## Use FreeRide with anything that speaks OpenAI
 
-Three of the major coding CLIs ship a `freeride run` wrapper that works with **no per-vendor key** and **no login**. The gateway translates between each CLI's native wire protocol and our routing layer; you get the polished agent UX of each CLI, paid for entirely by free-tier providers.
-
-### Claude Code
+The agent is optional — FreeRide is also a plain OpenAI-compatible gateway on `localhost:11343`:
 
 ```bash
-freeride run claude
-```
+freeride serve   # (the ridex installer already runs it as a daemon)
 
-Inside the session, switch routing per request via `/model`:
-
-| You type | What happens |
-|---|---|
-| `/model claude-opus-4-7` | Your Pro/Max subscription answers (passthrough to api.anthropic.com) — only if `claude login` has run |
-| `/model freeride/free` | Free providers answer; smart-router picks the model |
-| `/model freeride/fast` | Free; prefers Groq (low TTFT) |
-| `/model freeride/quality` | Free; prefers OpenRouter (widest catalog) |
-| `/model freeride/coding` | Free; pinned to a code-tuned model that reliably emits tool_use blocks |
-
-Full guide: [`docs/agents/claude-code.md`](docs/agents/claude-code.md).
-
-### OpenAI Codex
-
-```bash
-freeride run codex
-```
-
-Whatever model the CLI picks (`gpt-5-codex`, `gpt-5`, etc.) is routed to a free upstream provider. The gateway translates the Responses-API wire format (with full SSE event protocol — `response.output_item.added` → `output_text.delta` → `output_item.done` → `response.completed`) so the CLI parses everything natively.
-
-Note: codex uses `bubblewrap` for shell-tool sandboxing; on systems without it, file/shell tool calls fail (the model still works). Full guide: [`docs/agents/codex.md`](docs/agents/codex.md).
-
-### Google Gemini CLI
-
-```bash
-freeride run gemini
-```
-
-Any `gemini-*` model name routes to a free upstream provider. Translator handles Google's `{contents, tools, generationConfig}` shape both directions. Full guide: [`docs/agents/gemini.md`](docs/agents/gemini.md).
-
-### Any other agent / SDK
-
-```bash
-# Aider / Continue.dev / hermes / your-own-tool — anything that speaks OpenAI:
-freeride bind aider
-freeride bind continue
-# or just point it at the gateway directly:
 OPENAI_API_BASE=http://localhost:11343/v1
-OPENAI_API_KEY=any-string-here
+OPENAI_API_KEY=any-string-here      # inbound auth is ignored; your real keys stay server-side
 ```
+
+It also natively serves the **Anthropic** (`/v1/messages`), **OpenAI Responses** (`/v1/responses`), **Gemini** (`/v1beta/models/*:generateContent`), and **fx gateway** (`/v3/ai/language-model`) wire protocols, plus `/v1/embeddings` — so most tools work unmodified.
+
+### Wrap the big-vendor CLIs
+
+Prefer Claude Code, OpenAI Codex, or Gemini CLI's UX? `freeride run` points them at the gateway — no per-vendor key, no login:
+
+```bash
+freeride run claude    # /model freeride/coding etc. inside the session
+freeride run codex     # Responses-API wire format translated natively
+freeride run gemini    # Google's {contents, tools, generationConfig} shape both ways
+```
+
+Guides: [`docs/agents/claude-code.md`](docs/agents/claude-code.md) · [`docs/agents/codex.md`](docs/agents/codex.md) · [`docs/agents/gemini.md`](docs/agents/gemini.md). For Aider, Continue.dev, and friends: `freeride bind <agent>` ([`docs/agents/binders.md`](docs/agents/binders.md)).
 
 ---
 
@@ -119,7 +89,7 @@ Per-request the chain is **(provider, key)**, sorted by recent health:
 4. **5xx / TIMEOUT** → next pair.
 5. First successful response — stamp `X-FreeRide-Provider` + `X-FreeRide-Request-Id` headers and ship.
 
-If every pair fails, you get a structured 503 with a per-provider breakdown so debugging is one log line, not five round-trips. Mid-stream errors after the first chunk shipped are logged but don't break the client (we can't un-ship bytes).
+Agent traffic gets a second layer on top: the **candidate ladder** walks (provider, tool-capable model) pairs, so even a model that exists on only one cooling provider falls through to a working equivalent elsewhere — silently, under streaming keepalives. If every pair fails, you get a structured 503 with a per-provider breakdown so debugging is one log line, not five round-trips. An upstream dying mid-stream before any output switches candidates invisibly; after output the turn ends as an explicit error (agents retry it) rather than a silently truncated answer.
 
 **Smart routing for `model: "auto"`:** the resolver scores every free model in the catalog by health × popularity (from the public [models leaderboard](https://free-ride.xyz/models)) and picks the best one. Run `freeride audit-models` once after install to cache health probes locally so the first real request isn't a cold start.
 
@@ -160,8 +130,8 @@ The router tries them in health order. A 429 on one key cools it for the next 60
 ## See what the gateway is doing
 
 ```bash
+ridex doctor                   # agent binary + daemon + key status in one report
 freeride doctor                # static checks: keys, ports, /etc/hosts, common gotchas
-freeride doctor --claude-code  # the same + Claude-Code-specific probes
 freeride audit-models          # probe every free model on every key; cache the results
 freeride bench                 # measure p50/p95/tok-s per provider
 ```
@@ -172,7 +142,7 @@ Tail live events:
 tail -f ~/.freeride/events.jsonl
 ```
 
-Each line is a JSON event: routing decisions, provider attempts, response statuses, mid-stream errors. Same schema the marketing site reads to render the [live token counter](https://free-ride.xyz) and [provider leaderboard](https://free-ride.xyz/models).
+Each line is a JSON event: routing decisions, provider attempts, ladder fallbacks, response statuses, mid-stream errors. Same schema the marketing site reads to render the [live token counter](https://free-ride.xyz) and [provider leaderboard](https://free-ride.xyz/models).
 
 ---
 
@@ -192,12 +162,19 @@ The aggregate is what powers [free-ride.xyz/models](https://free-ride.xyz/models
 ## Commands
 
 ```
+ridex                   interactive coding agent (auto-starts the gateway daemon)
+ridex ask <prompt>      one noninteractive agent request
+ridex models            list available models
+ridex start|stop|restart  manage the gateway daemon (stop sticks)
+ridex doctor            agent + daemon + key health report
+
 freeride init           interactive setup wizard — prompts for keys, writes ~/.freeride/.env
-freeride serve          start the gateway on :11343
-freeride run <cli>      wrap a CLI (claude / codex / gemini / anything) — points it at the gateway
+freeride serve          start the gateway on :11343 (the daemon runs this for you)
+freeride run <cli>      wrap a CLI (claude / codex / gemini) — points it at the gateway
 freeride bind <agent>   write the agent's config so it uses the gateway permanently
 freeride doctor         pre-flight checks: keys, ports, hosts file, common gotchas
 freeride keys           which provider keys are available vs cooling
+freeride reload         hot-reload provider keys on a running gateway
 freeride audit-models   probe every free model; cache health locally
 freeride bench          measure p50/p95/tok-s per provider
 freeride list           list available free models
@@ -208,7 +185,10 @@ freeride telemetry      manage the hourly aggregate beacon
 
 ## Docs
 
-- **Agents**
+- **The agent**
+  - [github.com/Shaivpidadi/ridex](https://github.com/Shaivpidadi/ridex) — the ridex agent (fork of vercel-labs/fx)
+  - [`internal-docs/RIDEX_PLAN.md`](internal-docs/RIDEX_PLAN.md) — architecture decisions + verification log
+- **Wrapped CLIs**
   - [`docs/agents/claude-code.md`](docs/agents/claude-code.md) — Claude Code setup, `/model` modes, troubleshooting
   - [`docs/agents/codex.md`](docs/agents/codex.md) — OpenAI Codex setup, bwrap notes, model selection
   - [`docs/agents/gemini.md`](docs/agents/gemini.md) — Google Gemini CLI setup, auth flow, model selection
@@ -219,7 +199,7 @@ freeride telemetry      manage the hourly aggregate beacon
   - [`docs/providers/nvidia_nim.md`](docs/providers/nvidia_nim.md) — NVIDIA NIM specifics
 - **Architecture**
   - [`docs/architecture/failover.md`](docs/architecture/failover.md) — failover chain, cooldown, health tracking
-  - [`docs/architecture/translators.md`](docs/architecture/translators.md) — how the Anthropic / Google / OpenAI-Responses translators work
+  - [`docs/architecture/translators.md`](docs/architecture/translators.md) — how the Anthropic / Google / OpenAI-Responses / fx translators work
 - **Other**
   - [`CONTRIBUTING.md`](CONTRIBUTING.md) — adding a provider, a CLI wrapper, or a binder
   - [`SECURITY.md`](SECURITY.md) — reporting vulnerabilities
@@ -228,4 +208,4 @@ freeride telemetry      manage the hourly aggregate beacon
 
 ## License
 
-MIT.
+MIT. The ridex agent is a fork of [vercel-labs/fx](https://github.com/vercel-labs/fx) (Apache-2.0); its license and notices ship with every release tarball.
