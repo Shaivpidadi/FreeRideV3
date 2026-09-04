@@ -148,6 +148,7 @@ def create_app(
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
+        _cooldown = KeyCooldown()
         return {
             "ok": True,
             "version": __version__,
@@ -157,10 +158,14 @@ def create_app(
             # always registered — so clients checking "can this gateway
             # serve anything?" (the ridex launcher's key prompt) must
             # read this list, not ``providers``.
+            # One KeyCooldown for the whole check: its __init__ reads (and
+            # may migrate) the cooldown file, so building one per provider
+            # turned a health poll into N disk reads. The ridex launcher
+            # polls this endpoint, so keep it to a single read.
             "keyed_providers": [
                 p.name
                 for p in app.state.providers
-                if KeyCooldown().available_keys(p.name, all_keys_for(p.name))
+                if _cooldown.available_keys(p.name, all_keys_for(p.name))
             ],
         }
 

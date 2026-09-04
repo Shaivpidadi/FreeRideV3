@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -56,6 +57,13 @@ logger = logging.getLogger(__name__)
 
 CACHE_PATH = Path.home() / ".freeride" / "cache" / "model_health.json"
 CACHE_TTL_SEC = 24 * 3600  # 24h — daily-cap providers (OR free) recover sooner
+
+# Runtime failure marks (written when a live request's ladder candidate
+# fails) expire much faster than audit verdicts: a rate-limited model is
+# usually back within minutes, and we only want to stop RE-TRYING it
+# first on every consecutive turn.
+RECENT_FAILURE_STATUS = "recent_failure"
+RECENT_FAILURE_TTL_SEC = 300
 
 
 # Statuses that should disqualify a model from auto-resolution. Note
@@ -125,13 +133,31 @@ def load_cache() -> dict[str, HealthEntry]:
         return {}
 
 
-def save_cache(results: dict[str, HealthEntry]) -> None:
+def _read_as_of() -> float | None:
+    """The persisted ``as_of`` stamp, or None if unreadable. Used by
+    ``mark_recent_failure`` to preserve the audit clock instead of
+    resetting it on every live failure."""
+    try:
+        raw = json.loads(CACHE_PATH.read_text())
+        as_of = raw.get("as_of")
+        return as_of if isinstance(as_of, (int, float)) else None
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
+def save_cache(results: dict[str, HealthEntry], *, as_of: float | None = None) -> None:
     """Persist the health cache atomically (write-then-rename so a
-    partial write never leaves the file in a half-parsed state)."""
+    partial write never leaves the file in a half-parsed state).
+
+    ``as_of`` defaults to now (an audit run legitimately restarts the
+    TTL clock). ``mark_recent_failure`` passes the existing stamp so a
+    burst of live failures can't keep refreshing audit verdicts past
+    their intended 24h expiry.
+    """
     try:
         CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         payload = {
-            "as_of": int(time.time()),
+            "as_of": int(as_of if as_of is not None else time.time()),
             "ttl_sec": CACHE_TTL_SEC,
             "results": {
                 k: {
@@ -167,7 +193,40 @@ def is_model_known_broken(
     e = cache.get(_key(provider, model_id))
     if e is None:
         return False
+    if e.status == RECENT_FAILURE_STATUS:
+        return time.time() - e.checked_at <= RECENT_FAILURE_TTL_SEC
     return e.status in _BROKEN_STATUSES
+
+
+# Serializes the load→modify→save in mark_recent_failure so two
+# concurrent agent turns (run via asyncio.to_thread off the event loop)
+# can't read the same cache and clobber each other's failure marks.
+# Single-process daemon, so an in-process lock is sufficient.
+_MARK_LOCK = threading.Lock()
+
+
+def mark_recent_failure(provider: str, model_id: str) -> None:
+    """Record that a live request just failed on (provider, model_id).
+
+    Written from the fx route's ladder walk so the next few turns'
+    candidate ordering skips the pair instead of burning pre-flight
+    seconds re-trying it first. Self-expires after
+    ``RECENT_FAILURE_TTL_SEC`` (see :func:`is_model_known_broken`);
+    an audit verdict for the same pair is simply overwritten — the
+    next ``freeride audit-models`` run restores it.
+
+    Preserves the file's ``as_of`` so a burst of failures doesn't keep
+    refreshing audit verdicts past their TTL, and holds a lock across
+    the read-modify-write so concurrent turns merge instead of clobber.
+    """
+    with _MARK_LOCK:
+        results = load_cache()
+        results[_key(provider, model_id)] = HealthEntry(
+            status=RECENT_FAILURE_STATUS,
+            latency_ms=0,
+            checked_at=int(time.time()),
+        )
+        save_cache(results, as_of=_read_as_of())
 
 
 # ─── audit core ───────────────────────────────────────────────────

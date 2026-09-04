@@ -6,6 +6,32 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+## [0.4.0a23] — 2026-09-04
+
+Hardening on the fx/agent path from live use and code review.
+
+### Added
+- The fallback ladder learns from live failures: a failed candidate
+  writes a short-TTL ``recent_failure`` mark into the model-health
+  cache, so consecutive turns stop re-paying pre-flight time on a cold
+  (provider, model) pair; a recently-failed agent pin demotes to the
+  end of the ladder instead of being dropped.
+- Local per-(provider, model) ok/fail counters under ``model_usage``
+  in ``~/.freeride/stats.json``. Local-only — the telemetry beacon
+  payload is unchanged.
+- The Cloudflare worker serves the ridex installer at
+  ``GET /ridex.sh``.
+
+### Fixed
+- fx streaming review findings: exactly one ``response-metadata``
+  frame per turn (a mid-stream candidate switch previously emitted a
+  second one, which strict SSE consumers can reject); client
+  disconnect during pre-flight no longer orphans the shielded failover
+  task; ``/health`` builds one ``KeyCooldown`` for the whole check
+  instead of one per provider.
+- ``sync_dbs`` drops its stale temp table before recreate (Neon
+  pooler connection reuse).
+
 ## [0.4.0a22] — 2026-09-02
 
 The fx gateway dialect: FreeRide now natively serves ridex, our fork

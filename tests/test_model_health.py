@@ -204,3 +204,54 @@ def test_score_uses_only_healthy_providers_when_cache_present() -> None:
         health_cache=cache,
     )
     assert score == pytest.approx(10.0)
+
+
+class TestRecentFailureMarks:
+    """Runtime ladder-failure marks: short TTL, overwrite-able by audits."""
+
+    def test_mark_skips_pair_then_expires(self, tmp_path, monkeypatch):
+        import freeride.core.model_health as mh
+
+        monkeypatch.setattr(mh, "CACHE_PATH", tmp_path / "model_health.json")
+        mh.mark_recent_failure("groq", "m1")
+        assert mh.is_model_known_broken("groq", "m1")
+        assert not mh.is_model_known_broken("groq", "m2")
+
+        real_time = mh.time.time
+        monkeypatch.setattr(
+            mh.time, "time", lambda: real_time() + mh.RECENT_FAILURE_TTL_SEC + 1
+        )
+        assert not mh.is_model_known_broken("groq", "m1")
+
+    def test_ladder_demotes_recently_failed_pin_to_last(self, tmp_path, monkeypatch):
+        import freeride.core.model_health as mh
+        from freeride.server.routes import fx as fx_module
+
+        monkeypatch.setattr(mh, "CACHE_PATH", tmp_path / "model_health.json")
+        monkeypatch.delenv("FREERIDE_FX_MODEL", raising=False)
+        monkeypatch.delenv("FREERIDE_FX_PROVIDER", raising=False)
+        monkeypatch.delenv("FREERIDE_CLAUDE_CODE_MODEL", raising=False)
+        monkeypatch.delenv("FREERIDE_CLAUDE_CODE_PROVIDER", raising=False)
+
+        class P:
+            def __init__(self, name):
+                self.name = name
+
+        providers = [P("openrouter"), P("groq")]
+        catalog = [
+            {
+                "id": "groq-tools",
+                "available_providers": ["groq"],
+                "supported_parameters": ["tools"],
+            }
+        ]
+        # Healthy pin leads the ladder.
+        assert fx_module._agent_candidates(providers, catalog)[0] == (
+            "openrouter",
+            "openrouter/free",
+        )
+        # A just-failed pin moves to the END — still reachable, not first.
+        mh.mark_recent_failure("openrouter", "openrouter/free")
+        ladder = fx_module._agent_candidates(providers, catalog)
+        assert ladder[0] == ("groq", "groq-tools")
+        assert ladder[-1] == ("openrouter", "openrouter/free")

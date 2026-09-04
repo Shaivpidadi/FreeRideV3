@@ -142,11 +142,60 @@ routes: `POST /v3/ai/language-model`, `GET /coding-agent/v1/models`):
   provider). Mid-stream upstream death switches candidates silently
   before any output, and after output ends the turn as an explicit
   in-stream error (fx retries) instead of a fabricated clean finish.
-- Still open for later cuts: real crash-restart supervision
-  (launchd/systemd units — today a crashed daemon restarts on the next
-  ridex command), the public `ridex` rename (binary still builds as
-  `fx`; internal `FX_*` env names kept for cheap upstream rebases),
-  stats flush, Windows.
+- **Upstream recon (2026-09-02)**: vercel-labs/fx has an unmerged
+  `add-openai-base-url` branch ("Add direct OpenAI Responses
+  provider") plus open PRs #553/#168/#159 for an OpenAI-compatible
+  provider. It adds `.openai` to ProviderId with `OPENAI_BASE_URL`
+  accepting loopback HTTP and speaks the **Responses API** — which
+  FreeRide already serves at `/v1/responses` (the Codex shim). If it
+  merges: (a) stock fx could reach FreeRide with zero fork via
+  `OPENAI_BASE_URL=http://127.0.0.1:11343/v1` + dummy key — worth
+  verifying then; (b) our rebase will conflict in exactly the
+  provider-enum switch files (mechanical: their `.openai` arm next to
+  our `.freeride` arm). The fork remains worth keeping for the
+  FreeRide-default UX (no env setup, catalog, skill, launcher), but
+  the provider surface may shrink to near-zero.
+- **Ship-it sprint (2026-09-02)** — the full roadmap executed:
+  FreeRide **0.4.0a22 on PyPI** (cli merged to main via PR #3, all CI
+  green incl. Windows; verified: fresh venv install streams pong
+  through the fx dialect). Fork releases **ridex-v0.1.0/v0.1.1** with
+  4-platform tarballs (ridex-agent + launcher + skill, checksummed;
+  macOS asset verified standalone). **One-command installer**
+  (fork install.sh; **live at api.free-ride.xyz/ridex.sh** — worker
+  version 3e73fc90 deployed 2026-09-02, existing routes intact;
+  verified end-to-end from a fresh HOME:
+  `curl -sSL https://api.free-ride.xyz/ridex.sh | sh` → pong).
+  **Supervised daemon**: launchd KeepAlive (kill -9 → back in ~2s) /
+  systemd user unit, nohup fallback; fresh-HOME E2E surfaced and fixed
+  three launchd bugs (absolute argv[0], HOME env, bootout race).
+  **Rebased onto upstream/main** (204 commits; conflicts confined to
+  cli_surface + one lifecycle test; new freeride arms: requestedSource,
+  compaction via freeride/coding; binary also installs as zig-out/bin/fx
+  so upstream CI tooling keeps working; auto-upgrade default OFF — the
+  fx CDN channel would replace ridex with stock fx). **Stats**: local
+  per-(provider,model) ok/fail counters in stats.json (never shipped in
+  the beacon); ladder failures write 5-min recent_failure marks and a
+  failed pin demotes to the ladder's end. **Rename completed** for all
+  user-visible text (314 literals; model-facing tool contracts kept
+  byte-exact).
+- **Fork CI fully green (2026-09-02)**: nine rounds of rename/default
+  fallout triage ended with BOTH workflows passing — main CI (build,
+  4 SDK surfaces, deterministic e2e, cross-compiles) and Full CI
+  (4-platform sharded tmux e2e). Notable real fixes along the way:
+  gateway_only gave the wasm/SDK surfaces an empty freeride bundle
+  (dead on boot); FX_DEFAULT_PROVIDER runtime override lets upstream
+  suites run gateway-pinned while the product defaults to freeride;
+  non-interactive CLI paths now publish the transport provider
+  (settings/env provider choices actually route); FX_AUTO_UPGRADE
+  became tri-state ('1' force-enables — upstream tests relied on the
+  old default-on); model-facing prompt/tool text is kept byte-exact
+  upstream. Releases: ridex-v0.1.2, ridex-v0.1.3 (green tree).
+- Deferred, with reasons: `~/.fx` → `~/.ridex` state-dir migration
+  (a dozen path sites bypass profile_paths.zig; flipping now would
+  split user state across two dirs — centralize first), RIDEX_* env
+  aliases, Windows agent support, worker deploy (needs the user's
+  wrangler credentials).
+
 
 ## Verification
 

@@ -294,3 +294,32 @@ class TestPreviewPayload:
         out = telemetry.preview_payload()
         parsed = json.loads(out)
         assert "installation_id" in parsed
+
+
+class TestModelUsage:
+    """Per-(provider, model) ok/fail counters — local-only, never shipped."""
+
+    def test_success_and_failure_accumulate_per_model(self, tmp_path, monkeypatch):
+        import freeride.core.telemetry as tel
+
+        monkeypatch.setattr(tel, "STATS_FILE", tmp_path / "stats.json")
+        tel.record_request(provider="groq", model="m1", input_tokens=5, output_tokens=7)
+        tel.record_request(provider="groq", model="m1", success=False)
+        tel.record_request(provider="openrouter", model="m2", success=False)
+
+        import json
+
+        stats = json.loads((tmp_path / "stats.json").read_text())
+        assert stats["model_usage"]["groq::m1"] == {"ok": 1, "fail": 1}
+        assert stats["model_usage"]["openrouter::m2"] == {"ok": 0, "fail": 1}
+        # Failures never move the success-only aggregates.
+        assert stats["request_count"] == 1
+        assert stats["input_tokens"] == 5
+
+    def test_model_usage_never_ships_in_beacon(self, tmp_path, monkeypatch):
+        import freeride.core.telemetry as tel
+
+        monkeypatch.setattr(tel, "STATS_FILE", tmp_path / "stats.json")
+        tel.record_request(provider="groq", model="m1")
+        payload = tel.build_payload(version="9.9.9")
+        assert "model_usage" not in payload

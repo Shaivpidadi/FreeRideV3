@@ -361,3 +361,56 @@ async def test_stream_preflight_failure_walks_to_next_candidate(monkeypatch) -> 
     )
     finish = next(e for e in events if isinstance(e, dict) and e["type"] == "finish")
     assert finish["finishReason"]["unified"] == "stop"
+
+
+@pytest.mark.asyncio
+async def test_stream_failover_emits_single_response_metadata(monkeypatch) -> None:
+    """fx must see exactly one response-metadata frame per stream. When
+    candidate 1 emits metadata then dies before any content, the switch to
+    candidate 2 must NOT ship a second metadata frame (some SSE consumers
+    reject a duplicate). Regression for the mid-stream-failover dup."""
+    events = await _collect_stream(
+        monkeypatch,
+        [
+            (_stream_event(), [], True),  # metadata shipped, then dies
+            (
+                _stream_event(content="pong"),
+                [_stream_event(finish_reason="stop")],
+                False,
+            ),
+        ],
+    )
+    metas = [
+        e for e in events if isinstance(e, dict) and e["type"] == "response-metadata"
+    ]
+    assert len(metas) == 1, f"expected 1 response-metadata, got {len(metas)}"
+    finish = next(e for e in events if isinstance(e, dict) and e["type"] == "finish")
+    assert finish["finishReason"]["unified"] == "stop"
+
+
+def test_record_candidate_failure_marks_every_provider_in_chain(monkeypatch) -> None:
+    """An explicit-model attempt walks the FULL chain; when it fails, every
+    provider in that chain failed on the model and must be demoted — not
+    just the first. Otherwise the next turn re-tries the dead model on the
+    un-marked providers."""
+    from freeride.server.routes import fx as fx_module
+
+    marked: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "freeride.core.model_health.mark_recent_failure",
+        lambda prov, model: marked.append((prov, model)),
+    )
+    monkeypatch.setattr(
+        "freeride.core.telemetry.record_request", lambda **kw: None
+    )
+    chain = [
+        (_FakeProvider("openrouter"), ["k1"]),
+        (_FakeProvider("groq"), ["k2"]),
+        (_FakeProvider("cerebras"), ["k3"]),
+    ]
+    fx_module._record_candidate_failure(chain, "some/model")
+    assert marked == [
+        ("openrouter", "some/model"),
+        ("groq", "some/model"),
+        ("cerebras", "some/model"),
+    ]

@@ -104,6 +104,10 @@ def copy_missing(src: str, dst: str, src_name: str, dst_name: str,
         if dump.returncode != 0:
             raise RuntimeError(f"{table} dump: {dump.stderr.strip()}")
         script = (
+            # Neon's pooler reuses a backend across our per-table psql
+            # sessions, so a temp table from the previous table can still
+            # be attached. Drop it first rather than assume a clean session.
+            "DROP TABLE IF EXISTS _sync;\n"
             f"CREATE TEMP TABLE _sync AS "
             f"SELECT {col_list} FROM {table} WITH NO DATA;\n"
             f"COPY _sync ({col_list}) FROM STDIN;\n"
