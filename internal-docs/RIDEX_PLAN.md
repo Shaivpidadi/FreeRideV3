@@ -190,6 +190,18 @@ routes: `POST /v3/ai/language-model`, `GET /coding-agent/v1/models`):
   became tri-state ('1' force-enables — upstream tests relied on the
   old default-on); model-facing prompt/tool text is kept byte-exact
   upstream. Releases: ridex-v0.1.2, ridex-v0.1.3 (green tree).
+- **Second rebase fallout (2026-09-04)**: upstream's new
+  test-agent-request-context asserts the SDK transport endpoint.
+  Root cause: `active_transport_provider` is comptime-initialized to
+  `.freeride` and the lean SDK agent (createFxAgent) never reaches
+  adoptOwned's republish, so SDK transport silently used FreeRide URLs
+  (masked until now because SDK tests inject fetch). Fix: napi/wasm
+  entrypoints seed the global from `defaultProvider()` alongside
+  `surface_default` (5f01d29c). Also disabled the fork's inherited
+  outbound-publish workflows (Dev Release, Publish libfx) via
+  `gh workflow disable` — they fired on our pushes and tried to upload
+  to Vercel's dev CDN (403) / npm; disabling at repo level keeps the
+  files intact so the rebase surface stays zero.
 - Deferred, with reasons: `~/.fx` → `~/.ridex` state-dir migration
   (a dozen path sites bypass profile_paths.zig; flipping now would
   split user state across two dirs — centralize first), RIDEX_* env
