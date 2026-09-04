@@ -1,13 +1,8 @@
 # FreeRide
 
-**Your own coding agent, running entirely on free-tier inference.**
+**Free AI inference for real work — as a coding agent, or as a gateway for your own tools.**
 
-```bash
-curl -sSL https://api.free-ride.xyz/ridex.sh | sh
-ridex
-```
-
-That's the whole setup. **ridex** is a fast, native coding agent (our fork of [vercel-labs/fx](https://github.com/vercel-labs/fx), Apache-2.0) that reads files, edits code, and runs commands — and every one of its model calls is served by **FreeRide**, a local gateway that fans out across free-tier providers: **OpenRouter, Groq, NVIDIA NIM, HuggingFace, Cerebras, Cloudflare Workers AI**, and **your own Ollama**. No vendor subscription, no Vercel account, no cloud middleman — your machine talks to the providers directly with your own free keys.
+FreeRide routes requests across free-tier providers — **OpenRouter, Groq, NVIDIA NIM, HuggingFace, Cerebras, Cloudflare Workers AI**, and **your own Ollama** — with automatic failover when one rate-limits or errors. No vendor subscription, no cloud middleman: your machine talks to the providers directly with your own free keys. There are two ways in; both run on the same engine.
 
 > **102M+ tokens served in 35 days. $0 spent.**
 > Routed through community free-tier keys via this gateway.
@@ -17,15 +12,43 @@ That's the whole setup. **ridex** is a fast, native coding agent (our fork of [v
 
 ---
 
-## Quick start
+## Pick your path
+
+### 🤖 "I want a coding agent" → ridex
+
+A fast, native agent (our fork of [vercel-labs/fx](https://github.com/vercel-labs/fx), Apache-2.0) that reads files, edits code, and runs commands — every model call served free through FreeRide. One command installs the agent and the gateway, supervises the daemon, and walks you through keys on first run:
 
 ```bash
-curl -sSL https://api.free-ride.xyz/ridex.sh | sh   # installs ridex + the FreeRide gateway
-ridex ask "reply with the single word pong"          # first run prompts for a key if you have none
-ridex                                                # full interactive agent
+curl -sSL https://api.free-ride.xyz/ridex.sh | sh
+ridex                                          # interactive agent
+ridex ask "reply with the single word pong"    # or one-shot
 ```
 
-**Keys** (any one is enough; more = better failover — all stored locally in `~/.freeride/.env`):
+Agent releases: [github.com/Shaivpidadi/ridex](https://github.com/Shaivpidadi/ridex). macOS + Linux (arm64/x86_64).
+
+### 🔌 "I have my own tools" → the gateway
+
+A local, OpenAI-compatible endpoint on `localhost:11343` that any agent, SDK, or script can point at — Aider, Continue.dev, LangChain, raw `openai` clients, your own code:
+
+```bash
+curl -sSL https://api.free-ride.xyz/install.sh | sh
+freeride init && freeride serve
+```
+
+```bash
+OPENAI_API_BASE=http://localhost:11343/v1
+OPENAI_API_KEY=any-string-here   # inbound auth is ignored; your real keys stay server-side
+```
+
+It also natively serves the **Anthropic** (`/v1/messages`), **OpenAI Responses** (`/v1/responses`), **Gemini** (`:generateContent`), and **fx gateway** wire protocols, plus `/v1/embeddings` — so most tools work unmodified. Prefer the big-vendor CLIs' UX? `freeride run claude|codex|gemini` wraps them with no vendor login. macOS + Linux + Windows.
+
+Already running ridex? You have the gateway too — one shared daemon on `:11343` serves your agent sessions and your own tools with the same keys, failover chain, and cooldowns.
+
+---
+
+## Keys
+
+Any one is enough; more = better failover. Collected by `freeride init` (or ridex's first run) and stored **only** on your machine in `~/.freeride/.env`:
 
 | Provider | Free tier | Get a key |
 |---|---|---|
@@ -37,13 +60,11 @@ ridex                                                # full interactive agent
 | Cloudflare Workers AI | 10K neurons/day | [dash.cloudflare.com](https://dash.cloudflare.com) |
 | Ollama (local) | no quota | install from [ollama.com](https://ollama.com) |
 
-macOS and Linux (arm64 + x86_64). Windows: gateway only for now. Prefer the pieces separately? Agent releases live at [github.com/Shaivpidadi/ridex](https://github.com/Shaivpidadi/ridex); the gateway alone installs with `curl -sSL https://api.free-ride.xyz/install.sh | sh` or `uv tool install freeride-gateway`.
-
 ## Why this doesn't fall over
 
-Free tiers are flaky — that's the whole reason FreeRide exists. The stack is built so a single provider having a bad minute never reaches you:
+Free tiers are flaky — that's the whole reason FreeRide exists. Whichever path you picked, the same engine keeps a single provider's bad minute from ever reaching you:
 
-- **The gateway is a supervised daemon.** The installer registers it with launchd (macOS) or a systemd user unit (Linux); a crash restarts it in seconds. `ridex start|stop|restart|doctor` manage it — you never run a second terminal, and `ridex stop` sticks until you say otherwise.
+- **The gateway is a supervised daemon** (via the ridex installer): registered with launchd (macOS) or a systemd user unit (Linux), a crash restarts it in seconds. `ridex start|stop|restart|doctor` manage it, and `ridex stop` sticks until you say otherwise. (Standalone `freeride serve` users manage the process themselves, as before.)
 - **Every request carries a fallback ladder.** If the serving provider rate-limits, runs out of free inference, or retires the model mid-session, the gateway silently retries on the next provider's best tool-capable model — inside the same response. Failed candidates are remembered for a few minutes so consecutive turns don't re-pay the cost.
 - **The agent can diagnose its own plumbing.** ridex ships with a `freeride` skill: when requests fail it runs the (pre-approved, read-only) diagnostics — `freeride doctor`, `freeride keys`, the health probe — reads the structured error taxonomy, and tells you the exact fix.
 - **Tool calls are non-negotiable.** The default `freeride/coding` route pins to models proven to emit correct tool calls; providers whose catalogs can't do tools are never handed agent traffic.
@@ -52,20 +73,7 @@ Inside a session, `/model` switches routing per request: `freeride/coding` (defa
 
 ---
 
-## Use FreeRide with anything that speaks OpenAI
-
-The agent is optional — FreeRide is also a plain OpenAI-compatible gateway on `localhost:11343`:
-
-```bash
-freeride serve   # (the ridex installer already runs it as a daemon)
-
-OPENAI_API_BASE=http://localhost:11343/v1
-OPENAI_API_KEY=any-string-here      # inbound auth is ignored; your real keys stay server-side
-```
-
-It also natively serves the **Anthropic** (`/v1/messages`), **OpenAI Responses** (`/v1/responses`), **Gemini** (`/v1beta/models/*:generateContent`), and **fx gateway** (`/v3/ai/language-model`) wire protocols, plus `/v1/embeddings` — so most tools work unmodified.
-
-### Wrap the big-vendor CLIs
+## Wrap the big-vendor CLIs
 
 Prefer Claude Code, OpenAI Codex, or Gemini CLI's UX? `freeride run` points them at the gateway — no per-vendor key, no login:
 
