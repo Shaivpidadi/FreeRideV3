@@ -13,16 +13,27 @@ workers_dev = true
 FACILITATOR = "https://api.testnet.blocky402.com"
 NETWORK = "hedera:testnet"
 PAY_TO = "0.0.10471098"
-# 0.02 HBAR. Sized against gpt-4.1-nano with the caps below: worst case ~4k
-# tokens in + 1,024 out ≈ $0.0008, and 0.02 HBAR ≈ $0.0015 at $0.076/HBAR.
-AMOUNT = "2000000"
 ASSET = "0.0.0"
 FEE_PAYER = "0.0.7162784"
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
-MODELS = "openai/gpt-4.1-nano,google/gemini-2.5-flash-lite,mistralai/mistral-small-3.2-24b-instruct"
+
+# Pricing: every request is quoted before its 402. Input tokens are estimated
+# from the body (BYTES_PER_TOKEN, deliberately low so it overestimates), output
+# is the caller's max_tokens (DEFAULT_OUTPUT_TOKENS when unset, capped at
+# MAX_OUTPUT_TOKENS), both at the model's list price in USD per million tokens,
+# times MARGIN_BPS, converted at Hedera's exchange rate from RATE_URL.
+MODEL_PRICES = '{"openai/gpt-4.1-nano":{"input":0.10,"output":0.40,"context":1047576},"google/gemini-2.5-flash-lite":{"input":0.10,"output":0.40,"context":1048576},"mistralai/mistral-small-3.2-24b-instruct":{"input":0.075,"output":0.20,"context":256000},"qwen/qwen3-coder":{"input":0.30,"output":1.00,"context":262144}}'
 DEFAULT_MODEL = "openai/gpt-4.1-nano"
-MAX_OUTPUT_TOKENS = "1024"
-MAX_BODY_BYTES = "16000"
+DEFAULT_OUTPUT_TOKENS = "1024"
+MAX_OUTPUT_TOKENS = "4096"
+MAX_BODY_BYTES = "400000"
+BYTES_PER_TOKEN = "3"
+MARGIN_BPS = "12500"
+# 0.0001 HBAR, so a one-token request still pays something.
+MIN_AMOUNT = "10000"
+# A retry may pay within 2% of its quote: Hedera's rate changes hourly.
+QUOTE_TOLERANCE_BPS = "200"
+RATE_URL = "https://testnet.mirrornode.hedera.com/api/v1/network/exchangerate"
 
 # Claimed on `wrangler deploy`. The zone already exists in this account and
 # nothing else is bound to this hostname.
