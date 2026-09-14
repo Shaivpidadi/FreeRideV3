@@ -1,0 +1,31 @@
+name = "freeride-x402"
+main = "src/worker.js"
+# The newest date the local Workers runtime (wrangler 4.89) supports, so
+# `wrangler dev --local` and production run the same semantics.
+compatibility_date = "2026-05-14"
+workers_dev = true
+
+# Paid-only hosted inference. Nothing here is secret: the only secret is the
+# OpenRouter key, set with `wrangler secret put OPENROUTER_API_KEY` (production)
+# or in .dev.vars (local, gitignored). No Hedera private key lives here — a
+# seller only ever receives.
+[vars]
+FACILITATOR = "https://api.testnet.blocky402.com"
+NETWORK = "hedera:testnet"
+PAY_TO = "0.0.10471098"
+# 0.02 HBAR. Sized against gpt-4.1-nano with the caps below: worst case ~4k
+# tokens in + 1,024 out ≈ $0.0008, and 0.02 HBAR ≈ $0.0015 at $0.076/HBAR.
+AMOUNT = "2000000"
+ASSET = "0.0.0"
+FEE_PAYER = "0.0.7162784"
+OPENROUTER_BASE = "https://openrouter.ai/api/v1"
+MODELS = "openai/gpt-4.1-nano,google/gemini-2.5-flash-lite,mistralai/mistral-small-3.2-24b-instruct"
+DEFAULT_MODEL = "openai/gpt-4.1-nano"
+MAX_OUTPUT_TOKENS = "1024"
+MAX_BODY_BYTES = "16000"
+
+# Claimed on `wrangler deploy`. The zone already exists in this account and
+# nothing else is bound to this hostname.
+[[routes]]
+pattern = "x402.free-ride.xyz"
+custom_domain = true

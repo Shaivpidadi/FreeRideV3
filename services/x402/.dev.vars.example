@@ -1,0 +1,2 @@
+# Copy to .dev.vars for `wrangler dev`. .dev.vars is gitignored.
+OPENROUTER_API_KEY=

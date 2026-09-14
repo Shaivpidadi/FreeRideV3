@@ -1,0 +1,14 @@
+{
+  "name": "freeride-x402",
+  "version": "0.1.0",
+  "private": true,
+  "description": "FreeRide hosted inference: paid-only, per request, settled on Hedera via x402.",
+  "type": "module",
+  "main": "src/worker.js",
+  "scripts": {
+    "dev": "wrangler dev --local",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "test": "node --test test/*.test.js"
+  }
+}
