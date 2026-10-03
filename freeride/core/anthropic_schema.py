@@ -95,7 +95,16 @@ class AnthropicMessage(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    role: Literal["user", "assistant"]
+    # ``system`` is accepted in the messages array because Claude Code
+    # (verified on 2.1.288) emits a ``{"role": "system"}`` entry there
+    # in addition to the top-level ``system`` field. The Anthropic
+    # public spec only documents ``user`` / ``assistant`` here, so this
+    # is a forward-compat tolerance, not spec support. Rejecting it
+    # made every real Claude Code request fail validation with a 422
+    # before any provider was reached. The translator passes the role
+    # through unchanged, and OpenAI's own ``role: system`` is the
+    # correct target shape anyway.
+    role: Literal["user", "assistant", "system"]
     content: Union[str, list[dict[str, Any]]]
 
 

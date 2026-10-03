@@ -1210,3 +1210,103 @@ async def test_stream_tool_call_with_no_args_piece_emits_no_input_delta() -> Non
     assert len(deltas) == 1
     assert deltas[0]["delta"]["type"] == "input_json_delta"
     assert deltas[0]["delta"]["partial_json"] == "{}"
+
+
+# ─── system role inside messages (Claude Code compat) ─────────────
+#
+# Claude Code 2.1.288 emits a {"role": "system"} entry in the messages
+# array alongside the top-level `system` field. The previous schema
+# declared Literal["user", "assistant"] and rejected it, so every real
+# Claude Code request died with:
+#
+#   422 invalid_request_error ... messages.1.role
+#   Input should be 'user' or 'assistant' [input_value='system']
+#
+# These tests pin the tolerance so a future tightening doesn't silently
+# break `freeride run claude` again. The captured body below is verbatim
+# from Claude Code 2.1.288, reduced to the fields the schema cares about.
+
+
+def test_system_role_inside_messages_is_accepted() -> None:
+    req = AnthropicMessagesRequest(
+        model="claude-opus-5-5",
+        max_tokens=128000,
+        system="You are Claude Code.",
+        messages=[
+            {"role": "user", "content": "hi"},
+            {"role": "system", "content": "extra in-band system note"},
+        ],
+    )
+    assert req.messages[1].role == "system"
+
+
+def test_system_role_inside_messages_translates_through() -> None:
+    """The role must survive translation, not just validation."""
+    req = AnthropicMessagesRequest(
+        model="claude-opus-5-5",
+        max_tokens=100,
+        system="top-level system",
+        messages=[
+            {"role": "user", "content": "ahoy"},
+            {"role": "system", "content": "in-band system"},
+        ],
+    )
+    out = anthropic_to_openai_request(req)
+    # Hoisted top-level system first, then the in-band entries in order.
+    assert [m.role for m in out.messages] == ["system", "user", "system"]
+    assert out.messages[0].content == "top-level system"
+    assert out.messages[2].content == "in-band system"
+
+
+def test_system_role_with_block_array_content_translates() -> None:
+    """Claude Code can send block-array content, not just a string."""
+    req = AnthropicMessagesRequest(
+        model="claude-opus-5-5",
+        max_tokens=100,
+        messages=[
+            {"role": "user", "content": "ahoy"},
+            {
+                "role": "system",
+                "content": [{"type": "text", "text": "block system"}],
+            },
+        ],
+    )
+    out = anthropic_to_openai_request(req)
+    assert out.messages[-1].role == "system"
+    assert out.messages[-1].content == "block system"
+
+
+def test_real_claude_code_request_body_validates() -> None:
+    """Regression guard using the field set captured from Claude Code
+    2.1.288 via `freeride run claude`. `extra="ignore"` means unknown
+    top-level keys are dropped, but the roles must not 422."""
+    body: dict[str, Any] = {
+        "model": "claude-opus-5-5",
+        "max_tokens": 128000,
+        "stream": True,
+        "system": [{"type": "text", "text": "You are Claude Code."}],
+        "messages": [
+            {"role": "user", "content": "Reply with exactly: FREERIDE_OK"},
+            {"role": "system", "content": "injected by claude code"},
+        ],
+        "tools": [
+            {
+                "name": "Write",
+                "description": "Write a file",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"file_path": {"type": "string"}},
+                },
+            }
+        ],
+        "thinking": {"type": "enabled", "budget_tokens": 4096},
+        "metadata": {"user_id": "abc"},
+        "context_management": {"edits": []},
+        "output_config": {},
+    }
+    req = AnthropicMessagesRequest.model_validate(body)
+    assert req.messages[1].role == "system"
+    assert req.stream is True
+    assert req.tools is not None
+    # The route must not consider this request unsupported.
+    assert request_unsupported_for_phase_1(req) is None
