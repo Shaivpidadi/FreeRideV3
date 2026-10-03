@@ -173,6 +173,11 @@ That's Anthropic rejecting your credential, not FreeRide. Anthropic only accepts
 **`freeride doctor --claude-code` says the gateway is unreachable but I started it**
 The gateway and the doctor probe must agree on the port. Default is `11343`. Override with `--port` on both: `freeride serve --port 9000` and `freeride doctor --claude-code --port 9000`.
 
+**`freeride run claude` fails immediately with `422 ... messages.1.role  Input should be 'user' or 'assistant'`**
+Claude Code (verified on 2.1.288) sends a `{"role": "system"}` entry **inside** the `messages` array, in addition to the top-level `system` field. Older FreeRide builds declared `AnthropicMessage.role` as `Literal["user", "assistant"]`, so every real Claude Code request died in pydantic validation before reaching any provider. Check your `freeride --version`; on v0.4.0a23 and earlier this affects every `freeride run claude` call.
+
+Note the routing layer is fine in this case: the `sk-fre...auth` sentinel is correctly demoted to free routing (check `messages_routing_decision` in `~/.freeride/events.jsonl`). If your `events.jsonl` shows `mode: "free"` and you still get a 422, it is this schema bug, not a key or provider problem.
+
 **Streaming response shows binary garbage**
 Pre-`v0.4.0a4+phase4g` behavior. Update to the latest pre-release: `freeride upgrade`.
 
