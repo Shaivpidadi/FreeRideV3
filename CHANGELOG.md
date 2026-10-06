@@ -6,6 +6,20 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+### Fixed
+- Cooldown marks are no longer lost under concurrency. Every route,
+  ``/health``, and the CLI used to build their own ``KeyCooldown`` per
+  request and persist a private snapshot of ``cooldown.json``, so two
+  concurrent requests that cooled different keys kept only the later
+  writer's mark. The gateway now uses one ``KeyCooldown.shared()``
+  instance per process, every mutation merges the on-disk file under a
+  lock before writing, and reads merge in changes made by other
+  processes (``freeride list``, the watcher) when the file moved.
+- ``atomic_write`` uses a unique temp name per writer and creates the
+  file with its final mode. The fixed ``<path>.tmp`` let concurrent
+  writers truncate each other's temp file, and secrets briefly sat
+  world-readable between write and chmod.
+
 ## [0.4.0a23] — 2026-09-04
 
 Hardening on the fx/agent path from live use and code review.

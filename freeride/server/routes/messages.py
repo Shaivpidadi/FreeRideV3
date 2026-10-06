@@ -302,7 +302,7 @@ async def messages(request: Request):
             },
         )
 
-    cooldown = KeyCooldown()
+    cooldown = KeyCooldown.shared()
 
     # ─── preset → provider re-order + auto-resolution scope ────────
     # For freeride/fast|quality|coding, two things change:

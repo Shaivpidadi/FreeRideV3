@@ -148,7 +148,7 @@ async def responses(request: Request):
             ),
         )
 
-    cooldown = KeyCooldown()
+    cooldown = KeyCooldown.shared()
     chain = resolve_provider_chain(providers)
     if not chain:
         raise HTTPException(

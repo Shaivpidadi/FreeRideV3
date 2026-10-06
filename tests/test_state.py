@@ -94,3 +94,30 @@ class TestReadJsonOr:
         p = tmpdir / "empty.json"
         p.write_text("")
         assert read_json_or(p, "fallback") == "fallback"
+
+
+class TestConcurrentWriters:
+    def test_parallel_atomic_writes_do_not_collide(self, tmp_path=None):
+        import tempfile
+        from threading import Thread
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "state.json"
+            errors: list[BaseException] = []
+
+            def writer(i: int) -> None:
+                try:
+                    for _ in range(40):
+                        atomic_write(p, str(i))
+                except BaseException as e:  # noqa: BLE001
+                    errors.append(e)
+
+            threads = [Thread(target=writer, args=(i,)) for i in range(8)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            assert not errors, errors
+            # Whole-file content from exactly one writer, never torn.
+            assert p.read_text() in {str(i) for i in range(8)}
+            assert list(Path(d).glob("*.tmp")) == []

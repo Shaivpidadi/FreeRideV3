@@ -100,7 +100,7 @@ def fetch_all_models(
     keys = get_api_keys()
     if not keys:
         return []
-    cd = cooldown or KeyCooldown()
+    cd = cooldown or KeyCooldown.shared()
 
     last_status: int | None = None
     for i, key in enumerate(keys, 1):

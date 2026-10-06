@@ -53,7 +53,7 @@ def _key_for(provider: Provider) -> str | None:
     keys = all_keys_for(provider.name)
     if not keys:
         return None
-    cd = KeyCooldown()
+    cd = KeyCooldown.shared()
     available = cd.available_keys(provider.name, keys)
     return available[0] if available else None
 

@@ -130,3 +130,56 @@ class TestKeyCooldown:
     def test_cooldown_remaining_none_when_not_cooling(self, cd_path):
         cd = KeyCooldown(cd_path)
         assert cd.cooldown_remaining("openrouter", "never-marked") is None
+
+
+class TestConcurrentInstances:
+    """Regression: every route used to build its own KeyCooldown per
+    request and persist its own snapshot, so two concurrent requests that
+    cooled different keys left only the later writer's mark on disk."""
+
+    def test_two_instances_same_path_do_not_clobber(self, cd_path):
+        a = KeyCooldown(cd_path)
+        b = KeyCooldown(cd_path)
+        a.mark_rate_limited("openrouter", "key-a")
+        b.mark_rate_limited("openrouter", "key-b")
+        fresh = KeyCooldown(cd_path)
+        assert fresh.is_in_cooldown("openrouter", "key-a")
+        assert fresh.is_in_cooldown("openrouter", "key-b")
+        # The instance that wrote first also sees the other's mark.
+        assert a.is_in_cooldown("openrouter", "key-b")
+
+    def test_mark_keeps_other_writers_marks(self, cd_path):
+        a = KeyCooldown(cd_path)
+        b = KeyCooldown(cd_path)
+        b.mark("openrouter", "k1", ErrorKind.QUOTA_EXHAUSTED, now=1000.0)
+        a.mark("groq", "g1", ErrorKind.RATE_LIMIT, now=1000.0)
+        # a's write must not shorten or drop b's hour-long quota mark.
+        assert a.cooldown_remaining("openrouter", "k1", now=1000.0 + 3000) is not None
+
+    def test_clear_is_not_undone_by_stale_instance_read(self, cd_path):
+        a = KeyCooldown(cd_path)
+        a.mark_rate_limited("openrouter", "k1")
+        b = KeyCooldown(cd_path)
+        b.clear()
+        # a re-syncs from disk on read and sees the clear.
+        assert not a.is_in_cooldown("openrouter", "k1")
+
+    def test_shared_returns_one_instance_per_path(self, cd_path):
+        assert KeyCooldown.shared(cd_path) is KeyCooldown.shared(cd_path)
+        other = cd_path.with_name("other.json")
+        assert KeyCooldown.shared(other) is not KeyCooldown.shared(cd_path)
+
+    def test_threaded_marks_all_persist(self, cd_path):
+        from threading import Thread
+
+        cd = KeyCooldown.shared(cd_path)
+        keys = [f"key-{i}" for i in range(16)]
+        threads = [
+            Thread(target=cd.mark_rate_limited, args=("openrouter", k)) for k in keys
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        fresh = KeyCooldown(cd_path)
+        assert fresh.available_keys("openrouter", keys) == []

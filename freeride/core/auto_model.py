@@ -46,7 +46,7 @@ def _provider_keys(provider_name: str) -> list[str]:
 
 def _available_provider_names(providers: list[Provider]) -> set[str]:
     """Names of providers that have at least one usable, non-cooled key."""
-    cd = KeyCooldown()
+    cd = KeyCooldown.shared()
     out: set[str] = set()
     for p in providers:
         keys = _provider_keys(p.name)

@@ -166,7 +166,7 @@ async def chat_completions(request: Request, body: ChatRequest):
             },
         )
 
-    cooldown = KeyCooldown()
+    cooldown = KeyCooldown.shared()
     chain = resolve_provider_chain(providers)
     if not chain:
         emit_event(

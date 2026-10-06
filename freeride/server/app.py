@@ -148,7 +148,7 @@ def create_app(
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
-        _cooldown = KeyCooldown()
+        _cooldown = KeyCooldown.shared()
         return {
             "ok": True,
             "version": __version__,

@@ -49,7 +49,7 @@ def _test_model(model_id: str, *, cooldown: KeyCooldown | None = None, timeout: 
     """
     import httpx
 
-    cd = cooldown or KeyCooldown()
+    cd = cooldown or KeyCooldown.shared()
     available = [k for k in get_api_keys() if not cd.is_in_cooldown(_PROVIDER_NAME, k)]
     if not available:
         return False, "all_keys_exhausted"

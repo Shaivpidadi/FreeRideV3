@@ -104,7 +104,7 @@ async def embeddings(request: Request, body: EmbeddingRequest):
             },
         )
 
-    cooldown = KeyCooldown()
+    cooldown = KeyCooldown.shared()
     chain = resolve_provider_chain(capable)
     if not chain:
         emit_event(

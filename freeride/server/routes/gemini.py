@@ -177,7 +177,7 @@ async def gemini_generate(model_with_action: str, request: Request):
             ),
         )
 
-    cooldown = KeyCooldown()
+    cooldown = KeyCooldown.shared()
     chain = resolve_provider_chain(providers)
     if not chain:
         raise HTTPException(

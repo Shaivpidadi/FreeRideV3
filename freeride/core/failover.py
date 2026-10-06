@@ -58,7 +58,7 @@ def record_health(
 def resolve_provider_chain(
     providers: list[Provider],
 ) -> list[tuple[Provider, list[str]]]:
-    cooldown = KeyCooldown()
+    cooldown = KeyCooldown.shared()
     chain: list[tuple[Provider, list[str]]] = []
     for p in providers:
         keys = all_keys_for(p.name)

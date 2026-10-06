@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 from pathlib import Path
 from typing import Any
 
@@ -34,16 +35,32 @@ def atomic_write(path: Path | str, content: str, *, mode: int | None = 0o600) ->
     """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(p.suffix + ".tmp")
-    tmp.write_text(content)
-    if mode is not None:
+    # Unique temp name per writer. A fixed ``<path>.tmp`` let two
+    # concurrent writers (gateway + CLI, or two request handlers in one
+    # process) truncate each other's temp file, so the loser's
+    # ``os.replace`` either raised or published the other's bytes.
+    tmp = p.with_name(f".{p.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+    # Create with the final mode from the start (O_EXCL: ours alone) so
+    # a secret never sits world-readable between write and chmod.
+    create_mode = mode if mode is not None else 0o666
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, create_mode)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+        if mode is not None:
+            try:
+                os.chmod(tmp, mode)
+            except (OSError, NotImplementedError):
+                # Windows or non-POSIX FS — chmod best-effort; the rename
+                # below is what actually matters for atomicity.
+                pass
+        os.replace(tmp, p)
+    except BaseException:
         try:
-            os.chmod(tmp, mode)
-        except (OSError, NotImplementedError):
-            # Windows or non-POSIX FS — chmod best-effort; the rename
-            # below is what actually matters for atomicity.
+            os.unlink(tmp)
+        except OSError:
             pass
-    os.replace(tmp, p)
+        raise
 
 
 def write_json_atomic(path: Path | str, obj: Any, *, indent: int | None = 2) -> None:

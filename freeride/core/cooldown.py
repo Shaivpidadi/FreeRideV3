@@ -20,6 +20,21 @@ an absolute ``until`` timestamp so TTL can vary by :class:`ErrorKind`:
 Legacy files that stored ``{raw_key: start_timestamp}`` are migrated
 on first read: the key is hashed and the start is converted to
 ``until = start + 120`` (the historical flat TTL).
+
+Concurrency
+-----------
+Several writers touch the same file: every gateway request handler,
+``/health``, and any CLI process (``freeride list``, the watcher,
+``audit-models``). Each used to build its own instance and persist its
+own in-memory snapshot, so two concurrent requests that cooled
+*different* keys left only the later writer's mark on disk. Now the
+gateway uses one :meth:`KeyCooldown.shared` instance per path; every
+mutation re-reads the file under the lock before applying itself and
+writing back; and reads reload when the file's (mtime, size) moved.
+Because every mutation persists immediately, the file is always the
+authority and memory is only a cache of it. ``clear`` skips the
+re-read on purpose: it is a user action and must drop whatever is
+there.
 """
 
 from __future__ import annotations
@@ -55,6 +70,10 @@ COOLDOWN_TTL_SECONDS: float = RATE_LIMIT_TTL_SECONDS
 DEFAULT_COOLDOWN_PATH: Path = Path.home() / ".freeride" / "cooldown.json"
 
 _HASH_LEN = 12
+
+# Process-wide instances, one per path. See KeyCooldown.shared().
+_SHARED: dict[Path, "KeyCooldown"] = {}
+_SHARED_LOCK = Lock()
 
 
 def hash_key(key: str) -> str:
@@ -99,12 +118,28 @@ def _looks_like_hash(key: str) -> bool:
     return len(key) == _HASH_LEN and all(c in "0123456789abcdef" for c in key)
 
 
+def _disk_signature(path: Path) -> tuple[int, int] | None:
+    """Cheap change detector for the on-disk file: (mtime_ns, size), or
+    None when the file doesn't exist. A stat per read is far cheaper
+    than the full read-and-migrate every caller used to pay."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
 class KeyCooldown:
     """Thread-safe, file-persisted cooldown tracker.
 
-    Use one instance per process. Reads on every ``is_in_cooldown`` check
-    are cheap (in-memory dict); writes happen only when ``mark`` is
-    called. The on-disk file is rewritten atomically every mutation.
+    Prefer :meth:`shared` — one instance per path per process. Direct
+    construction stays supported for tests and one-off tooling, and is
+    safe: every instance re-reads the file before each mutation instead
+    of overwriting it with a private snapshot.
+
+    Reads (``is_in_cooldown`` and friends) stat the file and reload
+    only when it moved; ``mark`` always reloads, since a missed change
+    there is exactly the clobber this design exists to prevent.
     """
 
     def __init__(self, path: Path | str = DEFAULT_COOLDOWN_PATH) -> None:
@@ -112,14 +147,42 @@ class KeyCooldown:
         self._lock = Lock()
         # state[provider][key_hash] -> {"until": float, "kind": str}
         self._state: dict[str, dict[str, dict[str, Any]]] = {}
-        raw = read_json_or(self._path, {})
-        migrated = self._ingest(raw)
+        self._disk_sig: tuple[int, int] | None = None
+        migrated = self._load_from_disk()
         if migrated:
             self._persist()
 
+    @classmethod
+    def shared(cls, path: Path | str = DEFAULT_COOLDOWN_PATH) -> "KeyCooldown":
+        """The process-wide instance for ``path`` (created on first use).
+
+        Routes, ``/health``, auto-model resolution, and the CLI all go
+        through this so a single in-memory view backs every request in
+        the process; the per-mutation re-read covers other processes.
+        """
+        key = Path(path)
+        with _SHARED_LOCK:
+            inst = _SHARED.get(key)
+            if inst is None:
+                inst = cls(key)
+                _SHARED[key] = inst
+            return inst
+
+    # ----- disk sync ------------------------------------------------------
+    def _load_from_disk(self) -> bool:
+        """Replace memory with the file's contents. Returns True when a
+        legacy entry was migrated (caller should persist). Records the
+        file signature so a later ``_sync_locked`` knows nothing moved.
+        """
+        self._disk_sig = _disk_signature(self._path)
+        raw = read_json_or(self._path, {})
+        self._state = {}
+        return self._ingest(raw)
+
     def _ingest(self, raw: Any) -> bool:
-        """Load on-disk JSON. Returns True when the in-memory shape
-        differs from disk and should be rewritten (legacy migration).
+        """Load on-disk JSON into ``self._state``. Returns True when the
+        in-memory shape differs from disk and should be rewritten
+        (legacy migration).
         """
         migrated = False
         if not isinstance(raw, dict):
@@ -140,6 +203,18 @@ class KeyCooldown:
             self._state[prov] = dest
         return migrated
 
+    def _sync_locked(self, *, force: bool = False) -> None:
+        """Reload from disk if the file moved since we last read or wrote
+        it, or unconditionally with ``force``. Caller holds ``self._lock``.
+
+        Writers pass ``force``: the (mtime, size) check is cheap for the
+        hot read path but can miss a same-size write on a filesystem
+        with coarse mtime, and a missed change on a write path means
+        overwriting another writer's mark — the original bug.
+        """
+        if force or _disk_signature(self._path) != self._disk_sig:
+            self._load_from_disk()
+
     # ----- introspection --------------------------------------------------
     def is_in_cooldown(self, provider: str, key: str, *, now: float | None = None) -> bool:
         remaining = self.cooldown_remaining(provider, key, now=now)
@@ -152,21 +227,23 @@ class KeyCooldown:
     def cooldown_remaining(self, provider: str, key: str, *, now: float | None = None) -> float | None:
         """Seconds left in cooldown, or None if not cooling."""
         current = time.time() if now is None else now
-        entry = self._lookup(provider, key)
-        if entry is None:
-            return None
-        until = float(entry["until"])
-        remaining = until - current
-        if remaining <= 0:
-            with self._lock:
-                hashed = hash_key(key)
+        hashed = hash_key(key)
+        with self._lock:
+            self._sync_locked()
+            entry = self._lookup(provider, key)
+            if entry is None:
+                return None
+            until = float(entry["until"])
+            remaining = until - current
+            if remaining <= 0:
+                self._sync_locked(force=True)
                 bucket = self._state.get(provider, {})
                 bucket.pop(hashed, None)
                 # Also drop a leftover raw-key entry from a mid-migration file.
                 bucket.pop(key, None)
                 self._persist()
-            return None
-        return remaining
+                return None
+            return remaining
 
     def _lookup(self, provider: str, key: str) -> dict[str, Any] | None:
         bucket = self._state.get(provider, {})
@@ -187,7 +264,11 @@ class KeyCooldown:
         retry_after_s: int | float | None = None,
         now: float | None = None,
     ) -> None:
-        """Cool ``key`` for ``kind``. Duration is :func:`ttl_for`."""
+        """Cool ``key`` for ``kind``. Duration is :func:`ttl_for`.
+
+        Re-reads the on-disk file first so marks written by another
+        instance or process since our last sync survive this write.
+        """
         current = time.time() if now is None else now
         if not isinstance(kind, ErrorKind):
             try:
@@ -199,6 +280,7 @@ class KeyCooldown:
         until = current + ttl_for(kind_enum, retry_after_s)
         hashed = hash_key(key)
         with self._lock:
+            self._sync_locked(force=True)
             bucket = self._state.setdefault(provider, {})
             bucket.pop(key, None)  # drop leftover raw-key entry
             bucket[hashed] = {"until": until, "kind": kind_enum.value}
@@ -211,6 +293,9 @@ class KeyCooldown:
     def clear(self, provider: str | None = None) -> None:
         """Drop all cooldowns. ``provider=None`` drops everything; otherwise
         only that provider's keys. Mostly for tests and ``freeride status --reset``.
+
+        Deliberately does NOT re-read from disk first: a clear is a user
+        action and must drop whatever another writer put there.
         """
         with self._lock:
             if provider is None:
@@ -222,6 +307,7 @@ class KeyCooldown:
     # ----- internal -------------------------------------------------------
     def _persist(self) -> None:
         write_json_atomic(self._path, self._state)
+        self._disk_sig = _disk_signature(self._path)
 
 
 def _normalize_entry(k: str, v: Any) -> tuple[tuple[str, dict[str, Any]] | None, bool]:
