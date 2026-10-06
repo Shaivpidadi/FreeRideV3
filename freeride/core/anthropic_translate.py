@@ -155,6 +155,48 @@ def _hoist_system(
     return Message(role="system", content=joined) if joined else None
 
 
+_STANDARD_ROLES = frozenset({"user", "assistant"})
+
+
+def _message_text(content: Any) -> str:
+    """Text of a message whose content is a string or text blocks.
+    Non-text blocks are dropped; used only for in-band system entries."""
+    if isinstance(content, str):
+        return content.strip()
+    sys_msg = _hoist_system(content if isinstance(content, list) else None)
+    return sys_msg.content if sys_msg is not None and isinstance(sys_msg.content, str) else ""
+
+
+def _normalize_roles(
+    anthropic_messages: list[Any],
+) -> tuple[list[str], list[Any]]:
+    """Split non-standard roles out of the Anthropic ``messages`` array.
+
+    Returns ``(system_texts, messages)``: the text of every in-band
+    ``role: system`` entry, in order, and the remaining messages with
+    any other non-standard role (Claude Code 2.1.154-2.1.156 sent
+    ``ctx`` and ``msg``) coerced to ``user``. In-band system text is
+    folded into the single leading OpenAI system message by the caller
+    rather than passed through mid-conversation: several free providers
+    reject a system message that is not first.
+    """
+    system_texts: list[str] = []
+    kept: list[Any] = []
+    for m in anthropic_messages:
+        role = m.role if hasattr(m, "role") else m["role"]
+        content = m.content if hasattr(m, "content") else m["content"]
+        if role == "system":
+            text = _message_text(content)
+            if text:
+                system_texts.append(text)
+            continue
+        if role not in _STANDARD_ROLES:
+            kept.append({"role": "user", "content": content})
+            continue
+        kept.append(m)
+    return system_texts, kept
+
+
 def _translate_messages(
     anthropic_messages: list[Any],
 ) -> list[Message]:
@@ -185,6 +227,10 @@ def _translate_messages(
         # AnthropicMessage Pydantic instance OR dict — be permissive.
         role = m.role if hasattr(m, "role") else m["role"]
         content = m.content if hasattr(m, "content") else m["content"]
+        # Callers run _normalize_roles first; this is the defensive
+        # fallback so a stray role can never reach the OpenAI schema.
+        if role not in _STANDARD_ROLES:
+            role = "user"
 
         # Plain string content (no blocks) — simplest case.
         if isinstance(content, str):
@@ -323,10 +369,15 @@ def anthropic_to_openai_request(
     feasibility doc.
     """
     messages: list[Message] = []
+    inband_system, body_messages = _normalize_roles(req.messages)
     sys_msg = _hoist_system(req.system)
-    if sys_msg is not None:
-        messages.append(sys_msg)
-    messages.extend(_translate_messages(req.messages))
+    system_parts: list[str] = []
+    if sys_msg is not None and isinstance(sys_msg.content, str):
+        system_parts.append(sys_msg.content)
+    system_parts.extend(inband_system)
+    if system_parts:
+        messages.append(Message(role="system", content="\n\n".join(system_parts)))
+    messages.extend(_translate_messages(body_messages))
 
     return ChatRequest(
         model=req.model,

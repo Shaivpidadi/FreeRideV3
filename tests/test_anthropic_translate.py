@@ -1210,3 +1210,94 @@ async def test_stream_tool_call_with_no_args_piece_emits_no_input_delta() -> Non
     assert len(deltas) == 1
     assert deltas[0]["delta"]["type"] == "input_json_delta"
     assert deltas[0]["delta"]["partial_json"] == "{}"
+
+
+# ─── non-standard roles inside messages (Claude Code 2.1.154-156) ───
+#
+# Those Claude Code builds sent ``system``, ``ctx`` and ``msg`` entries
+# inside the ``messages`` array when ANTHROPIC_BASE_URL pointed at a
+# third-party endpoint. A strict schema turned that into a 422 before
+# any provider was tried. The tolerance: accept any role, fold in-band
+# system text into the leading system message, coerce the rest to user.
+
+
+def test_inband_system_folds_into_leading_system_message() -> None:
+    req = AnthropicMessagesRequest(
+        model="claude-opus-4-5",
+        max_tokens=100,
+        system="top-level system",
+        messages=[
+            {"role": "user", "content": "ahoy"},
+            {"role": "system", "content": "in-band system"},
+            {"role": "assistant", "content": "hello"},
+        ],
+    )
+    out = anthropic_to_openai_request(req)
+    assert [m.role for m in out.messages] == ["system", "user", "assistant"]
+    assert out.messages[0].content == "top-level system\n\nin-band system"
+
+
+def test_inband_system_without_top_level_system_becomes_the_leading_one() -> None:
+    req = AnthropicMessagesRequest(
+        model="claude-opus-4-5",
+        max_tokens=100,
+        messages=[
+            {"role": "user", "content": "ahoy"},
+            {"role": "system", "content": [{"type": "text", "text": "block system"}]},
+        ],
+    )
+    out = anthropic_to_openai_request(req)
+    assert [m.role for m in out.messages] == ["system", "user"]
+    assert out.messages[0].content == "block system"
+
+
+def test_empty_inband_system_is_dropped() -> None:
+    req = AnthropicMessagesRequest(
+        model="claude-opus-4-5",
+        max_tokens=100,
+        messages=[{"role": "system", "content": "   "}, {"role": "user", "content": "x"}],
+    )
+    out = anthropic_to_openai_request(req)
+    assert [m.role for m in out.messages] == ["user"]
+
+
+def test_ctx_and_msg_roles_are_coerced_to_user() -> None:
+    req = AnthropicMessagesRequest(
+        model="claude-opus-4-5",
+        max_tokens=100,
+        messages=[
+            {"role": "ctx", "content": "context dump"},
+            {"role": "msg", "content": [{"type": "text", "text": "the prompt"}]},
+            {"role": "assistant", "content": "ok"},
+        ],
+    )
+    out = anthropic_to_openai_request(req)
+    assert [m.role for m in out.messages] == ["user", "user", "assistant"]
+    assert out.messages[0].content == "context dump"
+    assert out.messages[1].content == "the prompt"
+
+
+def test_claude_code_request_shape_with_inband_system_validates() -> None:
+    """Top-level field set as sent by claude-cli 2.1.291 (captured), with
+    the 2.1.154-era in-band system entry added. Must validate and must
+    not be gated as unsupported."""
+    body: dict[str, Any] = {
+        "model": "claude-opus-4-5",
+        "max_tokens": 128000,
+        "stream": True,
+        "system": [{"type": "text", "text": "You are Claude Code."}],
+        "messages": [
+            {"role": "user", "content": "Reply with exactly: PING"},
+            {"role": "system", "content": "in-band note"},
+        ],
+        "tools": [{"name": "Write", "description": "Write a file", "input_schema": {"type": "object"}}],
+        "thinking": {"type": "enabled", "budget_tokens": 4096},
+        "metadata": {"user_id": "abc"},
+        "context_management": {"edits": []},
+        "output_config": {},
+    }
+    req = AnthropicMessagesRequest.model_validate(body)
+    assert request_unsupported_for_phase_1(req) is None
+    out = anthropic_to_openai_request(req)
+    assert [m.role for m in out.messages] == ["system", "user"]
+    assert out.messages[0].content == "You are Claude Code.\n\nin-band note"

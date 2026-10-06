@@ -95,7 +95,15 @@ class AnthropicMessage(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    role: Literal["user", "assistant"]
+    # The public spec allows only ``user`` / ``assistant`` here, but
+    # Claude Code 2.1.154-2.1.156 shipped non-standard entries
+    # (``system``, ``ctx``, ``msg``) inside the array and broke every
+    # strict Anthropic-compatible endpoint. Rejecting at validation
+    # turns a client quirk into a hard 422 before any provider is
+    # tried, so accept any string here and let the translator fold
+    # ``system`` into the leading system prompt and coerce the rest
+    # to ``user`` (see ``anthropic_translate._normalize_roles``).
+    role: str
     content: Union[str, list[dict[str, Any]]]
 
 

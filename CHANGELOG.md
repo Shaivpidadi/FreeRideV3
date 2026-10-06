@@ -7,6 +7,12 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 ## [Unreleased]
 
 ### Fixed
+- ``/v1/messages`` no longer 422s on non-standard roles inside the
+  ``messages`` array. Claude Code 2.1.154-2.1.156 shipped ``system``,
+  ``ctx`` and ``msg`` entries there (fixed upstream since); the schema
+  now accepts any role, in-band ``system`` text is folded into the
+  single leading system message, and other unknown roles are coerced
+  to ``user``. Closes #7.
 - Cooldown marks are no longer lost under concurrency. Every route,
   ``/health``, and the CLI used to build their own ``KeyCooldown`` per
   request and persist a private snapshot of ``cooldown.json``, so two
