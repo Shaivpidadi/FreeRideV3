@@ -123,5 +123,10 @@ npx wrangler kv key get --binding STATS --remote stats:v1
 ```
 
 `rebuild_rollups.sql` rebuilds `install_state` and `hourly_totals` from
-the raw log if they ever drift; it scans `beacons` three times, so it is
-a maintenance tool, never a request-path query.
+the raw log if they ever drift. It scans `beacons` three times: with
+70k rows that is about 1.4M row reads, over a quarter of the Workers
+Free plan's 5M-reads-per-day budget, and D1 rejects every query for the
+rest of the UTC day once the budget is gone (beacons are then dropped
+until midnight; the KV snapshot keeps serving). Run it at most once a
+day, never twice in a row, and never on the request path. Normal
+operation uses roughly 0.4M reads a day.
