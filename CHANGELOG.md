@@ -6,6 +6,11 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+## [0.4.0a24] — 2026-10-07
+
+Concurrency fixes from the architecture review, Claude Code role
+tolerance, and the telemetry backend's move to Cloudflare D1 + KV.
+
 ### Changed
 - Telemetry worker storage moved from Neon Postgres back to Cloudflare
   D1, with write-time rollups (``install_state``, ``hourly_totals``)
@@ -34,6 +39,9 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
   file with its final mode. The fixed ``<path>.tmp`` let concurrent
   writers truncate each other's temp file, and secrets briefly sat
   world-readable between write and chmod.
+- ``atomic_write`` retries the final rename on Windows' transient
+  ``PermissionError`` (``Access is denied`` while another writer holds
+  the destination), which concurrent gateway + CLI writes trigger.
 
 ## [0.4.0a23] — 2026-09-04
 

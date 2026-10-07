@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import time
 from pathlib import Path
 from typing import Any
 
@@ -54,13 +55,36 @@ def atomic_write(path: Path | str, content: str, *, mode: int | None = 0o600) ->
                 # Windows or non-POSIX FS — chmod best-effort; the rename
                 # below is what actually matters for atomicity.
                 pass
-        os.replace(tmp, p)
+        _replace_with_retry(tmp, p)
     except BaseException:
         try:
             os.unlink(tmp)
         except OSError:
             pass
         raise
+
+
+def _replace_with_retry(tmp: Path, dest: Path, *, attempts: int = 20) -> None:
+    """``os.replace`` that tolerates Windows' transient ``PermissionError``.
+
+    On POSIX a rename over an existing path is atomic and never blocked
+    by other readers or writers. On Windows ``MoveFileEx`` fails with
+    ``Access is denied`` while another process or thread has the
+    destination open, including the instant another writer is replacing
+    it. Concurrent writers (gateway + CLI, two request handlers) hit
+    exactly that. Retry with a short backoff; anything that persists
+    past ~1s is a real permission problem and is re-raised.
+    """
+    delay = 0.001
+    for attempt in range(attempts):
+        try:
+            os.replace(tmp, dest)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.1)
 
 
 def write_json_atomic(path: Path | str, obj: Any, *, indent: int | None = 2) -> None:
