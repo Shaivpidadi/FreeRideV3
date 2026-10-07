@@ -142,6 +142,28 @@ function delta(current, previous) {
   return current - previous;
 }
 
+// Per-beacon increment ceiling. Beacons are anonymous, so one forged
+// report could otherwise add anything up to the 1e13 field cap to the
+// public total. Every legitimate hourly jump on record is under 75M
+// tokens; the only larger ones (679M, 312M, 240M) date from the old
+// 1e9 clamp bug. Caps apply to beacons received from the 2026-10-07
+// cutover on, so history is untouched, and the delta is CAPPED, not
+// dropped, so an install that legitimately overshoots (long telemetry
+// outage) resumes normal counting on its next beacon instead of
+// getting stuck. Must stay identical to rebuild_rollups.sql.
+const DELTA_CAP_SINCE = 1791385200; // 2026-10-07T15:00:00Z
+const DELTA_CAPS = {
+  tokens_served: 250_000_000,
+  input_tokens: 250_000_000,
+  output_tokens: 50_000_000,
+  request_count: 100_000,
+};
+function cappedDelta(field, current, previous, received_at) {
+  const d = delta(current, previous);
+  if (received_at < DELTA_CAP_SINCE) return d;
+  return d > DELTA_CAPS[field] ? DELTA_CAPS[field] : d;
+}
+
 async function handleBeacon(request, env) {
   let body;
   try {
@@ -202,10 +224,18 @@ async function handleBeacon(request, env) {
   )
     .bind(installation_id)
     .first();
-  const d_ts = delta(tokens_served, prev?.last_tokens_served);
-  const d_it = delta(input_tokens, prev?.last_input_tokens);
-  const d_ot = delta(output_tokens, prev?.last_output_tokens);
-  const d_rc = delta(request_count, prev?.last_request_count);
+  const d_ts = cappedDelta("tokens_served", tokens_served, prev?.last_tokens_served, received_at);
+  const d_it = cappedDelta("input_tokens", input_tokens, prev?.last_input_tokens, received_at);
+  const d_ot = cappedDelta("output_tokens", output_tokens, prev?.last_output_tokens, received_at);
+  const d_rc = cappedDelta("request_count", request_count, prev?.last_request_count, received_at);
+  if (
+    d_ts !== delta(tokens_served, prev?.last_tokens_served) ||
+    d_rc !== delta(request_count, prev?.last_request_count)
+  ) {
+    // Counted at the cap; the raw row keeps the reported value for
+    // forensics. No IP is logged.
+    console.warn(`beacon delta capped install=${installation_id.slice(0, 8)} tokens=${tokens_served}`);
+  }
   const hour = received_at - (received_at % 3600);
 
   await env.DB.batch([

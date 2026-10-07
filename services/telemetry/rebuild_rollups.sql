@@ -7,6 +7,12 @@
 --
 -- Cost: one scan of beacons per statement (row reads ~= 3 x row count).
 -- Keep this for one-off maintenance, never on the request path.
+--
+-- Per-beacon increment ceiling (keep identical to DELTA_CAPS /
+-- DELTA_CAP_SINCE in src/worker.js): for beacons received from
+-- 1791385200 (2026-10-07T15:00Z) on, an increment above 250M tokens
+-- (input or combined), 50M output tokens or 100k requests counts as
+-- the cap. Earlier rows are never capped so history stays exact.
 
 DELETE FROM install_state;
 DELETE FROM hourly_totals;
@@ -29,10 +35,14 @@ WITH ordered AS (
 deltas AS (
   SELECT installation_id, received_at, version, os, rn_desc,
          tokens_served, input_tokens, output_tokens, request_count,
-         CASE WHEN p_ts IS NULL OR tokens_served < p_ts THEN tokens_served ELSE tokens_served - p_ts END AS d_ts,
-         CASE WHEN p_it IS NULL OR input_tokens  < p_it THEN input_tokens  ELSE input_tokens  - p_it END AS d_it,
-         CASE WHEN p_ot IS NULL OR output_tokens < p_ot THEN output_tokens ELSE output_tokens - p_ot END AS d_ot,
-         CASE WHEN p_rc IS NULL OR request_count < p_rc THEN request_count ELSE request_count - p_rc END AS d_rc
+         CASE WHEN received_at >= 1791385200 THEN MIN(CASE WHEN p_ts IS NULL OR tokens_served < p_ts THEN tokens_served ELSE tokens_served - p_ts END, 250000000)
+              ELSE CASE WHEN p_ts IS NULL OR tokens_served < p_ts THEN tokens_served ELSE tokens_served - p_ts END END AS d_ts,
+         CASE WHEN received_at >= 1791385200 THEN MIN(CASE WHEN p_it IS NULL OR input_tokens  < p_it THEN input_tokens  ELSE input_tokens  - p_it END, 250000000)
+              ELSE CASE WHEN p_it IS NULL OR input_tokens  < p_it THEN input_tokens  ELSE input_tokens  - p_it END END AS d_it,
+         CASE WHEN received_at >= 1791385200 THEN MIN(CASE WHEN p_ot IS NULL OR output_tokens < p_ot THEN output_tokens ELSE output_tokens - p_ot END, 50000000)
+              ELSE CASE WHEN p_ot IS NULL OR output_tokens < p_ot THEN output_tokens ELSE output_tokens - p_ot END END AS d_ot,
+         CASE WHEN received_at >= 1791385200 THEN MIN(CASE WHEN p_rc IS NULL OR request_count < p_rc THEN request_count ELSE request_count - p_rc END, 100000)
+              ELSE CASE WHEN p_rc IS NULL OR request_count < p_rc THEN request_count ELSE request_count - p_rc END END AS d_rc
   FROM ordered
 )
 SELECT installation_id,
@@ -60,10 +70,14 @@ WITH ordered AS (
   WINDOW w AS (PARTITION BY installation_id ORDER BY received_at, id)
 )
 SELECT received_at - (received_at % 3600) AS hour,
-       SUM(CASE WHEN p_ts IS NULL OR tokens_served < p_ts THEN tokens_served ELSE tokens_served - p_ts END),
-       SUM(CASE WHEN p_it IS NULL OR input_tokens  < p_it THEN input_tokens  ELSE input_tokens  - p_it END),
-       SUM(CASE WHEN p_ot IS NULL OR output_tokens < p_ot THEN output_tokens ELSE output_tokens - p_ot END),
-       SUM(CASE WHEN p_rc IS NULL OR request_count < p_rc THEN request_count ELSE request_count - p_rc END),
+       SUM(CASE WHEN received_at >= 1791385200 THEN MIN(CASE WHEN p_ts IS NULL OR tokens_served < p_ts THEN tokens_served ELSE tokens_served - p_ts END, 250000000)
+                ELSE CASE WHEN p_ts IS NULL OR tokens_served < p_ts THEN tokens_served ELSE tokens_served - p_ts END END),
+       SUM(CASE WHEN received_at >= 1791385200 THEN MIN(CASE WHEN p_it IS NULL OR input_tokens  < p_it THEN input_tokens  ELSE input_tokens  - p_it END, 250000000)
+                ELSE CASE WHEN p_it IS NULL OR input_tokens  < p_it THEN input_tokens  ELSE input_tokens  - p_it END END),
+       SUM(CASE WHEN received_at >= 1791385200 THEN MIN(CASE WHEN p_ot IS NULL OR output_tokens < p_ot THEN output_tokens ELSE output_tokens - p_ot END, 50000000)
+                ELSE CASE WHEN p_ot IS NULL OR output_tokens < p_ot THEN output_tokens ELSE output_tokens - p_ot END END),
+       SUM(CASE WHEN received_at >= 1791385200 THEN MIN(CASE WHEN p_rc IS NULL OR request_count < p_rc THEN request_count ELSE request_count - p_rc END, 100000)
+                ELSE CASE WHEN p_rc IS NULL OR request_count < p_rc THEN request_count ELSE request_count - p_rc END END),
        COUNT(*)
 FROM ordered
 GROUP BY hour;

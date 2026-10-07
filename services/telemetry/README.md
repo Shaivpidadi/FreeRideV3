@@ -103,6 +103,16 @@ seconds. A real install sends one beacon an hour. The rule lives in the
 Cloudflare dashboard under Security → WAF → Rate limiting rules; it is
 not managed by wrangler.
 
+The rate limit bounds how many beacons one IP can send; a per-beacon
+increment ceiling bounds what each one can add. From the 2026-10-07
+cutover on, an increment above 250M tokens (input or combined), 50M
+output tokens or 100k requests is counted as the cap (`DELTA_CAPS` in
+`src/worker.js`, mirrored in `rebuild_rollups.sql`). Every legitimate
+hourly jump on record is under 75M tokens. The delta is capped rather
+than dropped, so an install that overshoots after a telemetry outage
+resumes normal counting on its next beacon. Earlier rows are never
+capped, so history stays exact.
+
 ## Observability
 
 ```bash
