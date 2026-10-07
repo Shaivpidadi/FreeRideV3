@@ -93,6 +93,16 @@ second pass with `--since <epoch>` after the cutover picks up the
 beacons that landed on Neon in between, followed by one more rollup
 rebuild.
 
+## Abuse limits
+
+The beacon and install-event endpoints are anonymous by design, so the
+zone carries one WAF rate-limiting rule (the Free plan's allowance):
+`POST /v1/beacon` and `/v1/install-event` on `api.` and `telemetry.`
+are limited to 5 requests per 10 seconds per IP, blocked for 10
+seconds. A real install sends one beacon an hour. The rule lives in the
+Cloudflare dashboard under Security → WAF → Rate limiting rules; it is
+not managed by wrangler.
+
 ## Observability
 
 ```bash
