@@ -1,16 +1,18 @@
 {
   "name": "freeride-telemetry",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
-  "description": "FreeRide site + telemetry beacon receiver running on Cloudflare Workers, backed by Neon Postgres.",
+  "description": "FreeRide site + telemetry beacon receiver running on Cloudflare Workers, backed by D1 and KV.",
   "type": "module",
   "main": "src/worker.js",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "tail": "wrangler tail"
+    "tail": "wrangler tail",
+    "schema:remote": "wrangler d1 execute freeride-telemetry --remote --file=./schema.d1.sql",
+    "rollups:rebuild": "wrangler d1 execute freeride-telemetry --remote --file=./rebuild_rollups.sql"
   },
-  "dependencies": {
-    "@neondatabase/serverless": "^0.10.0"
+  "devDependencies": {
+    "wrangler": "^4.148.0"
   }
 }

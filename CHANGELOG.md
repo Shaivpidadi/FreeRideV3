@@ -6,6 +6,15 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+### Changed
+- Telemetry worker storage moved from Neon Postgres back to Cloudflare
+  D1, with write-time rollups (``install_state``, ``hourly_totals``)
+  and a KV snapshot for ``/v1/stats`` so the beacons table is never
+  scanned on the request path. Admin endpoints now require
+  ``ADMIN_TOKEN``. Neon never suspended under hourly beacons and
+  cost ~$20/month for a few hundred rows a day; D1 + KV is $0 at this
+  volume. The Neon projects are kept as a read-only backup.
+
 ### Fixed
 - ``/v1/messages`` no longer 422s on non-standard roles inside the
   ``messages`` array. Claude Code 2.1.154-2.1.156 shipped ``system``,

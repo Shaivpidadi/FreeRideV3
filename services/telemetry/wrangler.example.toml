@@ -1,28 +1,27 @@
 name = "freeride-telemetry"
 main = "src/worker.js"
-compatibility_date = "2026-04-01"
+compatibility_date = "2026-09-15"
 
 # Keep the *.workers.dev URL active as a fallback so the worker is
 # reachable even before / outside of the custom-domain DNS path.
 workers_dev = true
 
-# Storage moved off Cloudflare D1 onto Neon Postgres on 2026-05-28
-# so the marketing site, future SDK callers, and the Worker all share
-# one source of truth. Connection string lives in env.DATABASE_URL,
-# never in the toml:
+# Storage: Cloudflare D1 (raw beacon log + write-time rollups) and
+# Workers KV (the /v1/stats snapshot the hourly cron recomputes). Both
+# sit inside the Workers free plan at this project's volume. Create
+# them once and paste the ids here (the real wrangler.toml is
+# gitignored):
 #
-#   wrangler secret put DATABASE_URL    # production (encrypted)
-#   echo 'DATABASE_URL=postgresql://...' > .dev.vars   # `wrangler dev`
+#   wrangler d1 create freeride-telemetry
+#   wrangler d1 execute freeride-telemetry --remote --file=./schema.d1.sql
+#   wrangler kv namespace create STATS
+#   wrangler secret put ADMIN_TOKEN     # gates /v1/_admin/*
 #
-# Both `wrangler.toml` and `.dev.vars` are gitignored — paste the real
-# values once and they stay local.
+# Storage history: D1 (May 2026) -> Neon Postgres (2026-05-28) -> D1
+# (2026-10-07). Neon billed compute-hours and never got to suspend.
 
 # Public custom domains.
-#
-# Hostname split as of 2026-05:
-#   - free-ride.xyz (apex) is owned by the Vercel-hosted marketing site.
 #   - api.free-ride.xyz is the canonical hostname for this Worker.
-#     Routes: /install.sh, /v1/beacon, /v1/stats, /health.
 #   - telemetry.free-ride.xyz is kept as an alias so installs running
 #     pre-0.3.0a9 (which hard-coded that hostname into the beacon URL)
 #     keep working without a re-install.
@@ -34,10 +33,16 @@ custom_domain = true
 pattern = "telemetry.free-ride.xyz"
 custom_domain = true
 
-# Cron trigger: refresh the OpenRouter app-level token aggregate every
-# hour. The handler scrapes the public app activity pages for both V2
-# (Shaivpidadi/FreeRide) and V3 (Shaivpidadi/FreeRideV3) and stores the
-# combined total in the openrouter_aggregate Neon table for /v1/stats
-# to surface.
+# Hourly: scrape the OpenRouter app pages into openrouter_* and
+# recompute the /v1/stats snapshot in KV.
 [triggers]
 crons = ["0 * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "freeride-telemetry"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+[[kv_namespaces]]
+binding = "STATS"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"

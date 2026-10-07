@@ -3,3 +3,5 @@
 
 # node deps for the worker bundle
 node_modules/
+d1-import/
+.wrangler/

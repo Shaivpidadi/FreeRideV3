@@ -19,7 +19,7 @@
 ### Tech Stack
 - **Frontend**: N/A (CLI + local HTTP gateway)
 - **Backend**: Python 3.10+, FastAPI, uvicorn, httpx, pydantic v2
-- **Database**: None locally. Telemetry worker uses Neon Postgres.
+- **Database**: None locally. Telemetry worker uses Cloudflare D1 + KV (was Neon Postgres until 2026-10-07).
 - **Infrastructure**: PyPI (`freeride-gateway`), Cloudflare Worker at `services/telemetry/`
 - **Development Tools**: pytest, ruff, hatchling
 
@@ -39,7 +39,7 @@
 freeride/          package (CLI, core, providers, server, binders, v2compat)
 tests/             unit, provider, e2e, conformance
 docs/              agents, architecture, providers
-services/telemetry Cloudflare Worker + Neon schema
+services/telemetry Cloudflare Worker + D1 schema + KV stats snapshot
 ```
 
 ## Core Features & Modules
