@@ -338,12 +338,15 @@ async function computeStats(env) {
          FROM openrouter_daily WHERE date >= ?1
          GROUP BY model_id ORDER BY tokens DESC LIMIT 10`,
       ).bind(isoDate(day30Ago)).all(),
+      // Lifetime comes from the weekly series (the only one that spans
+      // it); "through" is the newest daily date the page reports.
       env.DB.prepare(
-        `SELECT SUM(tokens) AS combined_tokens,
-                SUM(CASE WHEN app = 'v1' THEN tokens ELSE 0 END) AS v1_tokens,
-                SUM(CASE WHEN app = 'v3' THEN tokens ELSE 0 END) AS v3_tokens,
-                MIN(date) AS since, MAX(date) AS through
-         FROM openrouter_daily`,
+        `SELECT SUM(w.tokens) AS combined_tokens,
+                SUM(CASE WHEN w.app = 'v1' THEN w.tokens ELSE 0 END) AS v1_tokens,
+                SUM(CASE WHEN w.app = 'v3' THEN w.tokens ELSE 0 END) AS v3_tokens,
+                MIN(w.week_start) AS since,
+                (SELECT MAX(date) FROM openrouter_daily) AS through
+         FROM openrouter_weekly w`,
       ).first(),
       env.DB.prepare(
         `SELECT COUNT(*) AS total,
@@ -474,15 +477,14 @@ function extractTotalTokens(html) {
   return m ? parseInt(m[1], 10) : 0;
 }
 
-// Pull the per-day per-model breakdown the OR app page embeds. Each
-// day appears as `\"x\":\"YYYY-MM-DD ...\",\"ys\":{model:N, model:N}`.
-// Returns a flat list of {date, model_id, tokens}; the caller keys
-// it by app slug. Only positive counts are kept.
-function parseOpenRouterDailyBreakdown(html) {
+// Parse one series of `\"x\":\"YYYY-MM-DD ...\",\"ys\":{model:N,...}`
+// entries. Returns a flat list of {date, model_id, tokens}; only
+// positive counts are kept.
+function parseSeries(segment) {
   const out = [];
   const dayRe =
     /\\"x\\":\\"(\d{4}-\d{2}-\d{2})[^\\]*\\",\\"ys\\":\{([^}]+)\}/g;
-  for (const dayMatch of html.matchAll(dayRe)) {
+  for (const dayMatch of segment.matchAll(dayRe)) {
     const date = dayMatch[1];
     const ysRaw = dayMatch[2];
     const pairRe = /\\"([^\\"]+)\\":(\d+)/g;
@@ -496,14 +498,42 @@ function parseOpenRouterDailyBreakdown(html) {
   return out;
 }
 
+// The OR app page embeds TWO series with the same entry shape: `daily`
+// (the trailing ~30 days; its sum equals the page's totalTokens) and
+// `weekly` (one entry per week start, spanning the app's lifetime).
+// They must be read from their own blocks: parsing the whole page as
+// daily rows made each week's total land on its week-start day, which
+// is how /v1/stats' "lifetime" roughly doubled on 2026-10-08. If a
+// marker is missing the corresponding list is empty, never a mix.
+function parseOpenRouterSeries(html) {
+  const dailyAt = html.indexOf('\\"daily\\":[');
+  const weeklyAt = html.indexOf('\\"weekly\\":[');
+  if (dailyAt < 0 || weeklyAt < 0) {
+    console.error("openrouter page layout changed: daily/weekly markers", dailyAt, weeklyAt);
+    return { daily: [], weekly: [] };
+  }
+  const first = Math.min(dailyAt, weeklyAt);
+  const second = Math.max(dailyAt, weeklyAt);
+  const firstSeg = html.slice(first, second);
+  // The second block ends at the closing bracket of its array.
+  const secondEnd = html.indexOf("]", second);
+  const secondSeg = html.slice(second, secondEnd < 0 ? html.length : secondEnd + 1);
+  return dailyAt < weeklyAt
+    ? { daily: parseSeries(firstSeg), weekly: parseSeries(secondSeg) }
+    : { daily: parseSeries(secondSeg), weekly: parseSeries(firstSeg) };
+}
+
 async function refreshOpenRouterAggregate(env) {
   const results = {};
   const breakdownByApp = {};
+  const weeklyByApp = {};
   for (const { slug, url } of OR_APP_URLS) {
     try {
       const html = await fetchOpenRouterAppHtml(url);
       results[slug] = extractTotalTokens(html);
-      breakdownByApp[slug] = parseOpenRouterDailyBreakdown(html);
+      const series = parseOpenRouterSeries(html);
+      breakdownByApp[slug] = series.daily;
+      weeklyByApp[slug] = series.weekly;
     } catch (e) {
       console.error("openrouter scrape failed for", slug, e);
       // Use the last known value as a fallback so a transient OR
@@ -515,6 +545,7 @@ async function refreshOpenRouterAggregate(env) {
       ).first();
       results[slug] = Number(prev?.t ?? 0);
       breakdownByApp[slug] = [];
+      weeklyByApp[slug] = [];
     }
   }
   const v1 = results.v1 ?? 0;
@@ -546,9 +577,23 @@ async function refreshOpenRouterAggregate(env) {
       daily_rows_written += 1;
     }
   }
+  let weekly_rows_written = 0;
+  for (const [app, rows] of Object.entries(weeklyByApp)) {
+    for (const { date, model_id, tokens } of rows) {
+      statements.push(
+        env.DB.prepare(
+          `INSERT INTO openrouter_weekly (week_start, app, model_id, tokens, scraped_at)
+           VALUES (?1, ?2, ?3, ?4, ?5)
+           ON CONFLICT(week_start, app, model_id) DO UPDATE SET
+             tokens = excluded.tokens, scraped_at = excluded.scraped_at`,
+        ).bind(date, app, model_id, tokens, now),
+      );
+      weekly_rows_written += 1;
+    }
+  }
   await env.DB.batch(statements);
 
-  return { v1, v3, combined, daily_rows_written };
+  return { v1, v3, combined, daily_rows_written, weekly_rows_written };
 }
 
 // Admin endpoints are gated by a bearer token (`wrangler secret put

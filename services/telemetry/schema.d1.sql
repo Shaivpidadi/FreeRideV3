@@ -107,7 +107,9 @@ CREATE TABLE IF NOT EXISTS openrouter_aggregate (
 
 
 -- ─── openrouter_daily ───────────────────────────────────────────
--- Per-day per-model breakdown from the same scraper.
+-- Per-day per-model breakdown from the app page's `daily` series: the
+-- trailing ~30 days, whose sum equals the page's totalTokens. Rows
+-- older than the window are kept as history but are not re-scraped.
 CREATE TABLE IF NOT EXISTS openrouter_daily (
   date              TEXT NOT NULL,
   app               TEXT NOT NULL,
@@ -122,6 +124,22 @@ CREATE INDEX IF NOT EXISTS idx_or_daily_date
 
 CREATE INDEX IF NOT EXISTS idx_or_daily_model
   ON openrouter_daily(model_id);
+
+
+-- ─── openrouter_weekly ──────────────────────────────────────────
+-- Per-week per-model breakdown from the app page's `weekly` series,
+-- which spans the app's whole lifetime. This is what openrouter_lifetime
+-- on /v1/stats sums. Until 2026-10-08 the scraper folded these rows
+-- into openrouter_daily keyed by week-start date, so a week's total
+-- overwrote that day's value and "lifetime" roughly doubled.
+CREATE TABLE IF NOT EXISTS openrouter_weekly (
+  week_start        TEXT NOT NULL,
+  app               TEXT NOT NULL,
+  model_id          TEXT NOT NULL,
+  tokens            INTEGER NOT NULL,
+  scraped_at        INTEGER NOT NULL,
+  PRIMARY KEY (week_start, app, model_id)
+);
 
 
 -- ─── install_events ─────────────────────────────────────────────

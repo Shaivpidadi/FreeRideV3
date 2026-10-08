@@ -6,6 +6,19 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+### Fixed
+- Telemetry worker: the OpenRouter app page embeds two series with the
+  same entry shape, ``daily`` (trailing ~30 days) and ``weekly`` (the
+  app's lifetime, one entry per week start). The scraper parsed the
+  whole page as daily rows, so each week's total landed on its
+  week-start day. On Neon the colliding upsert mostly failed outright;
+  on D1 it succeeded and ``openrouter_lifetime`` on ``/v1/stats`` roughly
+  doubled (10.8B), which the homepage counter then showed. Each series
+  is now read from its own block, weekly rows live in
+  ``openrouter_weekly`` and are what lifetime sums (6.05B as of
+  2026-10-08, daily sums equal the page totals exactly), and the
+  polluted daily rows were regenerated from the source.
+
 ## [0.4.0a24] — 2026-10-07
 
 Concurrency fixes from the architecture review, Claude Code role
