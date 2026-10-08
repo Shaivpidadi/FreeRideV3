@@ -28,8 +28,17 @@ CREATE TABLE IF NOT EXISTS beacons (
   request_count     INTEGER NOT NULL DEFAULT 0,
   providers_active  TEXT,                          -- JSON array
   uptime_hours      INTEGER NOT NULL DEFAULT 0,
-  received_at       INTEGER NOT NULL               -- unix epoch seconds
+  received_at       INTEGER NOT NULL,              -- unix epoch seconds
+  -- 0 until the row has been folded into install_state / hourly_totals.
+  -- The worker inserts with 0 and sets 1 in the same batch as the
+  -- rollup, so repair_rollups.sql can find rows whose rollup step failed
+  -- (D1 over its read budget, for example) without guessing from
+  -- watermarks. Existing rows default to 1.
+  rolled            INTEGER NOT NULL DEFAULT 1
 );
+
+CREATE INDEX IF NOT EXISTS idx_beacons_unrolled
+  ON beacons(rolled) WHERE rolled = 0;
 
 CREATE INDEX IF NOT EXISTS idx_beacons_received_at
   ON beacons(received_at);

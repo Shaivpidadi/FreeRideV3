@@ -125,9 +125,12 @@ npx wrangler kv key get --binding STATS --remote stats:v1
 `repair_rollups.sql` is the cheap fix when the write path's rollup step
 failed for a while but the raw INSERTs landed (this happened on
 2026-10-07 while D1 was over its read budget: writes still went through,
-the one read per beacon did not). It replays only the beacons newer than
-each install's `last_seen`, bounded by the `received_at` index, and is
-idempotent; substitute `__SINCE__` with an epoch just before the gap.
+the one read per beacon did not). Every raw row carries `rolled`, set to
+1 in the same batch as its rollup, so the repair replays exactly the rows
+with `rolled = 0` and is idempotent. Totals and beacon counts come out
+exact; tokens of a missed row that a later beacon already covered stay
+attributed to that later hour (run the full rebuild if per-hour
+attribution matters).
 
 `rebuild_rollups.sql` rebuilds `install_state` and `hourly_totals` from
 the raw log if they ever drift. It scans `beacons` three times: with

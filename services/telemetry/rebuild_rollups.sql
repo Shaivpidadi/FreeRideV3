@@ -16,6 +16,7 @@
 
 DELETE FROM install_state;
 DELETE FROM hourly_totals;
+UPDATE beacons SET rolled = 1 WHERE rolled = 0;
 
 INSERT INTO install_state
   (installation_id, version, os, first_seen, last_seen,

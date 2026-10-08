@@ -203,8 +203,8 @@ async function handleBeacon(request, env) {
     `INSERT OR IGNORE INTO beacons
        (installation_id, version, os,
         tokens_served, input_tokens, output_tokens,
-        request_count, providers_active, uptime_hours, received_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`,
+        request_count, providers_active, uptime_hours, received_at, rolled)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0)`,
   )
     .bind(
       installation_id, version, os,
@@ -215,6 +215,7 @@ async function handleBeacon(request, env) {
   if (!inserted.meta || inserted.meta.changes === 0) {
     return json({ ok: true, duplicate: true });
   }
+  const beacon_row_id = inserted.meta.last_row_id;
 
   // 2. Fold into the rollups. One point read for the install's last
   //    counters, then one batch (install_state upsert + hourly bucket).
@@ -272,6 +273,9 @@ async function handleBeacon(request, env) {
          request_count = hourly_totals.request_count + excluded.request_count,
          beacons = hourly_totals.beacons + 1`,
     ).bind(hour, d_ts, d_it, d_ot, d_rc),
+    // Same batch as the rollup: if the batch fails, the row stays
+    // rolled = 0 and repair_rollups.sql picks it up.
+    env.DB.prepare(`UPDATE beacons SET rolled = 1 WHERE id = ?1`).bind(beacon_row_id),
   ]);
 
   return json({ ok: true });
