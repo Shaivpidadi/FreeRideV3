@@ -15,6 +15,10 @@ What gets sent (only when enabled, hourly):
       "tokens_served": 412034,
       "request_count": 187,
       "providers_active": ["openrouter", "nvidia_nim"],
+      "providers": {
+        "openrouter": {"input_tokens": 400000, "output_tokens": 12034, "request_count": 180},
+        "nvidia_nim": {"input_tokens": 0, "output_tokens": 0, "request_count": 7}
+      },
       "uptime_hours": 8
     }
 
@@ -34,7 +38,7 @@ import json
 import os
 import platform
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -129,8 +133,9 @@ DISCLOSURE_BANNER = """
 FreeRide telemetry: ENABLED (default).
 
 Sent hourly to {endpoint} (silent on failure):
-  installation_id, version, os, tokens_served, request_count,
-  providers_active, uptime_hours
+  installation_id, version, os, tokens_served, input_tokens,
+  output_tokens, request_count, providers_active,
+  providers (token + request counts per provider name), uptime_hours
 
 Never sent: prompts, completions, model IDs, API keys, hostname, IP.
 
@@ -174,6 +179,9 @@ class Stats:
     output_tokens: int = 0
     request_count: int = 0
     providers_active: tuple[str, ...] = ()
+    # Cumulative per-provider counters, success-only like the totals:
+    # {"openrouter": {"input_tokens": .., "output_tokens": .., "request_count": ..}}
+    providers: dict[str, dict[str, int]] = field(default_factory=dict)
     uptime_hours: int = 0
 
     @classmethod
@@ -196,8 +204,32 @@ class Stats:
             output_tokens=output_t,
             request_count=int(raw.get("request_count", 0) or 0),
             providers_active=tuple(p for p in providers if isinstance(p, str)),
+            providers=_clean_provider_counters(raw.get("providers")),
             uptime_hours=int(raw.get("uptime_hours", 0) or 0),
         )
+
+
+_PROVIDER_COUNTER_FIELDS = ("input_tokens", "output_tokens", "request_count")
+
+
+def _clean_provider_counters(raw: Any) -> dict[str, dict[str, int]]:
+    """Validate the per-provider block from stats.json: provider names are
+    the plugin ids (``openrouter``, ``nvidia_nim`` ...), values are the
+    three non-negative counters. Anything else is dropped."""
+    out: dict[str, dict[str, int]] = {}
+    if not isinstance(raw, dict):
+        return out
+    for name, entry in raw.items():
+        if not isinstance(name, str) or not isinstance(entry, dict):
+            continue
+        cleaned = {}
+        for f in _PROVIDER_COUNTER_FIELDS:
+            try:
+                cleaned[f] = max(int(entry.get(f, 0) or 0), 0)
+            except (TypeError, ValueError):
+                cleaned[f] = 0
+        out[name] = cleaned
+    return out
 
 
 def record_request(
@@ -276,6 +308,16 @@ def record_request(
             existing["input_tokens"] = prev_input + input_tokens
             existing["output_tokens"] = prev_output + output_tokens
             existing["request_count"] = prev_count + 1
+            if provider:
+                # Per-provider split of the same success-only counters, so
+                # the public stats can attribute tokens to providers.
+                per = _clean_provider_counters(existing.get("providers"))
+                entry = per.get(provider, {f: 0 for f in _PROVIDER_COUNTER_FIELDS})
+                entry["input_tokens"] += input_tokens
+                entry["output_tokens"] += output_tokens
+                entry["request_count"] += 1
+                per[provider] = entry
+                existing["providers"] = per
         existing["providers_active"] = sorted(providers_set)
 
         if provider and model:
@@ -325,6 +367,9 @@ def build_payload(*, version: str | None = None) -> dict[str, Any]:
         "output_tokens": s.output_tokens,
         "request_count": s.request_count,
         "providers_active": list(s.providers_active),
+        # Per-provider split of the counters above (provider plugin ids
+        # only; never model ids).
+        "providers": {k: dict(v) for k, v in s.providers.items()},
         "uptime_hours": s.uptime_hours,
     }
 

@@ -82,3 +82,54 @@ SELECT received_at - (received_at % 3600) AS hour,
        COUNT(*)
 FROM ordered
 GROUP BY hour;
+
+-- ─── totals (one row) ───────────────────────────────────────────
+DELETE FROM totals;
+INSERT INTO totals (id, installations, tokens_served, input_tokens, output_tokens, request_count, beacons, since)
+SELECT 1, COUNT(*), COALESCE(SUM(acc_tokens_served), 0), COALESCE(SUM(acc_input_tokens), 0),
+       COALESCE(SUM(acc_output_tokens), 0), COALESCE(SUM(acc_request_count), 0),
+       (SELECT COUNT(*) FROM beacons), MIN(first_seen)
+FROM install_state;
+
+-- ─── per-provider rollups from beacons.providers (JSON) ─────────
+DELETE FROM install_provider_state;
+DELETE FROM provider_totals;
+INSERT INTO install_provider_state
+  (installation_id, provider, last_input_tokens, last_output_tokens, last_request_count,
+   acc_input_tokens, acc_output_tokens, acc_request_count)
+WITH rows AS (
+  SELECT b.installation_id, b.received_at, b.id, je.key AS provider,
+         CAST(COALESCE(json_extract(je.value, '$.input_tokens'), 0) AS INTEGER)  AS input_tokens,
+         CAST(COALESCE(json_extract(je.value, '$.output_tokens'), 0) AS INTEGER) AS output_tokens,
+         CAST(COALESCE(json_extract(je.value, '$.request_count'), 0) AS INTEGER) AS request_count
+  FROM beacons b, json_each(b.providers) je
+  WHERE b.providers IS NOT NULL
+),
+ordered AS (
+  SELECT *,
+         LAG(input_tokens)  OVER w AS p_it,
+         LAG(output_tokens) OVER w AS p_ot,
+         LAG(request_count) OVER w AS p_rc,
+         ROW_NUMBER() OVER (PARTITION BY installation_id, provider ORDER BY received_at DESC, id DESC) AS rn_desc
+  FROM rows
+  WINDOW w AS (PARTITION BY installation_id, provider ORDER BY received_at, id)
+),
+deltas AS (
+  SELECT installation_id, provider, rn_desc, input_tokens, output_tokens, request_count,
+         CASE WHEN received_at >= 1791385200 THEN MIN(CASE WHEN p_it IS NULL OR input_tokens < p_it THEN input_tokens ELSE input_tokens - p_it END, 250000000) ELSE CASE WHEN p_it IS NULL OR input_tokens < p_it THEN input_tokens ELSE input_tokens - p_it END END AS d_it,
+         CASE WHEN received_at >= 1791385200 THEN MIN(CASE WHEN p_ot IS NULL OR output_tokens < p_ot THEN output_tokens ELSE output_tokens - p_ot END, 50000000) ELSE CASE WHEN p_ot IS NULL OR output_tokens < p_ot THEN output_tokens ELSE output_tokens - p_ot END END AS d_ot,
+         CASE WHEN received_at >= 1791385200 THEN MIN(CASE WHEN p_rc IS NULL OR request_count < p_rc THEN request_count ELSE request_count - p_rc END, 100000) ELSE CASE WHEN p_rc IS NULL OR request_count < p_rc THEN request_count ELSE request_count - p_rc END END AS d_rc
+  FROM ordered
+)
+SELECT installation_id, provider,
+       MAX(CASE WHEN rn_desc = 1 THEN input_tokens END),
+       MAX(CASE WHEN rn_desc = 1 THEN output_tokens END),
+       MAX(CASE WHEN rn_desc = 1 THEN request_count END),
+       SUM(d_it), SUM(d_ot), SUM(d_rc)
+FROM deltas
+GROUP BY installation_id, provider;
+
+INSERT INTO provider_totals (provider, installations, input_tokens, output_tokens, request_count)
+SELECT provider, COUNT(*), SUM(acc_input_tokens), SUM(acc_output_tokens), SUM(acc_request_count)
+FROM install_provider_state
+GROUP BY provider;

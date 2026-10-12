@@ -6,6 +6,18 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+## [0.4.0a25] — 2026-10-12
+
+Per-provider telemetry split, end to end, and the OpenRouter lifetime fix.
+
+### Added
+- The telemetry beacon carries a per-provider split of its counters
+  (``providers``: input tokens, output tokens, request count keyed by
+  provider plugin id), so the public stats can attribute usage to
+  providers. Same success-only semantics as the totals; still no model
+  ids. The disclosure banner and ``freeride telemetry`` show the new
+  field.
+
 ### Fixed
 - Telemetry worker: the OpenRouter app page embeds two series with the
   same entry shape, ``daily`` (trailing ~30 days) and ``weekly`` (the
@@ -18,6 +30,11 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
   ``openrouter_weekly`` and are what lifetime sums (6.05B as of
   2026-10-08, daily sums equal the page totals exactly), and the
   polluted daily rows were regenerated from the source.
+- Telemetry worker: a single-row ``totals`` table incremented per
+  beacon now backs the headline numbers (no per-request sum over
+  installs), and per-provider splits roll into ``provider_totals``,
+  exposed as ``total.by_provider`` on ``/v1/stats``. ``rebuild_rollups.sql``
+  and ``repair_rollups.sql`` cover the new tables.
 
 ## [0.4.0a24] — 2026-10-07
 

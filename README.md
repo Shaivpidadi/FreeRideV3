@@ -156,7 +156,7 @@ Each line is a JSON event: routing decisions, provider attempts, ladder fallback
 
 ## Telemetry
 
-A small beacon ships hourly with **counts only**: tokens served, request count, active providers, uptime hours, OS, version, and a per-install UUID. **Never sent:** prompts, completions, model IDs, API keys, hostname, IP.
+A small beacon ships hourly with **counts only**: tokens served (input and output), request count, the same counts split per provider name, active providers, uptime hours, OS, version, and a per-install UUID. **Never sent:** prompts, completions, model IDs, API keys, hostname, IP.
 
 ```bash
 freeride telemetry        # audit what the next beacon would post

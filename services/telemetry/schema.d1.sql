@@ -34,7 +34,11 @@ CREATE TABLE IF NOT EXISTS beacons (
   -- rollup, so repair_rollups.sql can find rows whose rollup step failed
   -- (D1 over its read budget, for example) without guessing from
   -- watermarks. Existing rows default to 1.
-  rolled            INTEGER NOT NULL DEFAULT 1
+  rolled            INTEGER NOT NULL DEFAULT 1,
+  -- Per-provider split of the cumulative counters, as the beacon sent
+  -- it: {"openrouter":{"input_tokens":..,"output_tokens":..,"request_count":..}}.
+  -- NULL for beacons from gateways older than 0.4.0a25.
+  providers         TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_beacons_unrolled
@@ -80,6 +84,46 @@ CREATE TABLE IF NOT EXISTS install_state (
 
 CREATE INDEX IF NOT EXISTS idx_install_state_last_seen
   ON install_state(last_seen);
+
+
+-- ─── totals ─────────────────────────────────────────────────────
+-- One row. The headline numbers, incremented inside the same batch as
+-- every beacon's rollup, so /v1/stats reads one row instead of summing
+-- install_state. Rebuilt from install_state by rebuild_rollups.sql.
+CREATE TABLE IF NOT EXISTS totals (
+  id                INTEGER PRIMARY KEY CHECK (id = 1),
+  installations     INTEGER NOT NULL DEFAULT 0,
+  tokens_served     INTEGER NOT NULL DEFAULT 0,
+  input_tokens      INTEGER NOT NULL DEFAULT 0,
+  output_tokens     INTEGER NOT NULL DEFAULT 0,
+  request_count     INTEGER NOT NULL DEFAULT 0,
+  beacons           INTEGER NOT NULL DEFAULT 0,
+  since             INTEGER                       -- first beacon ever (epoch)
+);
+
+
+-- ─── install_provider_state / provider_totals ───────────────────
+-- Per-(install, provider) last counters + reset-aware delta-sum, and
+-- the per-provider totals they roll into. Fed by beacons.providers.
+CREATE TABLE IF NOT EXISTS install_provider_state (
+  installation_id     TEXT NOT NULL,
+  provider            TEXT NOT NULL,
+  last_input_tokens   INTEGER NOT NULL DEFAULT 0,
+  last_output_tokens  INTEGER NOT NULL DEFAULT 0,
+  last_request_count  INTEGER NOT NULL DEFAULT 0,
+  acc_input_tokens    INTEGER NOT NULL DEFAULT 0,
+  acc_output_tokens   INTEGER NOT NULL DEFAULT 0,
+  acc_request_count   INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (installation_id, provider)
+);
+
+CREATE TABLE IF NOT EXISTS provider_totals (
+  provider          TEXT PRIMARY KEY,
+  installations     INTEGER NOT NULL DEFAULT 0,
+  input_tokens      INTEGER NOT NULL DEFAULT 0,
+  output_tokens     INTEGER NOT NULL DEFAULT 0,
+  request_count     INTEGER NOT NULL DEFAULT 0
+);
 
 
 -- ─── hourly_totals ──────────────────────────────────────────────

@@ -12,9 +12,13 @@ shipped to PyPI.
 ## What it does
 
 * **POST `/v1/beacon`** — accepts a beacon, appends one row to
-  `beacons`, and folds it into two rollups: `install_state` (one row
-  per install: last reported counters + reset-aware lifetime delta-sum)
-  and `hourly_totals` (delta-sum per wall-clock hour).
+  `beacons`, and folds it, in one batch, into: `install_state` (one row
+  per install: last reported counters + reset-aware lifetime delta-sum),
+  `hourly_totals` (delta-sum per wall-clock hour), `totals` (a single
+  row with the headline numbers, so `/v1/stats` never sums over
+  installs), and, when the beacon carries the per-provider split
+  (gateway >= 0.4.0a25), `install_provider_state` + `provider_totals`,
+  surfaced as `total.by_provider`.
 * **POST `/v1/install-event`** — records a first install (idempotent).
 * The hourly cron scrapes the two OpenRouter app pages: the `daily` series
   (trailing ~30 days, sums to the page's totalTokens) into `openrouter_daily`
@@ -60,6 +64,7 @@ Each beacon row contains exactly the public payload shape (asserted by
 | output_tokens | INTEGER | cumulative completion tokens |
 | request_count | INTEGER | cumulative request count |
 | providers_active | TEXT | JSON array, e.g. `["openrouter","nvidia_nim"]` |
+| providers | TEXT | JSON object: per-provider input/output/request counts (gateway >= 0.4.0a25) |
 | uptime_hours | INTEGER | gateway uptime hours |
 | received_at | INTEGER | server-side unix epoch (added by worker) |
 

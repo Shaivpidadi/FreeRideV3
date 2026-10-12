@@ -163,6 +163,7 @@ class TestPayload:
         assert p["tokens_served"] == 0
         assert p["request_count"] == 0
         assert p["providers_active"] == []
+        assert p["providers"] == {}
         assert p["uptime_hours"] == 0
         assert p["version"]  # non-empty
         assert p["os"] in {"darwin", "linux", "windows", "other"}
@@ -177,6 +178,11 @@ class TestPayload:
                     "tokens_served": 1234,
                     "request_count": 56,
                     "providers_active": ["openrouter", "nvidia_nim"],
+                    "providers": {
+                        "openrouter": {"input_tokens": 1000, "output_tokens": 200, "request_count": 50},
+                        "nvidia_nim": {"input_tokens": 30, "output_tokens": 4, "request_count": 6},
+                        "bogus": "not-a-dict",
+                    },
                     "uptime_hours": 8,
                 }
             )
@@ -185,7 +191,24 @@ class TestPayload:
         assert p["tokens_served"] == 1234
         assert p["request_count"] == 56
         assert p["providers_active"] == ["openrouter", "nvidia_nim"]
+        assert p["providers"] == {
+            "openrouter": {"input_tokens": 1000, "output_tokens": 200, "request_count": 50},
+            "nvidia_nim": {"input_tokens": 30, "output_tokens": 4, "request_count": 6},
+        }
         assert p["uptime_hours"] == 8
+
+    def test_record_request_splits_counters_per_provider(self, isolated_config):
+        telemetry.record_request(provider="openrouter", input_tokens=100, output_tokens=10)
+        telemetry.record_request(provider="groq", input_tokens=5, output_tokens=1)
+        telemetry.record_request(provider="openrouter", input_tokens=50, output_tokens=5)
+        # Failures bump nothing, same as the totals.
+        telemetry.record_request(provider="groq", model="m", input_tokens=99, output_tokens=99, success=False)
+        p = telemetry.build_payload()
+        assert p["providers"] == {
+            "openrouter": {"input_tokens": 150, "output_tokens": 15, "request_count": 2},
+            "groq": {"input_tokens": 5, "output_tokens": 1, "request_count": 1},
+        }
+        assert p["input_tokens"] == 155 and p["request_count"] == 3
 
     def test_payload_never_includes_forbidden_fields(self, isolated_config):
         """The audit gate: prompts/completions/keys/model_ids/hostname must

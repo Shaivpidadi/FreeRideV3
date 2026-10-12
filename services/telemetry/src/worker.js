@@ -76,6 +76,25 @@ function sanitizeProviders(arr) {
     .slice(0, 10);
 }
 
+// Per-provider counters: {name: {input_tokens, output_tokens, request_count}}.
+// Names are provider plugin ids; anything else is dropped. At most 16.
+const PROVIDER_NAME_RE = /^[a-z0-9_-]{1,32}$/;
+function sanitizeProviderCounters(obj) {
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
+  const out = {};
+  let n = 0;
+  for (const [name, entry] of Object.entries(obj)) {
+    if (!PROVIDER_NAME_RE.test(name) || !entry || typeof entry !== "object") continue;
+    out[name] = {
+      input_tokens: clampInt(entry.input_tokens),
+      output_tokens: clampInt(entry.output_tokens),
+      request_count: clampInt(entry.request_count),
+    };
+    if (++n >= 16) break;
+  }
+  return n > 0 ? out : null;
+}
+
 function sanitizeUuid(s) {
   if (typeof s !== "string") return null;
   // UUIDv4 shape; reject anything else to keep the column clean.
@@ -194,6 +213,7 @@ async function handleBeacon(request, env) {
   const request_count = clampInt(body.request_count);
   const uptime_hours = clampInt(body.uptime_hours, 24 * 365 * 10); // <= 10y
   const providers_active = sanitizeProviders(body.providers_active);
+  const provider_counters = sanitizeProviderCounters(body.providers);
   const received_at = Math.floor(Date.now() / 1000);
 
   // 1. Raw log row. (installation_id, received_at) is unique; a
@@ -203,13 +223,14 @@ async function handleBeacon(request, env) {
     `INSERT OR IGNORE INTO beacons
        (installation_id, version, os,
         tokens_served, input_tokens, output_tokens,
-        request_count, providers_active, uptime_hours, received_at, rolled)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0)`,
+        request_count, providers_active, uptime_hours, received_at, rolled, providers)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11)`,
   )
     .bind(
       installation_id, version, os,
       tokens_served, input_tokens, output_tokens,
       request_count, JSON.stringify(providers_active), uptime_hours, received_at,
+      provider_counters ? JSON.stringify(provider_counters) : null,
     )
     .run();
   if (!inserted.meta || inserted.meta.changes === 0) {
@@ -217,14 +238,23 @@ async function handleBeacon(request, env) {
   }
   const beacon_row_id = inserted.meta.last_row_id;
 
-  // 2. Fold into the rollups. One point read for the install's last
-  //    counters, then one batch (install_state upsert + hourly bucket).
-  const prev = await env.DB.prepare(
-    `SELECT last_tokens_served, last_input_tokens, last_output_tokens, last_request_count
-     FROM install_state WHERE installation_id = ?1`,
-  )
-    .bind(installation_id)
-    .first();
+  // 2. Fold into the rollups. Two point reads (the install's last
+  //    counters, and its per-provider ones), then one batch: install_state,
+  //    hourly bucket, the single-row totals, per-provider state + totals,
+  //    and the rolled flag.
+  const [prev, prevProvidersRows] = await Promise.all([
+    env.DB.prepare(
+      `SELECT last_tokens_served, last_input_tokens, last_output_tokens, last_request_count
+       FROM install_state WHERE installation_id = ?1`,
+    ).bind(installation_id).first(),
+    provider_counters
+      ? env.DB.prepare(
+          `SELECT provider, last_input_tokens, last_output_tokens, last_request_count
+           FROM install_provider_state WHERE installation_id = ?1`,
+        ).bind(installation_id).all()
+      : Promise.resolve({ results: [] }),
+  ]);
+  const prevProviders = new Map((prevProvidersRows.results || []).map((r) => [r.provider, r]));
   const d_ts = cappedDelta("tokens_served", tokens_served, prev?.last_tokens_served, received_at);
   const d_it = cappedDelta("input_tokens", input_tokens, prev?.last_input_tokens, received_at);
   const d_ot = cappedDelta("output_tokens", output_tokens, prev?.last_output_tokens, received_at);
@@ -273,12 +303,67 @@ async function handleBeacon(request, env) {
          request_count = hourly_totals.request_count + excluded.request_count,
          beacons = hourly_totals.beacons + 1`,
     ).bind(hour, d_ts, d_it, d_ot, d_rc),
+    // Headline totals: one row, incremented per beacon. A first beacon
+    // from an unknown install counts as a new installation.
+    env.DB.prepare(
+      `INSERT INTO totals (id, installations, tokens_served, input_tokens, output_tokens, request_count, beacons, since)
+       VALUES (1, ?1, ?2, ?3, ?4, ?5, 1, ?6)
+       ON CONFLICT(id) DO UPDATE SET
+         installations = totals.installations + excluded.installations,
+         tokens_served = totals.tokens_served + excluded.tokens_served,
+         input_tokens  = totals.input_tokens  + excluded.input_tokens,
+         output_tokens = totals.output_tokens + excluded.output_tokens,
+         request_count = totals.request_count + excluded.request_count,
+         beacons       = totals.beacons + 1,
+         since         = MIN(totals.since, excluded.since)`,
+    ).bind(prev ? 0 : 1, d_ts, d_it, d_ot, d_rc, received_at),
+    ...providerStatements(env, installation_id, provider_counters, prevProviders, received_at),
     // Same batch as the rollup: if the batch fails, the row stays
     // rolled = 0 and repair_rollups.sql picks it up.
     env.DB.prepare(`UPDATE beacons SET rolled = 1 WHERE id = ?1`).bind(beacon_row_id),
   ]);
 
   return json({ ok: true });
+}
+
+// Per-provider rollup statements for one beacon: the same reset-aware,
+// capped delta against the (install, provider) state, into
+// install_provider_state and provider_totals. A provider the install has
+// not reported before counts as one more installation for that provider.
+function providerStatements(env, installation_id, counters, prevProviders, received_at) {
+  if (!counters) return [];
+  const out = [];
+  for (const [provider, c] of Object.entries(counters)) {
+    const p = prevProviders.get(provider);
+    const d_it = cappedDelta("input_tokens", c.input_tokens, p?.last_input_tokens, received_at);
+    const d_ot = cappedDelta("output_tokens", c.output_tokens, p?.last_output_tokens, received_at);
+    const d_rc = cappedDelta("request_count", c.request_count, p?.last_request_count, received_at);
+    out.push(
+      env.DB.prepare(
+        `INSERT INTO install_provider_state
+           (installation_id, provider, last_input_tokens, last_output_tokens, last_request_count,
+            acc_input_tokens, acc_output_tokens, acc_request_count)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(installation_id, provider) DO UPDATE SET
+           last_input_tokens  = excluded.last_input_tokens,
+           last_output_tokens = excluded.last_output_tokens,
+           last_request_count = excluded.last_request_count,
+           acc_input_tokens   = install_provider_state.acc_input_tokens  + excluded.acc_input_tokens,
+           acc_output_tokens  = install_provider_state.acc_output_tokens + excluded.acc_output_tokens,
+           acc_request_count  = install_provider_state.acc_request_count + excluded.acc_request_count`,
+      ).bind(installation_id, provider, c.input_tokens, c.output_tokens, c.request_count, d_it, d_ot, d_rc),
+      env.DB.prepare(
+        `INSERT INTO provider_totals (provider, installations, input_tokens, output_tokens, request_count)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(provider) DO UPDATE SET
+           installations = provider_totals.installations + excluded.installations,
+           input_tokens  = provider_totals.input_tokens  + excluded.input_tokens,
+           output_tokens = provider_totals.output_tokens + excluded.output_tokens,
+           request_count = provider_totals.request_count + excluded.request_count`,
+      ).bind(provider, p ? 0 : 1, d_it, d_ot, d_rc),
+    );
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -304,16 +389,17 @@ async function computeStats(env) {
   // are hourly, so this is the same resolution the data has.
   const bucket = (sec) => sec - (sec % 3600);
 
-  const [all, active24, day, week, orRows, last7d, topModels, lifetime, installs] =
+  const [all, byProvider, active24, day, week, orRows, last7d, topModels, lifetime, installs] =
     await Promise.all([
+      // One row, maintained per beacon; no sum over installs.
       env.DB.prepare(
-        `SELECT COUNT(*) AS installations, MIN(first_seen) AS since_ts,
-                SUM(acc_tokens_served) AS tokens_served,
-                SUM(acc_input_tokens)  AS input_tokens,
-                SUM(acc_output_tokens) AS output_tokens,
-                SUM(acc_request_count) AS request_count
-         FROM install_state`,
+        `SELECT installations, since AS since_ts, tokens_served, input_tokens, output_tokens, request_count
+         FROM totals WHERE id = 1`,
       ).first(),
+      env.DB.prepare(
+        `SELECT provider, installations, input_tokens, output_tokens, request_count
+         FROM provider_totals ORDER BY input_tokens + output_tokens DESC`,
+      ).all(),
       env.DB.prepare(
         `SELECT COUNT(*) AS installations_24h FROM install_state WHERE last_seen > ?1`,
       ).bind(day24Ago).first(),
@@ -380,6 +466,22 @@ async function computeStats(env) {
       request_count: toNum(all?.request_count),
       since: sinceTs ? isoDate(sinceTs) : null,
       rate_per_sec: ratePerSec,
+      // Per-provider split, from gateways >= 0.4.0a25 only (older
+      // beacons carry no split), so these sum to less than the totals
+      // until the fleet upgrades. `installations` is how many installs
+      // ever reported that provider.
+      by_provider: Object.fromEntries(
+        (byProvider?.results ?? []).map((r) => [
+          r.provider,
+          {
+            installations: toNum(r.installations),
+            tokens_served: toNum(r.input_tokens) + toNum(r.output_tokens),
+            input_tokens: toNum(r.input_tokens),
+            output_tokens: toNum(r.output_tokens),
+            request_count: toNum(r.request_count),
+          },
+        ]),
+      ),
     },
     last_24h: {
       installations: toNum(active24?.installations_24h),
