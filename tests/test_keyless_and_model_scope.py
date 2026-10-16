@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from freeride.core.errors import ErrorKind
 from freeride.core.provider_env import all_keys_for, env_var_for, is_configured
