@@ -40,6 +40,15 @@ and a long tail of no-card gateways behind one generic adapter.
 - Grouped catalog entries carry ``provider_ids`` (which id each provider
   accepts); ``model=auto`` now sends the picked provider's own spelling
   instead of the first-listed provider's alias.
+- **Real provider switching on failure.** ``auto`` (and the
+  ``freeride/<preset>`` ids on the Anthropic route) now resolves to a
+  ranked candidate per provider, and the failover chain sends each
+  provider its own model instead of carrying the first pick's id to
+  every provider (where it answered model-not-found). An explicit id is
+  likewise sent in each provider's spelling via the catalog's aliases.
+  Verified live: with Gemini and SambaNova failing at chat time, both
+  ``/v1/chat/completions`` and ``/v1/messages`` (streaming included)
+  fall over to Ollama Cloud or xKiro where before they returned 503.
 - ``docs/providers/EXPANSION-RESEARCH.md`` (free-tier landscape, verified
   2026-10-16) and ``docs/providers/openai_compat.md``.
 

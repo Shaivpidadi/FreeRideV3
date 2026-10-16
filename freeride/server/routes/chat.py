@@ -18,7 +18,7 @@ from typing import AsyncIterator
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from freeride.core.auto_model import is_auto_model, resolve_auto_model
+from freeride.core.auto_model import alias_map_for, is_auto_model, resolve_auto_candidates
 from freeride.core.chat_schema import ChatRequest, ChatStreamEvent
 from freeride.core.cooldown import KeyCooldown
 from freeride.core.events import emit as emit_event
@@ -67,9 +67,10 @@ async def _build_stream_response(
     body: ChatRequest,
     cooldown: KeyCooldown,
     ctx: FailoverContext,
+    model_for: dict[str, str] | None = None,
 ) -> StreamingResponse:
     chosen, first_event, rest_or_err = await try_stream_with_failover(
-        chain, body, cooldown, ctx, on_model_not_found=invalidate_catalog
+        chain, body, cooldown, ctx, on_model_not_found=invalidate_catalog, model_for=model_for
     )
     if chosen is None:
         emit_event(
@@ -191,9 +192,24 @@ async def chat_completions(request: Request, body: ChatRequest):
             },
         )
 
+    # Per-provider model ids for the chain walk. For ``auto`` that is
+    # each provider's best model, best provider first, so a failure on
+    # the first provider falls over to the second provider's own model.
+    # For an explicit id it is each provider's spelling of that id.
+    model_for: dict[str, str] | None = None
     if is_auto_model(body.model):
         catalog = await get_or_fetch_catalog(providers, group=True)
-        resolved_id, resolved_provider = resolve_auto_model(providers, catalog)
+        candidates = resolve_auto_candidates(providers, catalog)
+        resolved_id, resolved_provider = candidates[0] if candidates else (None, None)
+        if resolved_id is not None:
+            model_for = {p.name: resolved_id for p, _ in chain}
+            model_for.update({name: mid for mid, name in candidates})
+            # Providers with a ranked candidate go first, best first;
+            # the rest keep their health order as a last resort.
+            by_name = {p.name: (p, keys) for p, keys in chain}
+            head = [by_name[name] for _, name in candidates if name in by_name]
+            head_names = {p.name for p, _ in head}
+            chain = head + [link for link in chain if link[0].name not in head_names]
         if resolved_id is None:
             emit_event(
                 "request_failed",
@@ -217,10 +233,17 @@ async def chat_completions(request: Request, body: ChatRequest):
             request_id=ctx.request_id,
             resolved_model=resolved_id,
             resolved_provider=resolved_provider,
+            candidates=[f"{name}:{mid}" for mid, name in candidates],
         )
+    else:
+        try:
+            catalog = await get_or_fetch_catalog(providers, group=True)
+        except Exception:  # noqa: BLE001 — alias lookup is best-effort
+            catalog = []
+        model_for = alias_map_for(catalog, body.model, [p.name for p, _ in chain])
 
     if body.is_streaming():
-        return await _build_stream_response(chain, body, cooldown, ctx)
+        return await _build_stream_response(chain, body, cooldown, ctx, model_for)
 
     chosen_provider, response = await try_call_with_failover(
         chain,
@@ -229,6 +252,8 @@ async def chat_completions(request: Request, body: ChatRequest):
         call=lambda p, k: p.forward_chat(body, body.model, k),
         model=body.model,
         on_model_not_found=invalidate_catalog,
+        model_for=model_for,
+        body=body,
     )
 
     if response is None or chosen_provider is None:

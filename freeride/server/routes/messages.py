@@ -47,7 +47,12 @@ from freeride.core.anthropic_translate import (
     request_unsupported_for_phase_1,
     stream_openai_to_anthropic,
 )
-from freeride.core.auto_model import is_auto_model, resolve_auto_model
+from freeride.core.auto_model import (
+    alias_map_for,
+    is_auto_model,
+    resolve_auto_candidates,
+    resolve_auto_model,
+)
 from freeride.core.cooldown import KeyCooldown
 from freeride.core.events import emit as emit_event
 from freeride.core.events import new_request_id
@@ -422,11 +427,31 @@ async def messages(request: Request):
     # is in play (set above). Without the scoping, a typed preset
     # only re-orders the chain; here it also restricts WHICH
     # provider catalogs the resolver considers.
+    model_for: dict[str, str] | None = None
+    candidates: list[tuple[str, str]] = []
     if is_auto_model(openai_request.model):
+        # Primary pick stays scoped to the preset's preferred providers
+        # (typed presets restrict WHICH catalogs rank). The rest of the
+        # chain then gets each provider's own best model, so a failure
+        # on the pick falls over to a model the next provider actually
+        # serves instead of re-sending the pick's id everywhere.
         catalog = await get_or_fetch_catalog(auto_resolution_providers, group=True)
         resolved_id, resolved_provider = resolve_auto_model(
             auto_resolution_providers, catalog
         )
+        if resolved_id is not None:
+            try:
+                full_catalog = (
+                    catalog
+                    if auto_resolution_providers is providers
+                    else await get_or_fetch_catalog(providers, group=True)
+                )
+                candidates = resolve_auto_candidates(providers, full_catalog)
+            except Exception:  # noqa: BLE001 — fallbacks are best-effort
+                candidates = []
+            model_for = {p.name: resolved_id for p, _ in chain}
+            model_for.update({name: mid for mid, name in candidates})
+            model_for[resolved_provider] = resolved_id
         if resolved_id is None:
             raise HTTPException(
                 status_code=503,
@@ -448,8 +473,15 @@ async def messages(request: Request):
             request_id=ctx.request_id,
             resolved_model=resolved_id,
             resolved_provider=resolved_provider,
+            candidates=[f"{name}:{mid}" for mid, name in candidates],
             endpoint="messages",
         )
+    else:
+        try:
+            catalog = await get_or_fetch_catalog(providers, group=True)
+        except Exception:  # noqa: BLE001 — alias lookup is best-effort
+            catalog = []
+        model_for = alias_map_for(catalog, openai_request.model, [p.name for p, _ in chain])
 
     # ─── streaming branch — Phase 2 ────────────────────────────────
     # Reuses chat.py's try_stream_with_failover for the
@@ -463,6 +495,7 @@ async def messages(request: Request):
             cooldown=cooldown,
             ctx=ctx,
             requested_model=requested_model,
+            model_for=model_for,
         )
 
     # ─── failover loop — non-streaming ─────────────────────────────
@@ -476,6 +509,8 @@ async def messages(request: Request):
         model=openai_request.model,
         extra_event={"endpoint": "messages"},
         on_model_not_found=invalidate_catalog,
+        model_for=model_for,
+        body=openai_request,
     )
 
     if response_obj is None or chosen_provider is None:
@@ -536,6 +571,7 @@ async def _build_anthropic_stream_response(
     cooldown: KeyCooldown,
     ctx: FailoverContext,
     requested_model: str,
+    model_for: dict[str, str] | None = None,
 ) -> StreamingResponse:
     """Pre-flight first chunk through the chat-route's
     ``try_stream_with_failover``, then wrap the resulting
@@ -551,6 +587,7 @@ async def _build_anthropic_stream_response(
         chain, openai_request, cooldown, ctx,
         extra_event={"endpoint": "messages"},
         on_model_not_found=invalidate_catalog,
+        model_for=model_for,
     )
     if chosen is None:
         # All providers failed before producing a first chunk.

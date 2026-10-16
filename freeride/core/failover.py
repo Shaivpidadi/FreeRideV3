@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Awaitable, Callable, TypeVar
+from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, TypeVar
 
 import httpx
 from fastapi import Request
@@ -259,14 +259,29 @@ async def try_stream_with_failover(
     *,
     extra_event: dict[str, Any] | None = None,
     on_model_not_found: Callable[[], None] | None = None,
+    model_for: Mapping[str, str] | None = None,
 ) -> (
     tuple[Provider, ChatStreamEvent, AsyncIterator[ChatStreamEvent]]
     | tuple[None, None, ErrorKind]
 ):
+    """Walk the chain for a streaming call.
+
+    ``model_for`` maps provider name → the model id to send *that*
+    provider (auto-resolution candidates, or an explicit id's
+    per-provider spelling). When given, providers without an entry are
+    skipped and ``body.model`` is rewritten before each attempt, so a
+    failure on one provider really does fall over to the next
+    provider's own model instead of re-sending an id it never listed.
+    """
     force_stream_usage(body)
     last_error: ErrorKind | None = None
     extra = extra_event or {}
     for provider, keys in chain:
+        if model_for is not None:
+            mapped = model_for.get(provider.name)
+            if mapped is None:
+                continue
+            body.model = mapped
         summary = ctx.attempt(provider.name)
         provider_done = False
         ordered_keys = sort_keys_by_health(provider.name, keys)
@@ -366,6 +381,8 @@ async def try_call_with_failover(
     model: str,
     extra_event: dict[str, Any] | None = None,
     on_model_not_found: Callable[[], None] | None = None,
+    model_for: Mapping[str, str] | None = None,
+    body: ChatRequest | None = None,
 ) -> tuple[Provider | None, T | None]:
     """Walk the chain for a non-streaming call.
 
@@ -373,9 +390,20 @@ async def try_call_with_failover(
     (``forward_chat`` or ``forward_embeddings``). Returns
     ``(provider, result)`` on the first success, or ``(None, None)``
     when the chain is exhausted.
+
+    ``model_for`` / ``body``: see :func:`try_stream_with_failover`.
+    ``body.model`` is rewritten per provider so the route's ``call``
+    closure (which reads it) sends the mapped id.
     """
     extra = extra_event or {}
     for provider, keys in chain:
+        if model_for is not None:
+            mapped = model_for.get(provider.name)
+            if mapped is None:
+                continue
+            model = mapped
+            if body is not None:
+                body.model = mapped
         summary = ctx.attempt(provider.name)
         ordered_keys = sort_keys_by_health(provider.name, keys)
         for key_idx, key in enumerate(ordered_keys):

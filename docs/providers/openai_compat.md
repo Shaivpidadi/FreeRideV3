@@ -158,5 +158,5 @@ its row says so and is not suggested.
 | BlockRun | 7 `billing_mode: free` models | ok | yes (`llama-3.2-11b-vision`) | two other ids substituted under HTTP 200; now a failover signal |
 | Ollama Cloud (Free key) | 7 allowlisted of 21 listed | ok | yes (`nemotron-3-super`, `gemma4:31b`, `beam`) | gated ids answer 402 "not in the Free plan" → MODEL_NOT_FOUND; reasoning streams in `delta.reasoning` |
 | xKiro (free key) | 51 `access_tier: free` | ok | yes (`ministral-14b`, Qwen `:free`) | streaming ok |
-| Gemini (key) | 14 after excluding 2.x | 402 | no | project in prepaid-billing mode: "prepayment credits are depleted"; benched as QUOTA_EXHAUSTED |
+| Gemini (key) | 14 after excluding 2.x | 402 (one intermittent 200 on `gemma-4-31b-it`) | no | project in prepaid-billing mode: "prepayment credits are depleted"; benched as QUOTA_EXHAUSTED |
 | SambaNova (key) | 5 | 402 | no | `PAYMENT_METHOD_REQUIRED` on every model |

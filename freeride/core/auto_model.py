@@ -98,6 +98,48 @@ def resolve_auto_model(
 
         health_cache = load_cache()  # may be {} — that's fine, equivalent to no filter
 
+    candidates = resolve_auto_candidates(
+        providers, catalog, leaderboard=leaderboard, health_cache=health_cache
+    )
+    if not candidates:
+        return None, None
+    return candidates[0]
+
+
+def resolve_auto_candidates(
+    providers: list[Provider],
+    catalog: list[dict[str, Any]] | None,
+    *,
+    leaderboard: dict[str, int] | None = None,
+    health_cache: dict[str, Any] | None = None,
+) -> list[tuple[str, str]]:
+    """Ranked ``[(model_id, provider_name), ...]`` for an ``auto`` request:
+    the best model on **each** available provider, best provider first.
+
+    This is what lets the failover chain switch providers for real. A
+    single pick carried across the chain fails everywhere but its own
+    provider (the others answer model-not-found); a per-provider
+    candidate means the second provider is asked for *its* best model.
+    Each ``model_id`` is already the picked provider's own spelling
+    (``provider_ids`` on grouped entries).
+    """
+    if not catalog:
+        logger.info("auto-model: catalog empty, cannot resolve")
+        return []
+
+    available = _available_provider_names(providers)
+    if not available:
+        logger.info("auto-model: no providers have usable keys right now")
+        return []
+
+    if leaderboard is None:
+        leaderboard = fetch_leaderboard()
+
+    if health_cache is None:
+        from freeride.core.model_health import load_cache
+
+        health_cache = load_cache()  # may be {} — that's fine, equivalent to no filter
+
     ranked = rank_catalog(
         catalog,
         available,
@@ -111,19 +153,52 @@ def resolve_auto_model(
             len(catalog),
             sorted(available),
         )
-        return None, None
+        return []
 
-    entry, intersect, score = ranked[0]
-    provider_name = intersect[0]
-    # A grouped entry's primary id belongs to the first provider that
-    # listed it; the provider we picked may spell it differently.
-    provider_ids = entry.get("provider_ids") or {}
-    model_id = provider_ids.get(provider_name, entry["id"])
-    logger.debug(
-        "auto-model: picked %s via %s (score=%.2f, %d candidates considered)",
-        model_id,
-        provider_name,
-        score,
-        len(ranked),
-    )
-    return model_id, provider_name
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for entry, intersect, score in ranked:
+        provider_ids = entry.get("provider_ids") or {}
+        for provider_name in intersect:
+            if provider_name in seen:
+                continue
+            if health_cache:
+                from freeride.core.model_health import is_model_known_broken
+
+                if is_model_known_broken(provider_name, entry["id"], cache=health_cache):
+                    continue
+            seen.add(provider_name)
+            out.append((provider_ids.get(provider_name, entry["id"]), provider_name))
+    if out:
+        logger.debug(
+            "auto-model: %d candidates, leading with %s via %s",
+            len(out),
+            out[0][0],
+            out[0][1],
+        )
+    return out
+
+
+def alias_map_for(
+    catalog: list[dict[str, Any]] | None,
+    model_id: str,
+    provider_names: list[str],
+) -> dict[str, str]:
+    """How each provider spells an explicitly requested model.
+
+    Looks the id up in the grouped catalog (primary id or alias) and
+    returns ``{provider: that provider's id}`` for every name in
+    ``provider_names``; providers the catalog does not list for this
+    model get the literal id, which keeps the pre-existing behaviour
+    (they answer model-not-found and the chain moves on).
+    """
+    out = {name: model_id for name in provider_names}
+    for entry in catalog or []:
+        ids = {entry.get("id", "")} | set(entry.get("aliases") or [])
+        if model_id not in ids:
+            continue
+        for name, pid in (entry.get("provider_ids") or {}).items():
+            if name in out:
+                out[name] = pid
+        break
+    return out
