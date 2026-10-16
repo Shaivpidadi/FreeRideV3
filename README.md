@@ -204,6 +204,7 @@ freeride telemetry      manage the hourly aggregate beacon
   - [`docs/agents/hermes.md`](docs/agents/hermes.md) — NousResearch Hermes agent integration
 - **Providers**
   - [`docs/providers/SURVEY.md`](docs/providers/SURVEY.md) — per-provider fit (auth, free-tier semantics, error mapping)
+  - [`docs/providers/EXPANSION-RESEARCH.md`](docs/providers/EXPANSION-RESEARCH.md) — free-tier landscape (Oct 2026), which providers to add next, and what the plugin layer needs first
   - [`docs/providers/nvidia_nim.md`](docs/providers/nvidia_nim.md) — NVIDIA NIM specifics
 - **Architecture**
   - [`docs/architecture/failover.md`](docs/architecture/failover.md) — failover chain, cooldown, health tracking
