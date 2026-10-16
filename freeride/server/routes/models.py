@@ -98,6 +98,7 @@ async def _aggregate_models(
             obj["canonical_id"] = canonicalize(m.api_id)
             obj["aliases"] = []
             obj["available_providers"] = [provider_name]
+            obj["provider_ids"] = {provider_name: m.api_id}
             results.append(obj)
         return results
 
@@ -110,6 +111,12 @@ async def _aggregate_models(
             entry["canonical_id"] = canon
             entry["aliases"] = []
             entry["available_providers"] = [provider_name]
+            # Which id each provider actually accepts. Kilo lists
+            # ``nvidia/nemotron-3.5-lightning:free`` and BlockRun
+            # ``nvidia/nemotron-3.5-lightning``; they group together, and
+            # a request routed to the second provider must carry its own
+            # spelling, not the primary's.
+            entry["provider_ids"] = {provider_name: m.api_id}
             groups[canon] = entry
             continue
         # Merge: add this provider's id as an alias if it's not already
@@ -119,6 +126,7 @@ async def _aggregate_models(
             existing["aliases"].append(m.api_id)
         if provider_name not in existing["available_providers"]:
             existing["available_providers"].append(provider_name)
+        existing["provider_ids"].setdefault(provider_name, m.api_id)
     return list(groups.values())
 
 

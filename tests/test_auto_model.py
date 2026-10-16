@@ -189,3 +189,41 @@ def test_invalidate_catalog_clears_both_grouped_and_ungrouped() -> None:
 
     assert _CACHE.get(f"{_CACHE_KEY}.grouped") is None
     assert _CACHE.get(f"{_CACHE_KEY}.ungrouped") is None
+
+
+
+class TestProviderSpecificIds:
+    def test_resolves_to_the_picked_providers_spelling(self, monkeypatch):
+        """A grouped entry carries each provider's own id; the resolver
+        must hand back the spelling of the provider it picked."""
+        from freeride.core.auto_model import resolve_auto_model
+        from tests.fixtures.noop_provider import NoopProvider
+
+        class Blockrun(NoopProvider):
+            name = "blockrun"
+
+        monkeypatch.setattr("freeride.core.auto_model._provider_keys", lambda name: ["anonymous"])
+        monkeypatch.setattr("freeride.core.auto_model.KeyCooldown.shared", lambda *a, **k: _NoCooldown())
+        catalog = [
+            {
+                "id": "nvidia/nemotron-3.5-lightning:free",
+                "available_providers": ["kilo", "blockrun"],
+                "provider_ids": {"kilo": "nvidia/nemotron-3.5-lightning:free", "blockrun": "nvidia/nemotron-3.5-lightning"},
+            }
+        ]
+        model, provider = resolve_auto_model([Blockrun()], catalog, leaderboard={}, health_cache={})
+        assert (model, provider) == ("nvidia/nemotron-3.5-lightning", "blockrun")
+
+    def test_falls_back_to_primary_id_without_map(self, monkeypatch):
+        from freeride.core.auto_model import resolve_auto_model
+        from tests.fixtures.noop_provider import NoopProvider
+
+        monkeypatch.setattr("freeride.core.auto_model._provider_keys", lambda name: ["k"])
+        monkeypatch.setattr("freeride.core.auto_model.KeyCooldown.shared", lambda *a, **k: _NoCooldown())
+        catalog = [{"id": "x", "available_providers": ["noop"]}]
+        assert resolve_auto_model([NoopProvider()], catalog, leaderboard={}, health_cache={}) == ("x", "noop")
+
+
+class _NoCooldown:
+    def available_keys(self, provider, keys):
+        return list(keys)

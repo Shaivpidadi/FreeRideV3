@@ -25,6 +25,7 @@ from pathlib import Path
 import httpx
 
 from freeride.core.provider_env import BUILTIN_PROVIDERS
+from freeride.core.provider_specs import KEYLESS_ENV, keyless_enabled
 
 # ANSI escapes — single source so the formatter and tests agree.
 _GREEN = "\033[32m"
@@ -95,6 +96,15 @@ def _check_provider_env_vars() -> list[_Check]:
     for spec in BUILTIN_PROVIDERS:
         provider = spec.name
         env_vars = list(spec.env_vars) + list(spec.extra_required)
+        if spec.keyless:
+            if keyless_enabled(provider):
+                any_set = True
+                out.append(_Check("ok", f"{provider}: keyless, enabled via ${KEYLESS_ENV}"))
+            else:
+                out.append(
+                    _Check("info", f"{provider}: keyless, not enabled", f"add {provider} to ${KEYLESS_ENV} to opt in")
+                )
+            continue
         if spec.extra_required:
             # Cloudflare-style: a key plus extra required config.
             key_set = any(os.environ.get(v) for v in spec.env_vars)

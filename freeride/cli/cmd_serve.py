@@ -21,6 +21,8 @@ from freeride.providers.huggingface import HuggingFaceProvider
 from freeride.providers.nvidia_nim import NVIDIANIMProvider
 from freeride.providers.ollama import OllamaProvider
 from freeride.providers.openrouter import OpenRouterProvider
+from freeride.core.provider_specs import PROVIDER_SPECS
+from freeride.providers.openai_compat import make_provider
 from freeride.server.app import create_app
 
 
@@ -74,6 +76,13 @@ def build_provider_registry() -> list:
         providers.append(OllamaProvider(base_url=all_keys_for("ollama")[0]))
     if is_configured("cerebras"):
         providers.append(CerebrasProvider())
+
+    # Spec-driven OpenAI-compatible providers (Gemini, Mistral,
+    # SambaNova, …). A keyed spec loads when its env var is set; a
+    # keyless one only when named in FREERIDE_KEYLESS.
+    for spec in PROVIDER_SPECS:
+        if is_configured(spec.name):
+            providers.append(make_provider(spec))
 
     # Third-party plugins registered under the freeride.providers entry
     # point group. Each one constructed by the registry helper so a

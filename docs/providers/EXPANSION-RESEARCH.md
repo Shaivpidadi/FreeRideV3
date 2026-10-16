@@ -258,12 +258,13 @@ Claude Code pin comment in `messages.py` already documents.
 
 ### 5.7 Response model must equal requested model
 
-Three gateways were observed silently substituting a different model under HTTP 200
-(Septor, Lucidity `open/*`, CLōD Llama→Gemma). For a coding agent that is a correctness bug,
-not a quirk. The generic adapter should compare `response.model` (normalised: strip `:free`,
-provider prefixes, case) against the requested id and classify a mismatch as
-`MODEL_NOT_FOUND` so the ladder moves on. Routers that legitimately report the upstream id
-(`auto` routes on DreamPrompting, BazaarLink, OrcaRouter, Waterfall) declare that in the spec.
+Four gateways were observed silently substituting a different model under HTTP 200
+(BlockRun, Septor, Lucidity `open/*`, CLōD Llama→Gemma). For a coding agent that is a
+correctness bug, not a quirk. The generic adapter compares `response.model` (normalised:
+strip `:free`, provider prefixes, case) against the requested id; with
+`strict_model_match` the mismatch is classified as `MODEL_NOT_FOUND` so the ladder moves on.
+Routers that legitimately report the upstream id (`auto` routes on DreamPrompting,
+BazaarLink, OrcaRouter, Waterfall) are exempt by route name.
 
 ### 5.8 Gemini specifics
 

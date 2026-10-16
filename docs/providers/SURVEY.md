@@ -1,6 +1,8 @@
 # Provider Protocol fit survey
 
 > How Groq, Cloudflare Workers AI, HuggingFace, Cerebras, and Ollama map onto the Provider Protocol. All five now ship in-tree alongside OpenRouter and NVIDIA NIM. This document is the seam-quality record of *why* they fit without Protocol changes.
+>
+> **Status note (2026-10-16):** the free-tier facts below are the May 2026 snapshot. Since then Cerebras moved to a one-time, card-gated trial credit and HuggingFace dropped the free account's monthly credit; the current landscape is in [`EXPANSION-RESEARCH.md`](EXPANSION-RESEARCH.md) and the spec-driven adapter is documented in [`openai_compat.md`](openai_compat.md).
 
 ## Groq
 

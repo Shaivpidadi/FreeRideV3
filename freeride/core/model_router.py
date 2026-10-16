@@ -55,15 +55,21 @@ _KNOWN_PRESETS = {PRESET_FREE, PRESET_FAST, PRESET_QUALITY, PRESET_CODING}
 #   code well at speed.
 # - **free**: no preference — pure health-ranked smart routing. This
 #   is the path the gateway already uses for ``model="auto"``.
+# - Gemini Flash, Mistral (Devstral/Codestral) and SambaNova's
+#   DeepSeek-V3.x slot behind OpenRouter for quality/coding: strong
+#   tool-calling models on quota pools independent of OpenRouter's
+#   50-requests/day cap. SambaNova's wafer-scale inference is also
+#   fast enough for the fast preset. Unconfigured providers are simply
+#   absent from the chain, so listing them costs nothing.
 #
 # Update this map when new providers ship or model quality shifts.
 # It's an empirical performance map, not a contract — the failover
 # still tries every provider if needed.
 _PRESET_PROVIDER_PREFERENCE: dict[str, tuple[str, ...]] = {
     PRESET_FREE: (),
-    PRESET_FAST: ("groq", "cerebras", "nvidia_nim"),
-    PRESET_QUALITY: ("openrouter", "huggingface", "groq"),
-    PRESET_CODING: ("openrouter", "groq"),
+    PRESET_FAST: ("groq", "cerebras", "sambanova", "nvidia_nim"),
+    PRESET_QUALITY: ("openrouter", "gemini", "mistral", "sambanova", "huggingface", "groq"),
+    PRESET_CODING: ("openrouter", "gemini", "mistral", "sambanova", "groq"),
 }
 
 

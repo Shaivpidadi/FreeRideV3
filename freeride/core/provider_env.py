@@ -16,6 +16,13 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+from freeride.core.provider_specs import (
+    KEYLESS_ENV,
+    KEYLESS_SENTINEL,
+    PROVIDER_SPECS,
+    keyless_enabled,
+)
+
 
 @dataclass(frozen=True, slots=True)
 class ProviderEnv:
@@ -27,11 +34,16 @@ class ProviderEnv:
 
     ``extra_required`` must *all* be set in addition to a key — Cloudflare
     Workers AI needs ``CLOUDFLARE_ACCOUNT_ID`` in the URL, not as a key.
+
+    ``keyless`` providers have no secret at all: they are configured by
+    naming them in ``FREERIDE_KEYLESS`` and the chain carries the
+    :data:`~freeride.core.provider_specs.KEYLESS_SENTINEL` pseudo-key.
     """
 
     name: str
     env_vars: tuple[str, ...]
     extra_required: tuple[str, ...] = ()
+    keyless: bool = False
 
 
 BUILTIN_PROVIDERS: tuple[ProviderEnv, ...] = (
@@ -46,6 +58,10 @@ BUILTIN_PROVIDERS: tuple[ProviderEnv, ...] = (
     ProviderEnv("huggingface", ("HF_TOKEN", "HUGGINGFACE_API_KEY")),
     ProviderEnv("cerebras", ("CEREBRAS_API_KEY",)),
     ProviderEnv("ollama", ("OLLAMA_BASE_URL",)),
+) + tuple(
+    # Spec-driven OpenAI-compatible providers (see core/provider_specs.py).
+    ProviderEnv(spec.name, spec.env_vars, keyless=spec.keyless)
+    for spec in PROVIDER_SPECS
 )
 
 _BY_NAME: dict[str, ProviderEnv] = {p.name: p for p in BUILTIN_PROVIDERS}
@@ -61,8 +77,12 @@ def spec_for(provider_name: str) -> ProviderEnv:
 
 
 def env_var_for(provider_name: str) -> str:
-    """Canonical env-var name (the one docs and error messages cite)."""
-    return spec_for(provider_name).env_vars[0]
+    """Canonical env-var name (the one docs and error messages cite).
+    Keyless providers cite ``FREERIDE_KEYLESS``."""
+    spec = spec_for(provider_name)
+    if spec.keyless or not spec.env_vars:
+        return KEYLESS_ENV
+    return spec.env_vars[0]
 
 
 def parse_api_keys(raw: Any) -> list[str]:
@@ -126,6 +146,8 @@ def all_keys_for(provider_name: str) -> list[str]:
         keys = _collect_from_name(env_name)
         if keys:
             return keys
+    if spec.keyless and keyless_enabled(provider_name):
+        return [KEYLESS_SENTINEL]
     return []
 
 

@@ -154,3 +154,36 @@ class TestCacheBehavior:
 
         assert len(grouped) == 1, f"grouped should collapse: {grouped}"
         assert len(ungrouped) == 2, f"ungrouped should expose both: {ungrouped}"
+
+
+
+def test_grouped_entries_carry_provider_ids():
+    """Each grouped entry maps every provider to the id it accepts."""
+    import asyncio
+
+    from freeride.core.types import Model
+    from freeride.server.routes import models as models_route
+
+    class _P:
+        def __init__(self, name, ids):
+            self.name, self._ids = name, ids
+
+        def list_free_models(self, key):
+            return [Model(api_id=i, provider=self.name) for i in self._ids]
+
+    async def run():
+        monkey = models_route._key_for
+        models_route._key_for = lambda p: "k"
+        try:
+            return await models_route._aggregate_models(
+                [_P("kilo", ["nvidia/nemotron-3.5-lightning:free"]), _P("blockrun", ["nvidia/nemotron-3.5-lightning"])],
+                group=True,
+            )
+        finally:
+            models_route._key_for = monkey
+
+    entries = asyncio.run(run())
+    assert len(entries) == 1
+    e = entries[0]
+    assert e["available_providers"] == ["kilo", "blockrun"]
+    assert e["provider_ids"] == {"kilo": "nvidia/nemotron-3.5-lightning:free", "blockrun": "nvidia/nemotron-3.5-lightning"}

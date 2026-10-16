@@ -6,6 +6,52 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+## [0.4.0a26] — 2026-10-16
+
+Spec-driven providers: five first-party free tiers, three keyless fallbacks,
+and a long tail of no-card gateways behind one generic adapter.
+
+### Added
+- ``freeride/providers/openai_compat.py``: a generic OpenAI-compatible
+  provider built from a declarative ``OpenAICompatSpec``
+  (``freeride/core/provider_specs.py``). A new gateway is one table row:
+  base URL, env var, free-model rule, headers, timeouts, quota shape,
+  data-use posture. Every row runs through the conformance suite.
+- Providers: **Google Gemini** (OpenAI-compatible endpoint, with Gemini 3
+  thought signatures cached and replayed so multi-turn tool use survives
+  the OpenAI round trip), **Mistral**, **SambaNova Cloud**, **Z.ai GLM
+  Flash**, **Ollama Cloud**; plus xKiro, Requesty, Routeway, Septor Labs,
+  ElectronHub, Lucidity Composite, DreamPrompting, Waterfall, LLM7 and
+  LongCat as opt-in rows (set ``<NAME>_API_KEY``).
+- Keyless providers (``FREERIDE_KEYLESS=ovh,blockrun`` or ``kilo``):
+  OVHcloud AI Endpoints anonymous tier, BlockRun and Kilo Gateway run
+  with no account at all. Off by default; the init wizard states each
+  one's data-use posture (Kilo may train on prompts).
+- ``cooldown_scope="model"``: a 429 from a provider that meters each
+  model separately (SambaNova, OVH) benches only that (provider, model)
+  pair in the model-health cache instead of the whole key.
+- Retry hints from error bodies: Gemini's ``retryDelay: "17s"``,
+  ``retry_after: 60`` fields and "try again in 30 seconds" prose are
+  honoured when no ``Retry-After`` header is present; clamped to 24 h.
+- Response-model substitution detection for gateways that answer a named
+  free route with a different model under HTTP 200: warning + counter by
+  default, a MODEL_NOT_FOUND failover signal where the spec sets
+  ``strict_model_match`` (BlockRun, Septor, Lucidity).
+- Grouped catalog entries carry ``provider_ids`` (which id each provider
+  accepts); ``model=auto`` now sends the picked provider's own spelling
+  instead of the first-listed provider's alias.
+- ``docs/providers/EXPANSION-RESEARCH.md`` (free-tier landscape, verified
+  2026-10-16) and ``docs/providers/openai_compat.md``.
+
+### Changed
+- Preset provider order: ``quality`` and ``coding`` now prefer OpenRouter,
+  Gemini, Mistral, SambaNova, then the rest; ``fast`` adds SambaNova.
+- README / ``freeride init`` copy corrected against provider pages:
+  Cerebras is a one-time, card-gated $5 trial (no renewing free tier);
+  HuggingFace free accounts have no monthly Inference Providers credit
+  (PRO only); NVIDIA NIM is a recurring per-account rate limit, not
+  credits; OpenRouter's ``:free`` cap is 20 RPM / 50 requests per day.
+
 ## [0.4.0a25] — 2026-10-12
 
 Per-provider telemetry split, end to end, and the OpenRouter lifetime fix.

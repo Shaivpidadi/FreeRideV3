@@ -195,15 +195,30 @@ def _cool(
     key: str,
     kind: ErrorKind,
     response: Any = None,
+    model: str | None = None,
 ) -> int | None:
     """Apply cooldown for kinds that warrant it. Returns Retry-After
     seconds when the provider exposed one (RATE_LIMIT only, for the
     503 payload) — AUTH/QUOTA still cool, they just don't surface a
     retry-after hint.
+
+    Providers that meter each model separately declare
+    ``cooldown_scope == "model"`` (SambaNova: 20 requests/day *per
+    model*; OVH anonymous: 2 rpm per model). For them a 429 benches
+    only the (provider, model) pair in the model-health cache and
+    leaves the key — and every other model — routable.
     """
     retry_after: int | None = None
     if kind is ErrorKind.RATE_LIMIT and response is not None:
         retry_after = provider.retry_after_hint(response)
+    if kind is ErrorKind.RATE_LIMIT and model and getattr(provider, "cooldown_scope", "key") == "model":
+        from freeride.core.model_health import mark_recent_failure
+
+        try:
+            mark_recent_failure(provider.name, model)
+        except Exception:  # noqa: BLE001 — cache I/O must never break a request
+            logger.debug("model-scoped cooldown mark failed", exc_info=True)
+        return retry_after
     if kind in _COOL_KINDS:
         cooldown.mark(provider.name, key, kind, retry_after_s=retry_after)
     return retry_after
@@ -294,7 +309,7 @@ async def try_stream_with_failover(
                     pass
                 kind = provider.classify_error(e.response)
                 summary.retry_after_s = _cool(
-                    cooldown, provider, key, kind, e.response
+                    cooldown, provider, key, kind, e.response, model=body.model
                 ) or summary.retry_after_s
                 if kind is ErrorKind.MODEL_NOT_FOUND and on_model_not_found is not None:
                     on_model_not_found()
@@ -381,7 +396,7 @@ async def try_call_with_failover(
                 duration_ms = int((time.perf_counter() - t0) * 1000)
                 kind = provider.classify_error(e.response)
                 summary.retry_after_s = _cool(
-                    cooldown, provider, key, kind, e.response
+                    cooldown, provider, key, kind, e.response, model=model
                 ) or summary.retry_after_s
                 if kind is ErrorKind.MODEL_NOT_FOUND and on_model_not_found is not None:
                     on_model_not_found()

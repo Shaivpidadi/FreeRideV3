@@ -2,7 +2,7 @@
 
 **Free AI inference for real work — as a coding agent, or as a gateway for your own tools.**
 
-FreeRide routes requests across free-tier providers — **OpenRouter, Groq, NVIDIA NIM, HuggingFace, Cerebras, Cloudflare Workers AI**, and **your own Ollama** — with automatic failover when one rate-limits or errors. No vendor subscription, no cloud middleman: your machine talks to the providers directly with your own free keys. There are two ways in; both run on the same engine.
+FreeRide routes requests across free-tier providers — **OpenRouter, Google Gemini, Mistral, SambaNova, Z.ai, Groq, NVIDIA NIM, Cloudflare Workers AI, Ollama Cloud**, a dozen smaller gateways, and **your own Ollama** — with automatic failover when one rate-limits or errors. No vendor subscription, no cloud middleman: your machine talks to the providers directly with your own free keys. There are two ways in; both run on the same engine.
 
 > **102M+ tokens served in 35 days. $0 spent.**
 > Routed through community free-tier keys via this gateway.
@@ -50,15 +50,26 @@ Already running ridex? You have the gateway too — one shared daemon on `:11343
 
 Any one is enough; more = better failover. Collected by `freeride init` (or ridex's first run) and stored **only** on your machine in `~/.freeride/.env`:
 
-| Provider | Free tier | Get a key |
+| Provider | Free tier (checked 2026-10-16) | Get a key |
 |---|---|---|
-| OpenRouter | rotating free models | [openrouter.ai/keys](https://openrouter.ai/keys) |
-| Groq | daily token cap | [console.groq.com/keys](https://console.groq.com/keys) |
-| NVIDIA NIM | credits per account | [build.nvidia.com](https://build.nvidia.com) |
-| HuggingFace | $0.10/mo Free, $2/mo PRO | [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) |
-| Cerebras | RPM / TPM caps | [cloud.cerebras.ai](https://cloud.cerebras.ai) |
+| OpenRouter | rotating `:free` models; 20 RPM, 50 req/day account-wide (1,000/day once you've ever bought $10 of credits) | [openrouter.ai/keys](https://openrouter.ai/keys) |
+| Google Gemini | Flash / Flash-Lite / Gemma free of charge; per-model limits shown in AI Studio | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
+| Mistral | Free mode with included monthly usage (Devstral, Codestral, Mistral Small) | [console.mistral.ai](https://console.mistral.ai/api-keys) |
+| SambaNova | DeepSeek V3.x, Llama 3.3 70B, gpt-oss-120b at 20 RPM / 20 req/day / 200K tokens/day per model | [cloud.sambanova.ai](https://cloud.sambanova.ai/apis) |
+| Z.ai (GLM) | GLM-4.7-Flash, GLM-4.5-Flash, GLM-4.6V-Flash free | [z.ai](https://z.ai/manage-apikey/apikey-list) |
+| Ollama Cloud | starter models on the Free plan, 1 concurrent request | [ollama.com/settings/keys](https://ollama.com/settings/keys) |
+| Groq | per-model RPM / daily token caps (see your console's limits page) | [console.groq.com/keys](https://console.groq.com/keys) |
+| NVIDIA NIM | recurring per-account rate limit (evaluation terms) | [build.nvidia.com](https://build.nvidia.com) |
 | Cloudflare Workers AI | 10K neurons/day | [dash.cloudflare.com](https://dash.cloudflare.com) |
+| HuggingFace | **PRO only** ($2/mo credit); free accounts get no monthly credit | [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) |
+| Cerebras | **trial only**: one-time $5, card required, expires after 30 days | [cloud.cerebras.ai](https://cloud.cerebras.ai) |
 | Ollama (local) | no quota | install from [ollama.com](https://ollama.com) |
+
+No key at all? `FREERIDE_KEYLESS=ovh,blockrun` in `~/.freeride/.env` turns on anonymous
+gateways (OVHcloud AI Endpoints at 2 req/min per model, BlockRun at 30 req/min). They
+are shared per IP and slow, so they're opt-in; `kilo` is also available but states it
+may train on prompts. Full landscape and what's coming next:
+[`docs/providers/EXPANSION-RESEARCH.md`](docs/providers/EXPANSION-RESEARCH.md).
 
 ## Why this doesn't fall over
 
@@ -114,10 +125,21 @@ Deeper: [`docs/architecture/failover.md`](docs/architecture/failover.md).
 | Groq | chat | Llama 3.x, Gemma 2, Mixtral, DeepSeek-R1-distill; daily token cap |
 | Cloudflare Workers AI | chat | cheap-per-neuron models; needs `CLOUDFLARE_ACCOUNT_ID` |
 | HuggingFace Inference | chat + embeddings | full HF router catalog; budget governs access |
-| Cerebras | chat | fastest Llama / Qwen inference; no embeddings |
+| Cerebras | chat | fastest Llama / Qwen inference; no embeddings; trial credit only since 2026 |
 | Ollama (local) | chat | local-only; can mix with remote in the same failover chain |
+| Google Gemini | chat, streaming, tools | OpenAI-compatible endpoint; Gemini 3 thought signatures cached and replayed so multi-turn tool use works |
+| Mistral | chat, streaming, tools, embeddings | spec-driven |
+| SambaNova | chat, streaming, tools | spec-driven; per-model daily caps, so a 429 benches the model, not the key |
+| Z.ai (GLM Flash) | chat, streaming, tools | spec-driven; 90 s first-byte budget for hidden reasoning |
+| Ollama Cloud | chat, streaming, tools | spec-driven; drops `tool_choice`/`logprobs` the API rejects |
+| OVHcloud, Kilo, BlockRun | chat, streaming, tools | keyless, opt-in via `FREERIDE_KEYLESS` |
+| xKiro, Requesty, Routeway, Septor, ElectronHub, Lucidity, DreamPrompting, Waterfall, LLM7, LongCat | chat | spec-driven long tail; set `<NAME>_API_KEY` to enable |
 
-Adding a new provider: implement `freeride.core.provider.Provider` in `freeride/providers/<name>.py`, register it in the conformance suite. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+Adding an OpenAI-compatible provider is one row in `freeride/core/provider_specs.py`
+(base URL, env var, free-model rule, quirks); the generic adapter in
+`freeride/providers/openai_compat.py` does the rest and the conformance suite runs every
+row. Anything with its own wire format implements `freeride.core.provider.Provider` in
+`freeride/providers/<name>.py`. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 

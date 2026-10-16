@@ -114,11 +114,16 @@ def resolve_auto_model(
         return None, None
 
     entry, intersect, score = ranked[0]
+    provider_name = intersect[0]
+    # A grouped entry's primary id belongs to the first provider that
+    # listed it; the provider we picked may spell it differently.
+    provider_ids = entry.get("provider_ids") or {}
+    model_id = provider_ids.get(provider_name, entry["id"])
     logger.debug(
         "auto-model: picked %s via %s (score=%.2f, %d candidates considered)",
-        entry["id"],
-        intersect[0],
+        model_id,
+        provider_name,
         score,
         len(ranked),
     )
-    return entry["id"], intersect[0]
+    return model_id, provider_name

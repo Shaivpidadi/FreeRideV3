@@ -21,6 +21,8 @@ import webbrowser
 from pathlib import Path
 from typing import Callable
 
+from freeride.core.provider_specs import KEYLESS_ENV, PROVIDER_SPECS
+
 
 # Keep in sync with cmd_serve.build_provider_registry().
 # Each row: (provider id, [env var(s)], signup URL, one-line description).
@@ -41,7 +43,7 @@ _PROVIDER_PROMPTS: list[tuple[str, list[str], str, str]] = [
         "nvidia_nim",
         ["NVIDIA_API_KEY"],
         "https://build.nvidia.com",
-        "NVIDIA NIM — Llama, Nemotron, embedding models",
+        "NVIDIA NIM — Llama, Nemotron, embedding models. Recurring per-account rate limit (evaluation terms).",
     ),
     (
         "cloudflare_wai",
@@ -53,13 +55,13 @@ _PROVIDER_PROMPTS: list[tuple[str, list[str], str, str]] = [
         "huggingface",
         ["HF_TOKEN"],
         "https://huggingface.co/settings/tokens",
-        "HuggingFace — full router catalog, $0.10/mo Free or $2/mo PRO budget",
+        "HuggingFace — full router catalog. PRO ($2/mo credit) only; free accounts have no monthly credit.",
     ),
     (
         "cerebras",
         ["CEREBRAS_API_KEY"],
         "https://cloud.cerebras.ai/platform",
-        "Cerebras — fastest Llama / Qwen inference. Free tier with RPM/TPM limits.",
+        "Cerebras — fastest Llama / Qwen inference. Trial only: one-time $5 credit, card required, 30-day expiry.",
     ),
     (
         "ollama",
@@ -67,6 +69,13 @@ _PROVIDER_PROMPTS: list[tuple[str, list[str], str, str]] = [
         "https://ollama.com/download",
         "Ollama (local) — uses local models. Default URL: http://localhost:11434",
     ),
+] + [
+    # Spec-driven providers the wizard offers by default. Keyless and
+    # long-tail specs (default_on=False) are reachable via env vars and
+    # are listed in the closing hint instead of prompted for.
+    (spec.name, [spec.env_vars[0]], spec.signup_url, spec.description)
+    for spec in PROVIDER_SPECS
+    if spec.default_on and not spec.keyless and spec.env_vars
 ]
 
 
@@ -164,6 +173,15 @@ def cmd_init(args, *, _input: Callable = input, _open_browser: Callable = webbro
             if value:
                 new_kvs[env_var] = value
                 any_set_this_run = True
+        print()
+
+    keyless = [s for s in PROVIDER_SPECS if s.keyless]
+    if keyless:
+        print("=== Keyless fallbacks (no account needed, opt-in) ===")
+        for s in keyless:
+            flag = " (prompts may be used for training)" if s.data_use == "train" else ""
+            print(f"   {s.name}: {s.description}{flag}")
+        print(f"   enable with {KEYLESS_ENV}={','.join(s.name for s in keyless)} in {out_path}")
         print()
 
     # Don't write a file if the user has nothing to write.

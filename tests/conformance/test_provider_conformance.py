@@ -25,6 +25,9 @@ from freeride.providers.huggingface import HuggingFaceProvider
 from freeride.providers.nvidia_nim import NVIDIANIMProvider
 from freeride.providers.ollama import OllamaProvider
 from freeride.providers.openrouter import OpenRouterProvider
+from freeride.core.provider_specs import PROVIDER_SPECS, spec_by_name
+from freeride.providers.gemini_compat import GeminiCompatProvider
+from freeride.providers.openai_compat import OpenAICompatProvider
 from tests.fixtures.noop_provider import NoopProvider
 
 
@@ -38,6 +41,8 @@ CONFORMANT_PROVIDERS: list[type] = [
     HuggingFaceProvider,
     OllamaProvider,
     CerebrasProvider,
+    OpenAICompatProvider,
+    GeminiCompatProvider,
 ]
 
 
@@ -45,6 +50,8 @@ CONFORMANT_PROVIDERS: list[type] = [
 # generic fixture can build them without per-class branching.
 PROVIDER_KWARGS: dict[type, dict[str, Any]] = {
     CloudflareWAIProvider: {"account_id": "00000000000000000000000000000000"},
+    OpenAICompatProvider: {"spec": spec_by_name("mistral")},
+    GeminiCompatProvider: {"spec": spec_by_name("gemini")},
 }
 
 
@@ -168,3 +175,32 @@ class TestProviderConformance:
             assert inspect.iscoroutinefunction(method), (
                 f"{provider_class.__name__}.forward_embeddings must be `async def`"
             )
+
+
+# ─── every spec row, same invariants ─────────────────────────────────
+# The class-level suite above proves the adapter; this proves each row
+# in the table builds and answers the Protocol with stubbed HTTP.
+
+
+@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
+@pytest.mark.parametrize("spec", PROVIDER_SPECS, ids=lambda s: s.name)
+def test_every_spec_row_is_conformant(spec, httpx_mock):
+    from freeride.providers.openai_compat import make_provider
+    from freeride.core.types import ProbeResult
+
+    httpx_mock.add_response(
+        json={"data": [], "id": "stub", "object": "chat.completion", "created": 0, "model": "stub", "choices": []},
+        is_reusable=True,
+    )
+    p = make_provider(spec)
+    assert isinstance(p, Provider)
+    assert p.name == spec.name
+    assert p.api_version == PROVIDER_API_VERSION
+    assert isinstance(p.auth_header("k"), dict)
+    assert isinstance(p.attribution_headers(), dict)
+    assert isinstance(p.list_free_models("k"), list)
+    assert isinstance(p.probe("x", "k"), ProbeResult)
+    if spec.keyless:
+        assert p.auth_header("anonymous") == {}
+    else:
+        assert p.auth_header("k") == {"Authorization": "Bearer k"}
