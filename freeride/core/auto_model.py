@@ -99,11 +99,14 @@ def resolve_auto_model(
         health_cache = load_cache()  # may be {} — that's fine, equivalent to no filter
 
     candidates = resolve_auto_candidates(
-        providers, catalog, leaderboard=leaderboard, health_cache=health_cache
+        providers, catalog, leaderboard=leaderboard, health_cache=health_cache, per_provider=1
     )
     if not candidates:
         return None, None
     return candidates[0]
+
+
+DEFAULT_CANDIDATES_PER_PROVIDER = 3
 
 
 def resolve_auto_candidates(
@@ -112,9 +115,11 @@ def resolve_auto_candidates(
     *,
     leaderboard: dict[str, int] | None = None,
     health_cache: dict[str, Any] | None = None,
+    per_provider: int = DEFAULT_CANDIDATES_PER_PROVIDER,
 ) -> list[tuple[str, str]]:
     """Ranked ``[(model_id, provider_name), ...]`` for an ``auto`` request:
-    the best model on **each** available provider, best provider first.
+    up to ``per_provider`` models on **each** available provider, in
+    rank order (so the first entry is the overall best).
 
     This is what lets the failover chain switch providers for real. A
     single pick carried across the chain fails everywhere but its own
@@ -156,18 +161,18 @@ def resolve_auto_candidates(
         return []
 
     out: list[tuple[str, str]] = []
-    seen: set[str] = set()
+    taken: dict[str, int] = {}
     for entry, intersect, score in ranked:
         provider_ids = entry.get("provider_ids") or {}
         for provider_name in intersect:
-            if provider_name in seen:
+            if taken.get(provider_name, 0) >= per_provider:
                 continue
             if health_cache:
                 from freeride.core.model_health import is_model_known_broken
 
                 if is_model_known_broken(provider_name, entry["id"], cache=health_cache):
                     continue
-            seen.add(provider_name)
+            taken[provider_name] = taken.get(provider_name, 0) + 1
             out.append((provider_ids.get(provider_name, entry["id"]), provider_name))
     if out:
         logger.debug(
@@ -201,4 +206,15 @@ def alias_map_for(
             if name in out:
                 out[name] = pid
         break
+    return out
+
+
+def candidates_by_provider(candidates: list[tuple[str, str]]) -> dict[str, list[str]]:
+    """``{provider: [model, ...]}`` in candidate order, for the failover
+    loops' ``model_for``."""
+    out: dict[str, list[str]] = {}
+    for mid, name in candidates:
+        bucket = out.setdefault(name, [])
+        if mid not in bucket:
+            bucket.append(mid)
     return out

@@ -49,6 +49,7 @@ from freeride.core.anthropic_translate import (
 )
 from freeride.core.auto_model import (
     alias_map_for,
+    candidates_by_provider,
     is_auto_model,
     resolve_auto_candidates,
     resolve_auto_model,
@@ -427,7 +428,7 @@ async def messages(request: Request):
     # is in play (set above). Without the scoping, a typed preset
     # only re-orders the chain; here it also restricts WHICH
     # provider catalogs the resolver considers.
-    model_for: dict[str, str] | None = None
+    model_for: dict[str, list[str]] | dict[str, str] | None = None
     candidates: list[tuple[str, str]] = []
     if is_auto_model(openai_request.model):
         # Primary pick stays scoped to the preset's preferred providers
@@ -449,9 +450,11 @@ async def messages(request: Request):
                 candidates = resolve_auto_candidates(providers, full_catalog)
             except Exception:  # noqa: BLE001 — fallbacks are best-effort
                 candidates = []
-            model_for = {p.name: resolved_id for p, _ in chain}
-            model_for.update({name: mid for mid, name in candidates})
-            model_for[resolved_provider] = resolved_id
+            model_for = {p.name: [resolved_id] for p, _ in chain}
+            model_for.update(candidates_by_provider(candidates))
+            # The preset-scoped pick leads its provider's list.
+            own = [m for m in model_for.get(resolved_provider, []) if m != resolved_id]
+            model_for[resolved_provider] = [resolved_id] + own
         if resolved_id is None:
             raise HTTPException(
                 status_code=503,
@@ -571,7 +574,7 @@ async def _build_anthropic_stream_response(
     cooldown: KeyCooldown,
     ctx: FailoverContext,
     requested_model: str,
-    model_for: dict[str, str] | None = None,
+    model_for: dict[str, list[str]] | dict[str, str] | None = None,
 ) -> StreamingResponse:
     """Pre-flight first chunk through the chat-route's
     ``try_stream_with_failover``, then wrap the resulting

@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, TypeVar
+from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Sequence, TypeVar
 
 import httpx
 from fastapi import Request
@@ -251,6 +251,55 @@ def _record_failure(
     record_health(provider.name, ok=False, duration_ms=duration_ms, key=key)
 
 
+
+
+# Error kinds that are about the *model*, not the key: try the next
+# candidate model on the same provider before leaving it.
+_MODEL_LEVEL_KINDS = frozenset({ErrorKind.MODEL_NOT_FOUND, ErrorKind.TIMEOUT})
+
+
+def _models_for(
+    model_for: Mapping[str, str | Sequence[str]] | None,
+    provider_name: str,
+    default: str,
+) -> list[str] | None:
+    """Ordered candidate models for ``provider_name``.
+
+    ``None`` means "skip this provider" (a map was given and it has no
+    entry). Without a map every provider gets ``[default]``: the legacy
+    one-id-for-the-whole-chain behaviour.
+    """
+    if model_for is None:
+        return [default]
+    raw = model_for.get(provider_name)
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        return [raw]
+    out: list[str] = []
+    for m in raw:
+        if m and m not in out:
+            out.append(m)
+    return out or None
+
+
+def _is_model_level(provider: Provider, kind: ErrorKind) -> bool:
+    if kind in _MODEL_LEVEL_KINDS:
+        return True
+    return kind is ErrorKind.RATE_LIMIT and getattr(provider, "cooldown_scope", "key") == "model"
+
+
+def _demote_model(provider: Provider, model: str) -> None:
+    """Remember that (provider, model) just failed so the next request's
+    ranking skips it for a few minutes. Best-effort cache I/O."""
+    from freeride.core.model_health import mark_recent_failure
+
+    try:
+        mark_recent_failure(provider.name, model)
+    except Exception:  # noqa: BLE001
+        logger.debug("model demotion failed", exc_info=True)
+
+
 async def try_stream_with_failover(
     chain: list[tuple[Provider, list[str]]],
     body: ChatRequest,
@@ -259,116 +308,117 @@ async def try_stream_with_failover(
     *,
     extra_event: dict[str, Any] | None = None,
     on_model_not_found: Callable[[], None] | None = None,
-    model_for: Mapping[str, str] | None = None,
+    model_for: Mapping[str, str | Sequence[str]] | None = None,
 ) -> (
     tuple[Provider, ChatStreamEvent, AsyncIterator[ChatStreamEvent]]
     | tuple[None, None, ErrorKind]
 ):
     """Walk the chain for a streaming call.
 
-    ``model_for`` maps provider name → the model id to send *that*
-    provider (auto-resolution candidates, or an explicit id's
-    per-provider spelling). When given, providers without an entry are
-    skipped and ``body.model`` is rewritten before each attempt, so a
-    failure on one provider really does fall over to the next
-    provider's own model instead of re-sending an id it never listed.
+    ``model_for`` maps provider name → the model id(s) to send *that*
+    provider: auto-resolution candidates in rank order, or an explicit
+    id's per-provider spelling. When given, providers without an entry
+    are skipped and ``body.model`` is rewritten before each attempt.
+
+    Within a provider the walk is: for the current model, rotate keys
+    on key-level errors (auth, key-scoped 429); on a model-level error
+    (model not found / tier-gated, model-scoped 429, timeout) move to
+    the next candidate model with the same key; on quota exhaustion
+    leave the provider. Keys that all failed at key level are not
+    re-tried for the next model.
     """
     force_stream_usage(body)
     last_error: ErrorKind | None = None
     extra = extra_event or {}
     for provider, keys in chain:
-        if model_for is not None:
-            mapped = model_for.get(provider.name)
-            if mapped is None:
-                continue
-            body.model = mapped
+        models = _models_for(model_for, provider.name, body.model)
+        if models is None:
+            continue
         summary = ctx.attempt(provider.name)
-        provider_done = False
         ordered_keys = sort_keys_by_health(provider.name, keys)
-        for key_idx, key in enumerate(ordered_keys):
+        provider_done = False
+        for model_id in models:
             if provider_done:
                 break
-            summary.keys_tried += 1
-            emit_event(
-                "provider_attempt",
-                request_id=ctx.request_id,
-                provider=provider.name,
-                key_index=key_idx,
-                model=body.model,
-                streaming=True,
-                **extra,
-            )
-            t0 = time.perf_counter()
-            gen = provider.forward_chat_stream(body, body.model, key)
-            try:
-                first = await gen.__anext__()
-            except StopAsyncIteration:
-                duration_ms = int((time.perf_counter() - t0) * 1000)
-                last_error = ErrorKind.UNKNOWN
-                _record_failure(
-                    ctx=ctx,
-                    summary=summary,
-                    provider=provider,
-                    key=key,
-                    key_idx=key_idx,
-                    duration_ms=duration_ms,
-                    kind=last_error,
-                    extra_event=extra,
+            body.model = model_id
+            next_model = False
+            for key_idx, key in enumerate(ordered_keys):
+                if provider_done or next_model:
+                    break
+                summary.keys_tried += 1
+                emit_event(
+                    "provider_attempt",
+                    request_id=ctx.request_id,
+                    provider=provider.name,
+                    key_index=key_idx,
+                    model=body.model,
+                    streaming=True,
+                    **extra,
                 )
-                continue
-            except httpx.HTTPStatusError as e:
-                duration_ms = int((time.perf_counter() - t0) * 1000)
+                t0 = time.perf_counter()
+                gen = provider.forward_chat_stream(body, body.model, key)
                 try:
-                    await e.response.aread()
-                except Exception:
-                    pass
-                kind = provider.classify_error(e.response)
-                summary.retry_after_s = _cool(
-                    cooldown, provider, key, kind, e.response, model=body.model
-                ) or summary.retry_after_s
-                if kind is ErrorKind.MODEL_NOT_FOUND and on_model_not_found is not None:
-                    on_model_not_found()
-                if kind in _SKIP_PROVIDER_KINDS:
-                    provider_done = True
-                last_error = kind
-                _record_failure(
-                    ctx=ctx,
-                    summary=summary,
-                    provider=provider,
-                    key=key,
-                    key_idx=key_idx,
-                    duration_ms=duration_ms,
-                    kind=kind,
-                    extra_event=extra,
-                )
-                continue
-            except httpx.HTTPError as e:
+                    first = await gen.__anext__()
+                except StopAsyncIteration:
+                    duration_ms = int((time.perf_counter() - t0) * 1000)
+                    last_error = ErrorKind.UNKNOWN
+                    _record_failure(
+                        ctx=ctx, summary=summary, provider=provider, key=key, key_idx=key_idx,
+                        duration_ms=duration_ms, kind=last_error, extra_event=extra,
+                    )
+                    continue
+                except httpx.HTTPStatusError as e:
+                    duration_ms = int((time.perf_counter() - t0) * 1000)
+                    try:
+                        await e.response.aread()
+                    except Exception:
+                        pass
+                    kind = provider.classify_error(e.response)
+                    summary.retry_after_s = _cool(
+                        cooldown, provider, key, kind, e.response, model=body.model
+                    ) or summary.retry_after_s
+                    if kind is ErrorKind.MODEL_NOT_FOUND:
+                        if on_model_not_found is not None:
+                            on_model_not_found()
+                        _demote_model(provider, body.model)
+                    if kind is ErrorKind.QUOTA_EXHAUSTED:
+                        provider_done = True
+                    elif _is_model_level(provider, kind):
+                        next_model = True
+                    last_error = kind
+                    _record_failure(
+                        ctx=ctx, summary=summary, provider=provider, key=key, key_idx=key_idx,
+                        duration_ms=duration_ms, kind=kind, extra_event=extra,
+                    )
+                    continue
+                except httpx.HTTPError as e:
+                    duration_ms = int((time.perf_counter() - t0) * 1000)
+                    last_error = provider.classify_error(e)
+                    if _is_model_level(provider, last_error):
+                        _demote_model(provider, body.model)
+                        next_model = True
+                    _record_failure(
+                        ctx=ctx, summary=summary, provider=provider, key=key, key_idx=key_idx,
+                        duration_ms=duration_ms, kind=last_error, extra_event=extra,
+                    )
+                    continue
                 duration_ms = int((time.perf_counter() - t0) * 1000)
-                last_error = provider.classify_error(e)
-                _record_failure(
-                    ctx=ctx,
-                    summary=summary,
-                    provider=provider,
-                    key=key,
-                    key_idx=key_idx,
+                emit_event(
+                    "provider_response",
+                    request_id=ctx.request_id,
+                    provider=provider.name,
+                    key_index=key_idx,
                     duration_ms=duration_ms,
-                    kind=last_error,
-                    extra_event=extra,
+                    status="OK",
+                    first_chunk=True,
+                    **extra,
                 )
-                continue
-            duration_ms = int((time.perf_counter() - t0) * 1000)
-            emit_event(
-                "provider_response",
-                request_id=ctx.request_id,
-                provider=provider.name,
-                key_index=key_idx,
-                duration_ms=duration_ms,
-                status="OK",
-                first_chunk=True,
-                **extra,
-            )
-            record_health(provider.name, ok=True, duration_ms=duration_ms, key=key)
-            return provider, first, gen
+                record_health(provider.name, ok=True, duration_ms=duration_ms, key=key)
+                return provider, first, gen
+            if not next_model:
+                # Every key failed at key level (or transport): the next
+                # model would hit the same cooled keys.
+                break
     return None, None, last_error or ErrorKind.UNKNOWN
 
 
@@ -381,7 +431,7 @@ async def try_call_with_failover(
     model: str,
     extra_event: dict[str, Any] | None = None,
     on_model_not_found: Callable[[], None] | None = None,
-    model_for: Mapping[str, str] | None = None,
+    model_for: Mapping[str, str | Sequence[str]] | None = None,
     body: ChatRequest | None = None,
 ) -> tuple[Provider | None, T | None]:
     """Walk the chain for a non-streaming call.
@@ -392,93 +442,89 @@ async def try_call_with_failover(
     when the chain is exhausted.
 
     ``model_for`` / ``body``: see :func:`try_stream_with_failover`.
-    ``body.model`` is rewritten per provider so the route's ``call``
+    ``body.model`` is rewritten per attempt so the route's ``call``
     closure (which reads it) sends the mapped id.
     """
     extra = extra_event or {}
     for provider, keys in chain:
-        if model_for is not None:
-            mapped = model_for.get(provider.name)
-            if mapped is None:
-                continue
-            model = mapped
-            if body is not None:
-                body.model = mapped
+        models = _models_for(model_for, provider.name, model)
+        if models is None:
+            continue
         summary = ctx.attempt(provider.name)
         ordered_keys = sort_keys_by_health(provider.name, keys)
-        for key_idx, key in enumerate(ordered_keys):
-            summary.keys_tried += 1
-            emit_event(
-                "provider_attempt",
-                request_id=ctx.request_id,
-                provider=provider.name,
-                key_index=key_idx,
-                model=model,
-                streaming=False,
-                **extra,
-            )
-            t0 = time.perf_counter()
-            try:
-                result = await call(provider, key)
-            except httpx.HTTPStatusError as e:
-                duration_ms = int((time.perf_counter() - t0) * 1000)
-                kind = provider.classify_error(e.response)
-                summary.retry_after_s = _cool(
-                    cooldown, provider, key, kind, e.response, model=model
-                ) or summary.retry_after_s
-                if kind is ErrorKind.MODEL_NOT_FOUND and on_model_not_found is not None:
-                    on_model_not_found()
-                _record_failure(
-                    ctx=ctx,
-                    summary=summary,
-                    provider=provider,
-                    key=key,
-                    key_idx=key_idx,
-                    duration_ms=duration_ms,
-                    kind=kind,
-                    extra_event=extra,
-                )
-                if kind in _SKIP_PROVIDER_KINDS:
+        provider_done = False
+        for model_id in models:
+            if provider_done:
+                break
+            if body is not None:
+                body.model = model_id
+            next_model = False
+            for key_idx, key in enumerate(ordered_keys):
+                if provider_done or next_model:
                     break
-                continue
-            except httpx.HTTPError as e:
-                duration_ms = int((time.perf_counter() - t0) * 1000)
-                kind = provider.classify_error(e)
-                _record_failure(
-                    ctx=ctx,
-                    summary=summary,
-                    provider=provider,
-                    key=key,
-                    key_idx=key_idx,
-                    duration_ms=duration_ms,
-                    kind=kind,
-                    extra_event=extra,
+                summary.keys_tried += 1
+                emit_event(
+                    "provider_attempt",
+                    request_id=ctx.request_id,
+                    provider=provider.name,
+                    key_index=key_idx,
+                    model=model_id,
+                    streaming=False,
+                    **extra,
                 )
-                continue
-            except Exception as e:  # noqa: BLE001
+                t0 = time.perf_counter()
+                try:
+                    result = await call(provider, key)
+                except httpx.HTTPStatusError as e:
+                    duration_ms = int((time.perf_counter() - t0) * 1000)
+                    kind = provider.classify_error(e.response)
+                    summary.retry_after_s = _cool(
+                        cooldown, provider, key, kind, e.response, model=model_id
+                    ) or summary.retry_after_s
+                    if kind is ErrorKind.MODEL_NOT_FOUND:
+                        if on_model_not_found is not None:
+                            on_model_not_found()
+                        _demote_model(provider, model_id)
+                    _record_failure(
+                        ctx=ctx, summary=summary, provider=provider, key=key, key_idx=key_idx,
+                        duration_ms=duration_ms, kind=kind, extra_event=extra,
+                    )
+                    if kind is ErrorKind.QUOTA_EXHAUSTED:
+                        provider_done = True
+                    elif _is_model_level(provider, kind):
+                        next_model = True
+                    continue
+                except httpx.HTTPError as e:
+                    duration_ms = int((time.perf_counter() - t0) * 1000)
+                    kind = provider.classify_error(e)
+                    if _is_model_level(provider, kind):
+                        _demote_model(provider, model_id)
+                        next_model = True
+                    _record_failure(
+                        ctx=ctx, summary=summary, provider=provider, key=key, key_idx=key_idx,
+                        duration_ms=duration_ms, kind=kind, extra_event=extra,
+                    )
+                    continue
+                except Exception as e:  # noqa: BLE001
+                    duration_ms = int((time.perf_counter() - t0) * 1000)
+                    logger.warning("provider %s raised %s", provider.name, e)
+                    _record_failure(
+                        ctx=ctx, summary=summary, provider=provider, key=key, key_idx=key_idx,
+                        duration_ms=duration_ms, kind=ErrorKind.UNKNOWN, extra_event=extra,
+                    )
+                    continue
                 duration_ms = int((time.perf_counter() - t0) * 1000)
-                logger.warning("provider %s raised %s", provider.name, e)
-                _record_failure(
-                    ctx=ctx,
-                    summary=summary,
-                    provider=provider,
-                    key=key,
-                    key_idx=key_idx,
+                emit_event(
+                    "provider_response",
+                    request_id=ctx.request_id,
+                    provider=provider.name,
+                    key_index=key_idx,
                     duration_ms=duration_ms,
-                    kind=ErrorKind.UNKNOWN,
-                    extra_event=extra,
+                    status="OK",
+                    **extra,
                 )
-                continue
-            duration_ms = int((time.perf_counter() - t0) * 1000)
-            emit_event(
-                "provider_response",
-                request_id=ctx.request_id,
-                provider=provider.name,
-                key_index=key_idx,
-                duration_ms=duration_ms,
-                status="OK",
-                **extra,
-            )
-            record_health(provider.name, ok=True, duration_ms=duration_ms, key=key)
-            return provider, result
+                record_health(provider.name, ok=True, duration_ms=duration_ms, key=key)
+                return provider, result
+            if not next_model:
+                break
     return None, None

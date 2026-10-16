@@ -18,7 +18,12 @@ from typing import AsyncIterator
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from freeride.core.auto_model import alias_map_for, is_auto_model, resolve_auto_candidates
+from freeride.core.auto_model import (
+    alias_map_for,
+    candidates_by_provider,
+    is_auto_model,
+    resolve_auto_candidates,
+)
 from freeride.core.chat_schema import ChatRequest, ChatStreamEvent
 from freeride.core.cooldown import KeyCooldown
 from freeride.core.events import emit as emit_event
@@ -67,7 +72,7 @@ async def _build_stream_response(
     body: ChatRequest,
     cooldown: KeyCooldown,
     ctx: FailoverContext,
-    model_for: dict[str, str] | None = None,
+    model_for: dict[str, list[str]] | dict[str, str] | None = None,
 ) -> StreamingResponse:
     chosen, first_event, rest_or_err = await try_stream_with_failover(
         chain, body, cooldown, ctx, on_model_not_found=invalidate_catalog, model_for=model_for
@@ -196,14 +201,14 @@ async def chat_completions(request: Request, body: ChatRequest):
     # each provider's best model, best provider first, so a failure on
     # the first provider falls over to the second provider's own model.
     # For an explicit id it is each provider's spelling of that id.
-    model_for: dict[str, str] | None = None
+    model_for: dict[str, list[str]] | dict[str, str] | None = None
     if is_auto_model(body.model):
         catalog = await get_or_fetch_catalog(providers, group=True)
         candidates = resolve_auto_candidates(providers, catalog)
         resolved_id, resolved_provider = candidates[0] if candidates else (None, None)
         if resolved_id is not None:
-            model_for = {p.name: resolved_id for p, _ in chain}
-            model_for.update({name: mid for mid, name in candidates})
+            model_for = {p.name: [resolved_id] for p, _ in chain}
+            model_for.update(candidates_by_provider(candidates))
             # Providers with a ranked candidate go first, best first;
             # the rest keep their health order as a last resort.
             by_name = {p.name: (p, keys) for p, keys in chain}

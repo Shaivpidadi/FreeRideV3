@@ -49,6 +49,16 @@ and a long tail of no-card gateways behind one generic adapter.
   Verified live: with Gemini and SambaNova failing at chat time, both
   ``/v1/chat/completions`` and ``/v1/messages`` (streaming included)
   fall over to Ollama Cloud or xKiro where before they returned 503.
+- **Model switching inside a provider.** ``auto`` now carries up to three
+  ranked candidate models per provider, and a model-level failure (model
+  not found or tier-gated, model-scoped 429, timeout) moves to the next
+  candidate on the same provider with the same key before the chain
+  leaves it. Key-level failures still rotate keys; quota exhaustion still
+  leaves the provider; a failed candidate is demoted in the model-health
+  cache for the next few minutes. Verified live on Ollama Cloud: with a
+  gated model ranked first, the same request was served by the next one.
+- ``freeride list`` no longer requires an OpenRouter key: without one it
+  lists every configured provider's free catalog.
 - ``docs/providers/EXPANSION-RESEARCH.md`` (free-tier landscape, verified
   2026-10-16) and ``docs/providers/openai_compat.md``.
 

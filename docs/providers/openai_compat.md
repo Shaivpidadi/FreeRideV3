@@ -142,6 +142,24 @@ its row says so and is not suggested.
 - The free predicate keeps Flash / Flash-Lite / Gemma rows and drops Pro, embedding, image,
   TTS and live models.
 
+## Failover semantics with these providers
+
+The chain walk (``freeride/core/failover.py``) treats every provider the same way:
+
+| Failure | Effect |
+|---|---|
+| `AUTH`, key-scoped `RATE_LIMIT` | bench the key, try the next key with the same model |
+| `MODEL_NOT_FOUND` (404, tier-gated 402/403, strict substitution), `TIMEOUT`, model-scoped `RATE_LIMIT` | demote the (provider, model) pair for a few minutes, try the provider's next candidate model with the same key |
+| `QUOTA_EXHAUSTED` (account-level 402, "insufficient balance") | bench the key for the quota TTL, leave the provider |
+| every candidate on a provider failed | next provider, with *its* own candidates |
+
+`auto` resolves to up to three ranked models per provider (`resolve_auto_candidates`);
+an explicit id is sent in each provider's own spelling (`alias_map_for`). Models are
+discovered from each provider's catalog (`list_free_models`, cached, invalidated on a
+model-not-found), and `freeride audit-models` probes them live and writes verdicts the
+ranking reads, so a dead or gated model stops being picked after one audit or one failed
+request.
+
 ## What is not in the adapter yet
 
 - Pre-emptive pacing against `rpm` / `daily_*` (the router still learns from 429s).

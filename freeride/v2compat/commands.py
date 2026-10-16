@@ -182,11 +182,48 @@ def _free_models_provider():
     return get_free_models()
 
 
+def _list_all_providers(limit: int) -> bool:
+    """``freeride list`` without an OpenRouter key: show every configured
+    provider's free catalog instead of refusing. Returns False when no
+    provider is configured at all."""
+    from freeride.cli.cmd_serve import build_provider_registry
+    from freeride.core.provider_env import all_keys_for
+
+    rows: list[tuple[str, str, int, str]] = []
+    configured = 0
+    for provider in build_provider_registry():
+        keys = all_keys_for(provider.name)
+        if not keys:
+            continue
+        configured += 1
+        try:
+            models = provider.list_free_models(keys[0])
+        except Exception as e:  # noqa: BLE001
+            print(f"  {provider.name}: catalog unavailable ({type(e).__name__})")
+            continue
+        for m in models:
+            rows.append((provider.name, m.api_id, m.context_length, "tools" if m.supports("tools") else ""))
+    if not configured:
+        return False
+    print(f"\nFree models across {configured} configured provider(s):\n")
+    print(f"{'Provider':<14} {'Model ID':<52} {'Context':<10} {'Caps'}")
+    print("-" * 90)
+    for name, mid, ctx, caps in rows[:limit]:
+        ctx_str = f"{ctx // 1000}K" if ctx >= 1000 else str(ctx)
+        print(f"{name:<14} {mid:<52} {ctx_str:<10} {caps}")
+    if len(rows) > limit:
+        print(f"\n... and {len(rows) - limit} more. Use --limit to see more.")
+    print(f"\nTotal: {len(rows)} free models. `freeride audit-models` probes them live.")
+    return True
+
+
 def cmd_list(args) -> None:
     if not get_api_keys():
-        print("Error: OPENROUTER_API_KEY not set")
-        print("Set it via: export OPENROUTER_API_KEY='sk-or-...'")
-        print("Or get a free key at: https://openrouter.ai/keys")
+        limit = args.limit if args.limit else 60
+        if _list_all_providers(limit):
+            return
+        print("Error: no provider configured")
+        print("Run `freeride init`, or set OPENROUTER_API_KEY (free key at https://openrouter.ai/keys)")
         sys.exit(1)
 
     print("Fetching free models from OpenRouter...")
