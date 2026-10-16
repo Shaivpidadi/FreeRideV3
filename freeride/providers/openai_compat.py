@@ -97,6 +97,15 @@ _MODEL_NOT_FOUND_NEEDLES = (
     "requires a paid",
     "upgrade your plan",
 )
+_TIER_GATE_NEEDLES = (
+    "not in the free plan",
+    "requires a subscription",
+    "premium model",
+    "requires a paid",
+    "upgrade your plan",
+    "not available on your plan",
+    "pro plan",
+)
 _QUOTA_NEEDLES = (
     "quota",
     "insufficient balance",
@@ -333,6 +342,13 @@ class OpenAICompatProvider:
         if status == 401:
             return ErrorKind.AUTH
         if status == 402:
+            # Ollama Cloud answers 402 "This model is not in the Free plan"
+            # for subscription-gated ids: the key is fine, the model is
+            # not. Account-level 402s ("payment method is required",
+            # "prepayment credits are depleted") stay QUOTA_EXHAUSTED.
+            text = _error_text(self._body_of(resp))
+            if any(n in text for n in _TIER_GATE_NEEDLES):
+                return ErrorKind.MODEL_NOT_FOUND
             return ErrorKind.QUOTA_EXHAUSTED
         if status == 429:
             return ErrorKind.RATE_LIMIT

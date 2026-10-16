@@ -82,6 +82,17 @@ wiring but not spelled out), N = documented as unsupported, ? = unknown.
 | **Ollama Cloud** | Recurring monthly "starter amount of usage for a smaller set of starter models"; resets monthly from signup date | Not stated | **1 concurrent request** on Free; no token figure published; "starter" model list not published | Cloud catalog carries `gpt-oss`, `gemma4`, `glm-5.3-flash`, `deepseek-v4.1-flash`, `kimi-k2.7-code`, `nemotron-3-nano`, Qwen; which are "starter" needs a probe | `https://ollama.com/v1` | Y / Y (`tool_choice`, `logprobs`, `n` unsupported; reasoning arrives in `message.reasoning`) | Nothing restrictive found. | **Ship, after a probe.** Many catalog rows answer 403 "requires a subscription" on Free; plugin needs a per-model allowlist discovered by probing, plus concurrency = 1 enforced locally. |
 | **Z.ai (Zhipu international)** | Recurring: `GLM-4.7-Flash`, `GLM-4.5-Flash`, `GLM-4.6V-Flash` listed "Free" on pricing | No | RPM/concurrency behind login (community reports 1 concurrent on Flash) | the three Flash models (`glm-5.3-flash` is paid) | `https://api.z.ai/api/paas/v4/` | Y / L (separate "stream tool call" guide) | Z.ai (Singapore) terms contain an anti-traffic-redirect clause with no personal-use carve-out; the mainland console (`open.bigmodel.cn`) has a research carve-out but was unreachable from a non-PRC resolver. | **Ship.** GLM-4.7-Flash is a hidden-reasoning model: TTFB of 30-60 s is normal, so the plugin needs a 90 s first-byte budget or the ladder will mark it dead. Keys from the two consoles are not interchangeable; validate against `api.z.ai` first and fall back to `open.bigmodel.cn`. |
 
+**Post-implementation live check (2026-10-16, real keys).** Ollama Cloud's Free plan is
+exactly `gpt-oss:20b`, `gpt-oss:120b`, `nemotron-3-nano:30b`, `nemotron-3-super`,
+`nemotron-3-ultra`, `beam`, `gemma4:31b` (every other catalog row answers 402 "not in the
+Free plan"); tool calls and streaming work. xKiro works as documented (51 free-tier ids,
+tool calls, streaming). **SambaNova** contradicted its rate-limits page: a fresh account
+answers 402 `PAYMENT_METHOD_REQUIRED` on every model, so it is shipped opt-in and should be
+read as card-required. **Gemini** retired every `gemini-2.x` id for new users (404) and a
+project created with prepaid billing answers 402 instead of serving the free tier; keys must
+come from a project without billing. **Mistral**'s console did not offer Free mode to the
+account tested, so it is opt-in too.
+
 Two first-party names that did **not** make bucket A:
 
 - **Cohere**: trial keys are generous (20 RPM, 1,000 calls/month, compat endpoint with tools) but the Terms of Use say the service is "designed for business use" and must not be used "for personal, family or household purposes", and §4.1 allows Cohere to use API data to improve its products. FreeRide's users are individuals. Skip.

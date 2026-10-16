@@ -43,6 +43,18 @@ and a long tail of no-card gateways behind one generic adapter.
 - ``docs/providers/EXPANSION-RESEARCH.md`` (free-tier landscape, verified
   2026-10-16) and ``docs/providers/openai_compat.md``.
 
+### Live-verified (2026-10-16, real keys)
+- Ollama Cloud and xKiro serve tool calls and streams through the gateway;
+  the Ollama Free-plan roster was probed model by model and pinned.
+- Google Gemini: the key's project answered 402 "prepayment credits are
+  depleted" on every model (project in prepaid-billing mode) and 404 on
+  every ``gemini-2.x`` id ("no longer available to new users"); the 2.x
+  ids are now excluded and the row documents the billing-mode trap.
+- SambaNova: a fresh account answers 402 PAYMENT_METHOD_REQUIRED on every
+  model despite the published no-card tier; the row is now opt-in.
+- Tier-gated 402s ("not in the Free plan") classify as MODEL_NOT_FOUND so
+  one gated id no longer benches the whole key.
+
 ### Changed
 - Preset provider order: ``quality`` and ``coding`` now prefer OpenRouter,
   Gemini, Mistral, SambaNova, then the rest; ``fast`` adds SambaNova.

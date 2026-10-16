@@ -151,6 +151,10 @@ def _gemini_free(raw: dict[str, Any]) -> bool:
     mid = str(raw.get("id", "")).removeprefix("models/")
     if not mid.startswith(("gemini-", "gemma-")):
         return False
+    # Still listed, but every call answers 404 "no longer available to
+    # new users" (live, 2026-10-16). Keep them off the ladder.
+    if mid.startswith(("gemini-1.", "gemini-2.")):
+        return False
     if "pro" in mid or "embedding" in mid or "image" in mid or "tts" in mid or "live" in mid:
         return False
     if mid.startswith("gemma-"):
@@ -214,7 +218,9 @@ PROVIDER_SPECS: tuple[OpenAICompatSpec, ...] = (
         tos_note=(
             "Terms (2026-03) scope the API to professional/business use; the "
             "unpaid tier may be used to improve Google products. EEA/UK/CH "
-            "accounts are paid-only."
+            "accounts are paid-only. A project set up with prepaid billing "
+            "answers 402 'prepayment credits are depleted' instead of serving "
+            "the free tier: create the key in a project without billing."
         ),
     ),
     OpenAICompatSpec(
@@ -223,7 +229,7 @@ PROVIDER_SPECS: tuple[OpenAICompatSpec, ...] = (
         base_url="https://api.mistral.ai/v1",
         env_vars=("MISTRAL_API_KEY",),
         signup_url="https://console.mistral.ai/api-keys",
-        description="Mistral — Free mode with included monthly usage (Devstral / Codestral / Mistral Small)",
+        description="Mistral — Free mode where the console offers it (Devstral / Codestral / Mistral Small); some accounts see paid plans only",
         free_ids=frozenset(
             {
                 "mistral-small-latest",
@@ -249,7 +255,8 @@ PROVIDER_SPECS: tuple[OpenAICompatSpec, ...] = (
             "mistral-medium-latest": ModelMeta(131_072, ("tools",)),
         },
         embeddings_path="/embeddings",
-        tos_note="Free mode limits are shown in the console (Admin → Limits), not published.",
+        tos_note="Free mode limits are shown in the console (Admin → Limits), not published; not every account is offered Free mode.",
+        default_on=False,
     ),
     OpenAICompatSpec(
         name="sambanova",
@@ -257,7 +264,7 @@ PROVIDER_SPECS: tuple[OpenAICompatSpec, ...] = (
         base_url="https://api.sambanova.ai/v1",
         env_vars=("SAMBANOVA_API_KEY",),
         signup_url="https://cloud.sambanova.ai/apis",
-        description="SambaNova — DeepSeek V3.x / Llama 3.3 70B / gpt-oss-120b at 20 RPM, 20 RPD, 200K TPD per model",
+        description="SambaNova — DeepSeek V3.x / Llama 3.3 70B / gpt-oss-120b; docs list a free tier but new accounts need a payment method on file",
         free_ids=frozenset(
             {
                 "DeepSeek-V3.1",
@@ -273,7 +280,13 @@ PROVIDER_SPECS: tuple[OpenAICompatSpec, ...] = (
         rpm=20,
         daily_requests=20,
         daily_tokens=200_000,
-        tos_note="Free tier applies while no payment method is linked; caps are per model.",
+        tos_note=(
+            "Rate-limits page documents a no-card free tier (20 RPM / 20 RPD / "
+            "200K TPD per model), but a fresh account answered 402 "
+            "PAYMENT_METHOD_REQUIRED on every model (live, 2026-10-16). Treat "
+            "as card-required until that changes."
+        ),
+        default_on=False,
     ),
     OpenAICompatSpec(
         name="zai",
@@ -295,13 +308,19 @@ PROVIDER_SPECS: tuple[OpenAICompatSpec, ...] = (
         base_url="https://ollama.com/v1",
         env_vars=("OLLAMA_CLOUD_API_KEY",),
         signup_url="https://ollama.com/settings/keys",
-        description="Ollama Cloud — starter models on the Free plan (1 concurrent request; subscription-only models answer 403)",
+        description="Ollama Cloud — Free-plan models: gpt-oss 20b/120b, Nemotron 3 nano/super/ultra, gemma4:31b, beam (1 concurrent request)",
         timeout_s=60.0,
         read_timeout_s=180.0,
         drop_params=("tool_choice", "logprobs", "top_logprobs", "n"),
+        # Live-probed 2026-10-16: these answered 200 on a Free-plan key;
+        # the other catalog rows answered 402 "not in the Free plan".
+        # OLLAMA_CLOUD_FREE_MODELS_OVERRIDE widens it for Pro accounts.
+        free_ids=frozenset(
+            {"gpt-oss:20b", "gpt-oss:120b", "nemotron-3-nano:30b", "nemotron-3-super", "nemotron-3-ultra", "beam", "gemma4:31b"}
+        ),
         tools_default=True,
         default_context_length=131_072,
-        tos_note="Which models are 'starter' is not published; the probe sorts it out.",
+        tos_note="Reasoning arrives in delta.reasoning / message.reasoning; subscription-gated ids answer 402, classified as model-not-found.",
     ),
     # ───────────── bucket B: keyless, opt-in via FREERIDE_KEYLESS ─────────────
     OpenAICompatSpec(

@@ -2,7 +2,7 @@
 
 **Free AI inference for real work — as a coding agent, or as a gateway for your own tools.**
 
-FreeRide routes requests across free-tier providers — **OpenRouter, Google Gemini, Mistral, SambaNova, Z.ai, Groq, NVIDIA NIM, Cloudflare Workers AI, Ollama Cloud**, a dozen smaller gateways, and **your own Ollama** — with automatic failover when one rate-limits or errors. No vendor subscription, no cloud middleman: your machine talks to the providers directly with your own free keys. There are two ways in; both run on the same engine.
+FreeRide routes requests across free-tier providers — **OpenRouter, Google Gemini, Ollama Cloud, Z.ai, Groq, NVIDIA NIM, Cloudflare Workers AI, xKiro**, a dozen smaller gateways, and **your own Ollama** — with automatic failover when one rate-limits or errors. No vendor subscription, no cloud middleman: your machine talks to the providers directly with your own free keys. There are two ways in; both run on the same engine.
 
 > **102M+ tokens served in 35 days. $0 spent.**
 > Routed through community free-tier keys via this gateway.
@@ -53,11 +53,12 @@ Any one is enough; more = better failover. Collected by `freeride init` (or ride
 | Provider | Free tier (checked 2026-10-16) | Get a key |
 |---|---|---|
 | OpenRouter | rotating `:free` models; 20 RPM, 50 req/day account-wide (1,000/day once you've ever bought $10 of credits) | [openrouter.ai/keys](https://openrouter.ai/keys) |
-| Google Gemini | Flash / Flash-Lite / Gemma free of charge; per-model limits shown in AI Studio | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
-| Mistral | Free mode with included monthly usage (Devstral, Codestral, Mistral Small) | [console.mistral.ai](https://console.mistral.ai/api-keys) |
-| SambaNova | DeepSeek V3.x, Llama 3.3 70B, gpt-oss-120b at 20 RPM / 20 req/day / 200K tokens/day per model | [cloud.sambanova.ai](https://cloud.sambanova.ai/apis) |
+| Google Gemini | Flash / Flash-Lite / Gemma free of charge; limits shown in AI Studio. Create the key in a project **without** billing: a prepaid-billing project answers 402 instead of serving the free tier | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
+| Ollama Cloud | Free plan: gpt-oss 20b/120b, Nemotron 3 nano/super/ultra, gemma4:31b, beam; 1 concurrent request | [ollama.com/settings/keys](https://ollama.com/settings/keys) |
 | Z.ai (GLM) | GLM-4.7-Flash, GLM-4.5-Flash, GLM-4.6V-Flash free | [z.ai](https://z.ai/manage-apikey/apikey-list) |
-| Ollama Cloud | starter models on the Free plan, 1 concurrent request | [ollama.com/settings/keys](https://ollama.com/settings/keys) |
+| xKiro | 500K tokens/day on 50+ free-tier models (Qwen3 Coder, Ministral, DeepSeek, MiniMax) | [xkiro.com](https://xkiro.com) |
+| Mistral | Free mode where the console offers it; some accounts see paid plans only | [console.mistral.ai](https://console.mistral.ai/api-keys) |
+| SambaNova | docs list a free tier, but a fresh account needs a payment method on file (402 otherwise) | [cloud.sambanova.ai](https://cloud.sambanova.ai/apis) |
 | Groq | per-model RPM / daily token caps (see your console's limits page) | [console.groq.com/keys](https://console.groq.com/keys) |
 | NVIDIA NIM | recurring per-account rate limit (evaluation terms) | [build.nvidia.com](https://build.nvidia.com) |
 | Cloudflare Workers AI | 10K neurons/day | [dash.cloudflare.com](https://dash.cloudflare.com) |
@@ -128,10 +129,11 @@ Deeper: [`docs/architecture/failover.md`](docs/architecture/failover.md).
 | Cerebras | chat | fastest Llama / Qwen inference; no embeddings; trial credit only since 2026 |
 | Ollama (local) | chat | local-only; can mix with remote in the same failover chain |
 | Google Gemini | chat, streaming, tools | OpenAI-compatible endpoint; Gemini 3 thought signatures cached and replayed so multi-turn tool use works |
-| Mistral | chat, streaming, tools, embeddings | spec-driven |
-| SambaNova | chat, streaming, tools | spec-driven; per-model daily caps, so a 429 benches the model, not the key |
+| Ollama Cloud | chat, streaming, tools | spec-driven; Free-plan allowlist, drops `tool_choice`/`logprobs` the API rejects; live-verified |
+| xKiro | chat, streaming, tools | spec-driven; live-verified |
 | Z.ai (GLM Flash) | chat, streaming, tools | spec-driven; 90 s first-byte budget for hidden reasoning |
-| Ollama Cloud | chat, streaming, tools | spec-driven; drops `tool_choice`/`logprobs` the API rejects |
+| Mistral | chat, streaming, tools, embeddings | spec-driven; opt-in (`MISTRAL_API_KEY`) |
+| SambaNova | chat, streaming, tools | spec-driven; opt-in; per-model daily caps, so a 429 benches the model, not the key |
 | OVHcloud, Kilo, BlockRun | chat, streaming, tools | keyless, opt-in via `FREERIDE_KEYLESS` |
 | xKiro, Requesty, Routeway, Septor, ElectronHub, Lucidity, DreamPrompting, Waterfall, LLM7, LongCat | chat | spec-driven long tail; set `<NAME>_API_KEY` to enable |
 

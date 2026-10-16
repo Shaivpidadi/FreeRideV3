@@ -206,6 +206,14 @@ class TestClassify:
         assert p.classify_error(self._resp(410, json={"error": {"code": "model_retired"}})) is ErrorKind.MODEL_NOT_FOUND
         assert p.classify_error(self._resp(400, json={"error": {"message": "bad request"}})) is ErrorKind.UNKNOWN
 
+    def test_402_tier_gate_is_model_not_found_but_account_402_is_quota(self, p):
+        gated = self._resp(402, json={"error": {"message": "This model is not in the Free plan. Pro is $20/month"}})
+        assert p.classify_error(gated) is ErrorKind.MODEL_NOT_FOUND
+        account = self._resp(402, json={"error": {"code": "PAYMENT_METHOD_REQUIRED", "message": "A payment method is required."}})
+        assert p.classify_error(account) is ErrorKind.QUOTA_EXHAUSTED
+        prepay = self._resp(402, json=[{"error": {"message": "Your prepayment credits are depleted."}}])
+        assert p.classify_error(prepay) is ErrorKind.QUOTA_EXHAUSTED
+
     def test_400_insufficient_balance_is_quota(self, p):
         r = self._resp(400, json={"error": {"message": "insufficient balance"}})
         assert p.classify_error(r) is ErrorKind.QUOTA_EXHAUSTED
@@ -408,8 +416,17 @@ class TestSpecTable:
             is_reusable=True,
         )
         ids = [m.api_id for m in p.list_free_models("k")]
-        assert ids == ["gemini-2.5-flash", "gemini-3.5-flash-lite", "gemma-4-26b-it"]
+        # gemini-2.x answers 404 "no longer available to new users".
+        assert ids == ["gemini-3.5-flash-lite", "gemma-4-26b-it"]
         assert all(m.supports("tools") for m in p.list_free_models("k"))
+
+    def test_ollama_cloud_allowlist(self, httpx_mock):
+        p = make_provider(spec_by_name("ollama_cloud"))
+        httpx_mock.add_response(
+            url="https://ollama.com/v1/models",
+            json={"data": [{"id": "gpt-oss:120b"}, {"id": "glm-5.3-flash"}, {"id": "beam"}]},
+        )
+        assert [m.api_id for m in p.list_free_models("k")] == ["gpt-oss:120b", "beam"]
 
     def test_normalize(self):
         assert normalize_model_id("models/Gemini-2.5-Flash") == normalize_model_id("gemini-2.5-flash")
