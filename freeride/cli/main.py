@@ -274,8 +274,13 @@ def main(argv: list[str] | None = None) -> int:
 
     # v2-parity dispatch
     if args.command in {"list", "switch", "auto", "status", "refresh", "fallbacks", "rotate"}:
+        from freeride.core.dotenv import load_dotenv_into_environ
         from freeride.v2compat import commands as cmd
 
+        # Same key source as `serve` and `doctor`: OS env first, then
+        # ~/.freeride/.env to fill the gaps. Without this `status` said
+        # "NOT SET" for keys the running gateway was using (#13).
+        load_dotenv_into_environ()
         handler = getattr(cmd, f"cmd_{args.command}")
         handler(args)
         return 0

@@ -24,6 +24,7 @@ from freeride.core.auto_model import (
     is_auto_model,
     resolve_auto_candidates,
 )
+from freeride.core.model_router import preset_from_model_id, reorder_providers_for_preset
 from freeride.core.chat_schema import ChatRequest, ChatStreamEvent
 from freeride.core.cooldown import KeyCooldown
 from freeride.core.events import emit as emit_event
@@ -137,6 +138,18 @@ async def _build_stream_response(
 async def chat_completions(request: Request, body: ChatRequest):
     providers: list[Provider] = sort_by_health(list(request.app.state.providers))
 
+    # `freeride/<preset>` ids (coding, fast, quality, free) are routing
+    # presets, not model ids. They were only resolved on the Anthropic
+    # and fx routes; a direct OpenAI client sending one got a 404 from
+    # upstream (#14). Treat them as `auto` with the preset's provider
+    # preference applied to the chain order.
+    preset = preset_from_model_id(body.model)
+    if preset is not None:
+        order = reorder_providers_for_preset([p.name for p in providers], preset)
+        by_name = {p.name: p for p in providers}
+        providers = [by_name[n] for n in order]
+        body.model = "auto"
+
     providers, forced = apply_force_provider(providers, request)
     if forced is not None and not providers:
         raise HTTPException(
@@ -207,6 +220,11 @@ async def chat_completions(request: Request, body: ChatRequest):
         candidates = resolve_auto_candidates(providers, catalog)
         resolved_id, resolved_provider = candidates[0] if candidates else (None, None)
         if resolved_id is not None:
+            if preset is not None:
+                # A preset's provider preference outranks the score order.
+                position = {p.name: i for i, p in enumerate(providers)}
+                candidates.sort(key=lambda c: position.get(c[1], len(position)))
+                resolved_id, resolved_provider = candidates[0]
             model_for = {p.name: [resolved_id] for p, _ in chain}
             model_for.update(candidates_by_provider(candidates))
             # Providers with a ranked candidate go first, best first;
@@ -239,6 +257,7 @@ async def chat_completions(request: Request, body: ChatRequest):
             resolved_model=resolved_id,
             resolved_provider=resolved_provider,
             candidates=[f"{name}:{mid}" for mid, name in candidates],
+            preset=preset,
         )
     else:
         try:

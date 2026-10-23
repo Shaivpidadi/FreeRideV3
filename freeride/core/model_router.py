@@ -73,6 +73,21 @@ _PRESET_PROVIDER_PREFERENCE: dict[str, tuple[str, ...]] = {
 }
 
 
+def preset_from_model_id(model_id: str | None) -> str | None:
+    """``"freeride/coding"`` → ``"coding"``; ``None`` for anything else.
+
+    Shared by the OpenAI and Anthropic routes so a preset id means the
+    same thing whichever wire format the client speaks.
+    """
+    if not model_id:
+        return None
+    s = model_id.strip().lower()
+    if not s.startswith("freeride/"):
+        return None
+    name = s[len("freeride/") :]
+    return name if name in _KNOWN_PRESETS else None
+
+
 def preset_provider_order(preset: str | None) -> tuple[str, ...]:
     """Return the ordered provider preference for ``preset``. Unknown
     presets return an empty tuple (= no preference, fall through to

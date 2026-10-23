@@ -6,6 +6,33 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+## [0.4.0a27] — 2026-10-23
+
+Four reported issues, fixed.
+
+### Fixed
+- Credentials can no longer reach the log (#11). A redaction filter on the
+  gateway's logging scrubs key-shaped text (``sk-or-v1-…``, ``gsk_…``,
+  ``hf_…``, ``nvapi-…``, any ``Bearer …``, ``*_API_KEY=…`` pairs) from
+  every record, and ``parse_api_keys`` refuses a value containing
+  whitespace (a multi-line env blob can never be a valid token and used
+  to be echoed back by httpx's header error). The ridex launcher creates
+  the daemon log 0600 and runs its systemd unit with ``UMask=0077``.
+- ``freeride bind opencode`` is implemented (#12): writes the
+  ``provider.freeride`` block (``@ai-sdk/openai-compatible``, gateway
+  base URL, ``auto`` and the preset ids as models) into
+  ``~/.config/opencode/opencode.json``, tolerates JSONC line comments,
+  preserves everything else, and refuses to rewrite a file it cannot
+  parse.
+- ``freeride status`` (and the other v2 commands) read ``~/.freeride/.env``
+  the same way ``serve`` and ``doctor`` do, so ``status`` no longer says
+  "NOT SET" for keys the running gateway is using (#13).
+- ``freeride/coding`` / ``fast`` / ``quality`` / ``free`` work on
+  ``/v1/chat/completions`` (#14): they resolve like ``auto`` with the
+  preset's provider order applied, instead of being forwarded upstream
+  as a literal model id and 404ing. The curl example on the website is
+  now correct as written.
+
 ## [0.4.0a26] — 2026-10-16
 
 Spec-driven providers: five first-party free tiers, three keyless fallbacks,

@@ -105,6 +105,8 @@ The `provider: openai` value is correct for any OpenAI-compatible endpoint — C
 
 ## OpenCode (sst/opencode)
 
+`freeride bind opencode` writes this block for you (since 0.4.0a27); the notes below describe what it writes.
+
 ### Identity / docs
 - Repo: https://github.com/sst/opencode
 - Site: https://opencode.ai

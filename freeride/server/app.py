@@ -45,6 +45,12 @@ def _configure_logging(*, verbose: bool) -> None:
     """
     level = logging.INFO if verbose else logging.WARNING
     logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    # Provider errors are logged with their message, which can carry a
+    # request header (httpx "Illegal header value b'Bearer ...'"). Scrub
+    # credential-shaped text from every record before any handler sees it.
+    from freeride.core.log_redact import install as _install_redaction
+
+    _install_redaction()
     if verbose:
         logger.warning(
             "Verbose logging enabled. Request and response bodies may be logged. "

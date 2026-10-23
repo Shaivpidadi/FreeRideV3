@@ -31,10 +31,19 @@ def cmd_bind(args) -> int:
         print(hermes.bind(gateway_url))
         return 0
 
-    # opencode is reserved for the extended-target task 4.9.
+    if agent == "opencode":
+        from freeride.binders import opencode
+
+        try:
+            print(opencode.bind(gateway_url))
+        except ValueError as e:
+            print(f"freeride bind: {e}", file=sys.stderr)
+            return 2
+        return 0
+
     print(
         f"freeride bind: '{agent}' is not yet supported. "
-        f"Recognized: openclaw, aider, continue, hermes.",
+        f"Recognized: openclaw, aider, continue, hermes, opencode.",
         file=sys.stderr,
     )
     return 2

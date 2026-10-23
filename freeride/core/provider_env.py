@@ -92,7 +92,7 @@ def parse_api_keys(raw: Any) -> list[str]:
     entries are dropped.
     """
     if isinstance(raw, list):
-        return [k.strip() for k in raw if isinstance(k, str) and k.strip()]
+        return _clean([k for k in raw if isinstance(k, str)])
     if not isinstance(raw, str):
         return []
     raw = raw.strip()
@@ -102,10 +102,49 @@ def parse_api_keys(raw: Any) -> list[str]:
         try:
             keys = json.loads(raw)
             if isinstance(keys, list):
-                return [k.strip() for k in keys if isinstance(k, str) and k.strip()]
+                return _clean([k for k in keys if isinstance(k, str)])
         except (json.JSONDecodeError, ValueError):
             pass
-    return [raw]
+    return _clean([raw])
+
+
+def _clean(candidates: list[str]) -> list[str]:
+    """Trim, drop empties, and refuse values with embedded whitespace.
+
+    A key that contains a newline or space is a malformed environment
+    (a quoted multi-line value from a systemd EnvironmentFile, say). It
+    can never be a valid bearer token, and sending it makes httpx raise
+    with the whole value in the error text. Drop it and say so once.
+    """
+    out: list[str] = []
+    for k in candidates:
+        k = k.strip()
+        if not k:
+            continue
+        if any(ch.isspace() for ch in k):
+            _warn_malformed(k)
+            continue
+        out.append(k)
+    return out
+
+
+_warned: set[int] = set()
+
+
+def _warn_malformed(value: str) -> None:
+    import logging
+
+    fingerprint = hash(value)
+    if fingerprint in _warned:
+        return
+    _warned.add(fingerprint)
+    head = value.split()[0][:6]
+    logging.getLogger(__name__).warning(
+        "ignoring an API key that contains whitespace (starts %r…, %d chars): "
+        "one key per variable, or a JSON array, or NAME_2/NAME_3 suffixes",
+        head,
+        len(value),
+    )
 
 
 def _collect_from_name(env_name: str) -> list[str]:
