@@ -67,20 +67,31 @@ NIM_EMBEDDINGS_URL = f"{NIM_API_BASE}/embeddings"
 # the smart-router will then skip them automatically until they
 # recover.
 DEFAULT_FREE_MODEL_IDS: frozenset[str] = frozenset(
-    [
-        "meta/llama-3.1-8b-instruct",
-        "meta/llama-3.1-70b-instruct",
-        "meta/llama-3.1-405b-instruct",
-        "meta/llama-3.2-3b-instruct",
-        "meta/llama-3.3-70b-instruct",
-        "deepseek-ai/deepseek-r1",
-        "deepseek-ai/deepseek-v3",
-        "mistralai/mixtral-8x7b-instruct-v0.1",
-        "mistralai/mixtral-8x22b-instruct-v0.1",
-        "qwen/qwen2.5-7b-instruct",
-        "qwen/qwen2.5-coder-32b-instruct",
-        "google/gemma-3-27b-it",
-    ]
+    {
+        # Live catalog on 2026-10-23 (GET /v1/models with a free key).
+        # NIM is a recurring per-account rate limit, so "free" is the
+        # chat-shaped roster worth routing to. Retired ids are kept out:
+        # the stress matrix found 12 of the previous 13 gone.
+        "nvidia/nemotron-3.5-lightning-30b-a3b",
+        "nvidia/nemotron-3.5-super-vl-120b-a12b",
+        "nvidia/nemotron-3-super-120b-a12b",
+        "nvidia/nemotron-3-ultra-550b-a55b",
+        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+        "nvidia/nemotron-nano-3-30b-a3b",
+        "nvidia/llama-3.1-nemotron-70b-instruct",
+        "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+        "google/gemma-4-31b-it",
+        "openai/gpt-oss-20b",
+        "deepseek-ai/deepseek-v4.1-flash",
+        "z-ai/glm-5.3-flash",
+        "z-ai/glm-5.3",
+        "moonshotai/kimi-k2.6",
+        "minimaxai/minimax-m3.1-flash",
+        "mistralai/mistral-large-2-instruct",
+        "mistralai/mistral-7b-instruct-v0.3",
+        "meta/llama-3.2-90b-vision-instruct",
+        "stepfun-ai/step-5-preview",
+    }
 )
 
 

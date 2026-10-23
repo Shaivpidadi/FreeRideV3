@@ -431,3 +431,50 @@ class TestSpecTable:
     def test_normalize(self):
         assert normalize_model_id("models/Gemini-2.5-Flash") == normalize_model_id("gemini-2.5-flash")
         assert normalize_model_id("openai/gpt-oss-120b:free") == "gptoss120b"
+
+
+
+class TestStressMatrixFindings:
+    """Shapes seen live on 2026-10-23 that broke the first stress run."""
+
+    def test_requesty_list_pricing(self, httpx_mock):
+        p = make_provider(spec_by_name("requesty"))
+        httpx_mock.add_response(
+            url="https://router.requesty.ai/v1/models",
+            json={"data": [
+                {"id": "paid", "input_price": 2e-06, "output_price": 1e-05, "pricing": [{"input_price": 2e-06}]},
+                {"id": "free", "input_price": 0, "output_price": 0, "pricing": [{"input_price": 0, "output_price": 0}], "context_window": 262144},
+            ]},
+        )
+        models = p.list_free_models("k")
+        assert [m.api_id for m in models] == ["free"] and models[0].context_length == 262144
+
+    def test_llm7_turbo_tier_and_dict_context(self, httpx_mock):
+        p = make_provider(spec_by_name("llm7"))
+        httpx_mock.add_response(
+            url="https://api.llm7.io/v1/models",
+            json={"data": [
+                {"id": "DeepSeek-V4.1-Flash", "tier": "pro", "model_type": "chat"},
+                {"id": "codestral-latest", "tier": "turbo", "model_type": "chat", "context_window": {"tokens": 32000, "chars": None}},
+                {"id": "kokoro", "tier": "turbo", "model_type": "tts"},
+            ]},
+        )
+        models = p.list_free_models("k")
+        assert [m.api_id for m in models] == ["codestral-latest"] and models[0].context_length == 32000
+
+    def test_generic_zero_price_from_list_pricing(self, httpx_mock):
+        httpx_mock.add_response(url=MODELS, json={"data": [{"id": "a", "pricing": [{"input": "0"}]}, {"id": "b", "pricing": [{"input": "0.1"}]}]})
+        assert [m.api_id for m in OpenAICompatProvider(_spec()).list_free_models("k")] == ["a"]
+
+    async def test_missing_envelope_fields_are_filled(self, httpx_mock):
+        httpx_mock.add_response(url=CHAT, json={"choices": [{"index": 0, "message": {"role": "assistant", "content": "Hi!"}, "finish_reason": "stop"}], "model": "ch.at", "object": "chat.completion", "usage": {"completion_tokens": 7, "estimated": True, "prompt_tokens": 1, "total_tokens": 8}})
+        req = ChatRequest(model="x", messages=[{"role": "user", "content": "hi"}])
+        out = await OpenAICompatProvider(_spec()).forward_chat(req, "auto", "k")
+        assert out.choices[0].message.content == "Hi!" and out.id and out.created
+
+    async def test_missing_envelope_fields_in_stream(self, httpx_mock):
+        sse = 'data: {"choices":[{"index":0,"delta":{"content":"hi"}}],"model":"ch.at"}\n\ndata: [DONE]\n\n'
+        httpx_mock.add_response(url=CHAT, content=sse.encode(), headers={"content-type": "text/event-stream"})
+        req = ChatRequest(model="x", messages=[{"role": "user", "content": "hi"}], stream=True)
+        events = [e async for e in OpenAICompatProvider(_spec()).forward_chat_stream(req, "auto", "k")]
+        assert events and events[0].choices[0].delta.content == "hi"

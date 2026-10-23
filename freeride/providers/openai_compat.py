@@ -200,6 +200,20 @@ def retry_hint_from_body(body: Any, *, _depth: int = 0) -> int | None:
     return None
 
 
+def _fill_envelope(body: dict[str, Any], model_id: str, *, stream: bool = False) -> None:
+    """Some gateways omit the OpenAI envelope fields (DreamPrompting sends
+    no ``id`` or ``created``). They carry no routing meaning, so fill
+    them rather than reject a usable completion."""
+    if not body.get("id"):
+        body["id"] = f"{'chatcmpl' if not stream else 'chunk'}-{int(time.time() * 1000)}"
+    if not isinstance(body.get("created"), int):
+        body["created"] = int(time.time())
+    if not body.get("object"):
+        body["object"] = "chat.completion.chunk" if stream else "chat.completion"
+    if not body.get("model"):
+        body["model"] = model_id
+
+
 def normalize_model_id(model_id: str) -> str:
     """Comparable form of a model id: lower-case, provider prefix and
     ``:free``/``-free`` suffix dropped, separators unified. Used only
@@ -413,16 +427,26 @@ class OpenAICompatProvider:
 
     @staticmethod
     def _is_zero_priced(raw: dict[str, Any]) -> bool | None:
+        """Zero prompt price from whatever pricing shape the catalog uses:
+        ``pricing.prompt`` / ``pricing.input`` (OpenRouter, OVH), a list
+        of tiers (Requesty), or top-level ``input_price``."""
+        candidates: list[Any] = []
         pricing = raw.get("pricing")
-        if not isinstance(pricing, dict):
+        if isinstance(pricing, list) and pricing and isinstance(pricing[0], dict):
+            pricing = pricing[0]
+        if isinstance(pricing, dict):
+            for k in ("prompt", "input", "input_price"):
+                if k in pricing:
+                    candidates.append(pricing[k])
+                    break
+        if not candidates and "input_price" in raw:
+            candidates.append(raw["input_price"])
+        if not candidates:
             return None
-        for k in ("prompt", "input"):
-            if k in pricing:
-                try:
-                    return float(pricing[k] or 0) == 0
-                except (TypeError, ValueError):
-                    return None
-        return None
+        try:
+            return float(candidates[0] or 0) == 0
+        except (TypeError, ValueError):
+            return None
 
     def _is_free(self, raw: dict[str, Any], mid: str, override: frozenset[str] | None) -> bool:
         spec = self.spec
@@ -443,6 +467,8 @@ class OpenAICompatProvider:
     def _context_length(raw: dict[str, Any]) -> int:
         for k in ("context_length", "context_window", "max_context_length", "max_input_tokens"):
             v = raw.get(k)
+            if isinstance(v, dict):  # LLM7: {"tokens": 32000, "chars": null}
+                v = v.get("tokens")
             if isinstance(v, (int, float)) and v > 0:
                 return int(v)
         top = raw.get("top_provider")
@@ -613,6 +639,7 @@ class OpenAICompatProvider:
         resp.raise_for_status()
         body = resp.json()
         if isinstance(body, dict):
+            _fill_envelope(body, model_id)
             self._check_model(model_id, body.get("model"))
             self._on_response(body)
         return ChatResponse.model_validate(body)
@@ -642,6 +669,7 @@ class OpenAICompatProvider:
                         continue
                     if not isinstance(obj, dict):
                         continue
+                    _fill_envelope(obj, model_id, stream=True)
                     if not checked and obj.get("model"):
                         self._check_model(model_id, obj.get("model"))
                         checked = True

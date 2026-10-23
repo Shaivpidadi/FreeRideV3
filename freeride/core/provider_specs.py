@@ -171,13 +171,18 @@ def _xkiro_free(raw: dict[str, Any]) -> bool:
 
 
 def _requesty_free(raw: dict[str, Any]) -> bool:
-    pricing = raw.get("pricing") or {}
+    """Requesty's ``pricing`` is a list of tiers; the top-level
+    ``input_price`` / ``output_price`` are the flat numbers."""
     try:
-        return float(pricing.get("input", pricing.get("prompt", 1)) or 0) == 0 and float(
-            pricing.get("output", pricing.get("completion", 1)) or 0
-        ) == 0
+        return float(raw.get("input_price", 1) or 0) == 0 and float(raw.get("output_price", 1) or 0) == 0
     except (TypeError, ValueError):
         return False
+
+
+def _llm7_free(raw: dict[str, Any]) -> bool:
+    """LLM7's free token serves the ``turbo`` tier; ``pro`` rows answer
+    402 "insufficient balance" (live, 2026-10-23)."""
+    return str(raw.get("tier", "")).lower() == "turbo" and str(raw.get("model_type", "chat")).lower() == "chat"
 
 
 def _always(raw: dict[str, Any]) -> bool:
@@ -481,7 +486,8 @@ PROVIDER_SPECS: tuple[OpenAICompatSpec, ...] = (
         base_url="https://api.llm7.io/v1",
         env_vars=("LLM7_API_KEY",),
         signup_url="https://dash.llm7.io",
-        description="LLM7 — 60 req/min, 250 req/hour, 100K tokens per rolling 24h on the free token",
+        description="LLM7 — 60 req/min, 250 req/hour, 100K tokens per rolling 24h on the free token (turbo tier)",
+        free_predicate=_llm7_free,
         rpm=60,
         daily_tokens=100_000,
         default_on=False,

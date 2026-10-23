@@ -177,3 +177,11 @@ class TestHeaders:
     def test_embeddings_unsupported(self, provider):
         # Cerebras is chat-only; the embedding-capable filter must skip it.
         assert provider.embeddings_supported is False
+
+
+
+def test_402_payment_required_is_quota(provider, httpx_mock):
+    import httpx as _httpx
+
+    resp = _httpx.Response(402, json={"message": "Payment required to access this resource.", "type": "payment_required_error"}, request=_httpx.Request("POST", "https://api.cerebras.ai/v1/chat/completions"))
+    assert provider.classify_error(resp) is ErrorKind.QUOTA_EXHAUSTED

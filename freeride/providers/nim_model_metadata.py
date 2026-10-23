@@ -28,24 +28,27 @@ class NimModelMeta:
 # adding a new model here should also add the model id pattern to
 # ``DEFAULT_FREE_MODEL_PREFIXES`` in nvidia_nim.py.
 NIM_MODEL_METADATA: dict[str, NimModelMeta] = {
-    # Llama 3.x family
-    "meta/llama-3.1-8b-instruct": NimModelMeta(context_length=131_072, supported_parameters=("tools",)),
-    "meta/llama-3.1-70b-instruct": NimModelMeta(context_length=131_072, supported_parameters=("tools",)),
-    "meta/llama-3.1-405b-instruct": NimModelMeta(context_length=131_072, supported_parameters=("tools",)),
-    "meta/llama-3.2-3b-instruct": NimModelMeta(context_length=131_072),
-    "meta/llama-3.3-70b-instruct": NimModelMeta(context_length=131_072, supported_parameters=("tools",)),
-    # DeepSeek family
-    "deepseek-ai/deepseek-r1": NimModelMeta(context_length=131_072),
-    "deepseek-ai/deepseek-v3": NimModelMeta(context_length=64_000),
-    # Mistral family
+    # Live catalog on 2026-10-23; context lengths from NVIDIA's model
+    # cards, tool support per family (the live probe is the authority).
+    "nvidia/nemotron-3.5-lightning-30b-a3b": NimModelMeta(context_length=1_000_000, supported_parameters=("tools",)),
+    "nvidia/nemotron-3.5-super-vl-120b-a12b": NimModelMeta(context_length=262_144, supported_parameters=("tools",)),
+    "nvidia/nemotron-3-super-120b-a12b": NimModelMeta(context_length=262_144, supported_parameters=("tools",)),
+    "nvidia/nemotron-3-ultra-550b-a55b": NimModelMeta(context_length=1_000_000, supported_parameters=("tools",)),
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning": NimModelMeta(context_length=262_144, supported_parameters=("tools",)),
+    "nvidia/nemotron-nano-3-30b-a3b": NimModelMeta(context_length=262_144, supported_parameters=("tools",)),
+    "nvidia/llama-3.1-nemotron-70b-instruct": NimModelMeta(context_length=131_072, supported_parameters=("tools",)),
+    "nvidia/llama-3.1-nemotron-ultra-253b-v1": NimModelMeta(context_length=131_072, supported_parameters=("tools",)),
+    "google/gemma-4-31b-it": NimModelMeta(context_length=131_072, supported_parameters=("tools",)),
+    "openai/gpt-oss-20b": NimModelMeta(context_length=131_072, supported_parameters=("tools",)),
+    "deepseek-ai/deepseek-v4.1-flash": NimModelMeta(context_length=131_072, supported_parameters=("tools",)),
+    "z-ai/glm-5.3-flash": NimModelMeta(context_length=131_072, supported_parameters=("tools",)),
+    "z-ai/glm-5.3": NimModelMeta(context_length=131_072, supported_parameters=("tools",)),
+    "moonshotai/kimi-k2.6": NimModelMeta(context_length=262_144, supported_parameters=("tools",)),
+    "minimaxai/minimax-m3.1-flash": NimModelMeta(context_length=262_144, supported_parameters=("tools",)),
+    "mistralai/mistral-large-2-instruct": NimModelMeta(context_length=131_072, supported_parameters=("tools",)),
     "mistralai/mistral-7b-instruct-v0.3": NimModelMeta(context_length=32_768),
-    "mistralai/mixtral-8x7b-instruct-v0.1": NimModelMeta(context_length=32_768),
-    "mistralai/mixtral-8x22b-instruct-v0.1": NimModelMeta(context_length=64_000),
-    # Qwen family
-    "qwen/qwen2.5-7b-instruct": NimModelMeta(context_length=32_768),
-    "qwen/qwen2.5-coder-32b-instruct": NimModelMeta(context_length=128_000, supported_parameters=("tools",)),
-    # Gemma family
-    "google/gemma-3-27b-it": NimModelMeta(context_length=128_000),
+    "meta/llama-3.2-90b-vision-instruct": NimModelMeta(context_length=131_072, supported_parameters=("tools",)),
+    "stepfun-ai/step-5-preview": NimModelMeta(context_length=131_072),
 }
 
 

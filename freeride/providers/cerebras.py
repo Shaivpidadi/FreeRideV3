@@ -110,6 +110,10 @@ class CerebrasProvider:
             return ErrorKind.OK
         if status == 401:
             return ErrorKind.AUTH
+        if status == 402:
+            # Out of credits / payment required (Cerebras after the trial,
+            # OpenRouter paid routes): bench the key, skip the provider.
+            return ErrorKind.QUOTA_EXHAUSTED
         if status == 429:
             return ErrorKind.RATE_LIMIT
         if 500 <= status < 600:

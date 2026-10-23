@@ -6,6 +6,38 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+## [0.4.0a28] — 2026-10-23
+
+Findings from the first full stress matrix (18 Daytona sandboxes, every
+configured provider drained in parallel, plus full-chain and 24-way
+concurrency legs; 2,131 requests, 1.0M output tokens).
+
+### Fixed
+- Requesty: its catalog carries ``pricing`` as a list of tiers, which
+  crashed the free-model rule; zero-price rows are now read from the
+  flat ``input_price`` / ``output_price`` fields (13 free models).
+- LLM7: free-token models are the ``turbo`` tier; ``pro`` rows answer
+  402 "insufficient balance". The row now filters on tier and reads the
+  ``context_window.tokens`` shape.
+- NVIDIA NIM: 12 of the 13 allowlisted ids had been retired upstream, so
+  the plugin listed one model. Allowlist and metadata refreshed against
+  the live catalog (Nemotron 3 / 3.5, gemma-4, gpt-oss-20b, DeepSeek
+  V4.1 Flash, GLM-5.3, Kimi K2.6, MiniMax M3.1, Mistral Large 2, …).
+- Cerebras, Groq, OpenRouter: HTTP 402 now classifies as
+  QUOTA_EXHAUSTED instead of UNKNOWN, so an expired trial benches the
+  key and the chain moves on.
+- Generic adapter: responses missing the OpenAI envelope fields
+  (``id`` / ``created`` / ``object``, as DreamPrompting sends) are
+  filled in instead of rejected; list-shaped pricing and dict-shaped
+  context windows are read.
+
+### Added
+- ``tests/ci/stress_matrix.py`` + ``stress_driver.py``: the Daytona
+  stress matrix (one sandbox per provider forced until its keys drain,
+  a full-chain ``auto`` leg, a ``freeride/coding`` leg, a concurrency
+  leg) with a per-leg report of requests, successes, tokens in/out,
+  models served and error kinds.
+
 ## [0.4.0a27] — 2026-10-23
 
 Four reported issues, fixed.
