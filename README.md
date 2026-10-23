@@ -4,9 +4,9 @@
 
 FreeRide routes requests across free-tier providers — **OpenRouter, Google Gemini, Ollama Cloud, Z.ai, Groq, NVIDIA NIM, Cloudflare Workers AI, xKiro**, a dozen smaller gateways, and **your own Ollama** — with automatic failover when one rate-limits or errors. No vendor subscription, no cloud middleman: your machine talks to the providers directly with your own free keys. There are two ways in; both run on the same engine.
 
-> **102M+ tokens served in 35 days. $0 spent.**
-> Routed through community free-tier keys via this gateway.
-> Daily traffic: [free-ride.xyz/models](https://free-ride.xyz/models)
+> **6B+ tokens served since February 2026. $0 spent.**
+> Routed through community free-tier keys via this gateway, across 550+ installs.
+> Live counter and per-model traffic: [free-ride.xyz](https://free-ride.xyz) · [free-ride.xyz/models](https://free-ride.xyz/models)
 
 <img width="800" height="468" alt="FreeRide failing over from an OpenRouter 429 to Groq in 42ms; the agent never knew" src="docs/assets/freeride-failover.gif" />
 
@@ -101,17 +101,19 @@ Guides: [`docs/agents/claude-code.md`](docs/agents/claude-code.md) · [`docs/age
 
 ## How failover works
 
-Per-request the chain is **(provider, key)**, sorted by recent health:
+Every request walks a chain of **(provider, key)** pairs sorted by recent health, and each provider carries its own short list of candidate models:
 
-1. Try the head pair.
-2. **`RATE_LIMIT`** or **`AUTH`** error → mark the key as cooling, try the next key on the same provider.
-3. **`MODEL_NOT_FOUND`** or **`QUOTA_EXHAUSTED`** → skip to the next provider.
-4. **5xx / TIMEOUT** → next pair.
+1. **`auto` and the `freeride/*` presets** resolve to the best model on *each* configured provider (ranked by health × popularity), not one model carried across the chain. The first provider is asked for its best model; if it fails, the next provider is asked for *its* best model.
+2. **Key-level failures** (`AUTH`, a key-scoped `RATE_LIMIT`) cool that key and rotate to the next key on the same provider.
+3. **Model-level failures** (`MODEL_NOT_FOUND`, a tier-gated model, a model-scoped `RATE_LIMIT`, `TIMEOUT`) move to the provider's next candidate model with the same key, and demote the failed pair for a few minutes so the next request skips it.
+4. **`QUOTA_EXHAUSTED`** (out of credits, payment required) benches the key and leaves the provider.
 5. First successful response — stamp `X-FreeRide-Provider` + `X-FreeRide-Request-Id` headers and ship.
 
-Agent traffic gets a second layer on top: the **candidate ladder** walks (provider, tool-capable model) pairs, so even a model that exists on only one cooling provider falls through to a working equivalent elsewhere — silently, under streaming keepalives. If every pair fails, you get a structured 503 with a per-provider breakdown so debugging is one log line, not five round-trips. An upstream dying mid-stream before any output switches candidates invisibly; after output the turn ends as an explicit error (agents retry it) rather than a silently truncated answer.
+All of that happens before the first byte reaches the client, so a stream that fails over still looks like one response. An upstream that dies mid-stream after output has shipped ends the turn as an explicit error (agents retry it) rather than a silently truncated answer. If every pair fails, you get a structured 503 with a per-provider breakdown.
 
-**Smart routing for `model: "auto"`:** the resolver scores every free model in the catalog by health × popularity (from the public [models leaderboard](https://free-ride.xyz/models)) and picks the best one. Run `freeride audit-models` once after install to cache health probes locally so the first real request isn't a cold start.
+Explicit model ids are sent in each provider's own spelling (`nvidia/nemotron-3.5-lightning:free` on one gateway, `nvidia/nemotron-3.5-lightning` on another) and otherwise behave as you'd expect: a dead model named explicitly fails rather than being swapped.
+
+**Presets:** `freeride/coding` (tool-capable models first), `freeride/fast` (Groq / SambaNova first), `freeride/quality` (OpenRouter / Gemini / Mistral first), `freeride/free` or `auto` (pure smart routing). They work on every route, including plain `/v1/chat/completions`. Run `freeride audit-models` once after install to cache live health probes so the first real request isn't a cold start.
 
 Deeper: [`docs/architecture/failover.md`](docs/architecture/failover.md).
 
@@ -119,29 +121,34 @@ Deeper: [`docs/architecture/failover.md`](docs/architecture/failover.md).
 
 ## Providers
 
+Built-in plugins with their own wire handling:
+
 | Provider | Surface | Notes |
 |---|---|---|
-| OpenRouter | chat, streaming, tools, vision, structured outputs, embeddings | full surface — the most-used provider in our routing |
-| NVIDIA NIM | chat + embeddings | curated free-model allowlist; `NVIDIA_NIM_FREE_MODELS_OVERRIDE` to expand |
-| Groq | chat | Llama 3.x, Gemma 2, Mixtral, DeepSeek-R1-distill; daily token cap |
-| Cloudflare Workers AI | chat | cheap-per-neuron models; needs `CLOUDFLARE_ACCOUNT_ID` |
-| HuggingFace Inference | chat + embeddings | full HF router catalog; budget governs access |
-| Cerebras | chat | fastest Llama / Qwen inference; no embeddings; trial credit only since 2026 |
-| Ollama (local) | chat | local-only; can mix with remote in the same failover chain |
-| Google Gemini | chat, streaming, tools | OpenAI-compatible endpoint; Gemini 3 thought signatures cached and replayed so multi-turn tool use works |
-| Ollama Cloud | chat, streaming, tools | spec-driven; Free-plan allowlist, drops `tool_choice`/`logprobs` the API rejects; live-verified |
-| xKiro | chat, streaming, tools | spec-driven; live-verified |
-| Z.ai (GLM Flash) | chat, streaming, tools | spec-driven; 90 s first-byte budget for hidden reasoning |
-| Mistral | chat, streaming, tools, embeddings | spec-driven; opt-in (`MISTRAL_API_KEY`) |
-| SambaNova | chat, streaming, tools | spec-driven; opt-in; per-model daily caps, so a 429 benches the model, not the key |
-| OVHcloud, Kilo, BlockRun | chat, streaming, tools | keyless, opt-in via `FREERIDE_KEYLESS` |
-| xKiro, Requesty, Routeway, Septor, ElectronHub, Lucidity, DreamPrompting, Waterfall, LLM7, LongCat | chat | spec-driven long tail; set `<NAME>_API_KEY` to enable |
+| OpenRouter | chat, streaming, tools, vision, structured outputs, embeddings | the most-used provider in our routing; `:free` models, 50 req/day account-wide |
+| Google Gemini | chat, streaming, tools | OpenAI-compatible endpoint; Gemini 3 thought signatures are cached and replayed so multi-turn tool use survives the round trip |
+| NVIDIA NIM | chat, embeddings | curated free-model allowlist; `NVIDIA_NIM_FREE_MODELS_OVERRIDE` to expand |
+| Groq | chat, streaming, tools | gpt-oss 20b/120b, Qwen, Llama; per-model RPM and daily token caps |
+| Cloudflare Workers AI | chat, streaming, tools | 10K neurons/day; needs `CLOUDFLARE_ACCOUNT_ID` |
+| HuggingFace Inference | chat, embeddings | full router catalog; PRO credit governs access |
+| Cerebras | chat, streaming, tools | fastest inference around; trial credit only since 2026 |
+| Ollama (local) | chat, embeddings | your own models; mixes with remote providers in the same chain |
 
-Adding an OpenAI-compatible provider is one row in `freeride/core/provider_specs.py`
-(base URL, env var, free-model rule, quirks); the generic adapter in
-`freeride/providers/openai_compat.py` does the rest and the conformance suite runs every
-row. Anything with its own wire format implements `freeride.core.provider.Provider` in
-`freeride/providers/<name>.py`. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+Spec-driven providers (one row each in `freeride/core/provider_specs.py`, served by the generic OpenAI-compatible adapter):
+
+| Provider | Enable with | Notes |
+|---|---|---|
+| Ollama Cloud | `OLLAMA_CLOUD_API_KEY` | Free-plan roster pinned (gpt-oss, Nemotron 3, gemma4, beam); gated models answer 402 and are skipped, not benched |
+| xKiro | `XKIRO_API_KEY` | 50+ free-tier models with tool calling; 500K tokens/day |
+| Z.ai (GLM Flash) | `ZAI_API_KEY` | hidden-reasoning models, so a 90 s first-byte budget |
+| Mistral | `MISTRAL_API_KEY` | where the console offers Free mode; chat + embeddings |
+| SambaNova | `SAMBANOVA_API_KEY` | per-model daily caps, so a 429 benches the model, not the key; needs a payment method on file |
+| OVHcloud · Kilo · BlockRun | `FREERIDE_KEYLESS=ovh,kilo,blockrun` | anonymous, no account; shared per IP; Kilo may train on prompts |
+| Requesty · Routeway · Septor · ElectronHub · Lucidity · DreamPrompting · Waterfall · LLM7 · LongCat | `<NAME>_API_KEY` | the no-card long tail; same adapter, same failover |
+
+Every spec row gets the same treatment: catalog discovery with a chat-shape filter, retry hints read from headers *and* error bodies, tier-gated 402/403s treated as model problems rather than key problems, and detection of gateways that quietly answer with a different model than the one asked for.
+
+Adding an OpenAI-compatible provider is one spec row (base URL, env var, free-model rule, quirks); the conformance suite runs every row. Anything with its own wire format implements `freeride.core.provider.Provider` in `freeride/providers/<name>.py`. See [`docs/providers/openai_compat.md`](docs/providers/openai_compat.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
@@ -203,13 +210,13 @@ ridex doctor            agent + daemon + key health report
 freeride init           interactive setup wizard — prompts for keys, writes ~/.freeride/.env
 freeride serve          start the gateway on :11343 (the daemon runs this for you)
 freeride run <cli>      wrap a CLI (claude / codex / gemini) — points it at the gateway
-freeride bind <agent>   write the agent's config so it uses the gateway permanently
+freeride bind <agent>   write the agent's config (openclaw, aider, continue, hermes, opencode)
 freeride doctor         pre-flight checks: keys, ports, hosts file, common gotchas
 freeride keys           which provider keys are available vs cooling
 freeride reload         hot-reload provider keys on a running gateway
 freeride audit-models   probe every free model; cache health locally
 freeride bench          measure p50/p95/tok-s per provider
-freeride list           list available free models
+freeride list           list every configured provider's free models
 freeride telemetry      manage the hourly aggregate beacon
 ```
 
@@ -224,9 +231,10 @@ freeride telemetry      manage the hourly aggregate beacon
   - [`docs/agents/claude-code.md`](docs/agents/claude-code.md) — Claude Code setup, `/model` modes, troubleshooting
   - [`docs/agents/codex.md`](docs/agents/codex.md) — OpenAI Codex setup, bwrap notes, model selection
   - [`docs/agents/gemini.md`](docs/agents/gemini.md) — Google Gemini CLI setup, auth flow, model selection
-  - [`docs/agents/binders.md`](docs/agents/binders.md) — Aider, Continue, OpenClaw — per-agent `freeride bind` reference
+  - [`docs/agents/binders.md`](docs/agents/binders.md) — Aider, Continue, OpenClaw, OpenCode — per-agent `freeride bind` reference
   - [`docs/agents/hermes.md`](docs/agents/hermes.md) — NousResearch Hermes agent integration
 - **Providers**
+  - [`docs/providers/openai_compat.md`](docs/providers/openai_compat.md) — the spec-driven adapter: free-model rules, quota scopes, retry hints, keyless mode, Gemini specifics
   - [`docs/providers/SURVEY.md`](docs/providers/SURVEY.md) — per-provider fit (auth, free-tier semantics, error mapping)
   - [`docs/providers/EXPANSION-RESEARCH.md`](docs/providers/EXPANSION-RESEARCH.md) — free-tier landscape (Oct 2026), which providers to add next, and what the plugin layer needs first
   - [`docs/providers/nvidia_nim.md`](docs/providers/nvidia_nim.md) — NVIDIA NIM specifics
