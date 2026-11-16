@@ -137,7 +137,8 @@ class TestDaemon:
         ok, msg = d.start(wait_s=1)
         assert ok and "launchd" in msg
         assert paths.plist.exists() and LAUNCHD_LABEL_IN(paths.plist.read_text())
-        assert ["launchctl", "bootstrap", f"gui/{__import__('os').getuid()}", str(paths.plist)] in run.calls
+        uid = getattr(__import__("os"), "getuid", lambda: 0)()  # Windows has no getuid
+        assert ["launchctl", "bootstrap", f"gui/{uid}", str(paths.plist)] in run.calls
         assert popen.started == 0
         assert paths.log.exists() and (paths.log.stat().st_mode & 0o777) == 0o600
 
