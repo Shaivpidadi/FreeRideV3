@@ -6,6 +6,8 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+## [0.4.0a33] — 2026-11-16
+
 ### Fixed
 - A key pasted with smart quotes (`“sk-or-v1-…”`) made every request to that
   provider fail with `'ascii' codec can't encode character '\u201c' in
@@ -29,7 +31,9 @@ Codex and Claude Code through the gateway, re-verified against codex-cli 0.166 a
 ### Changed
 - `freeride run claude` declares `CLAUDE_CODE_MAX_CONTEXT_TOKENS=128000` for the
   session (your own value wins), so Claude Code stops assuming a 1M window for
-  `freeride/*` ids and no longer prints the unrecognised-model warning.
+  `freeride/*` ids and drops the context-window warning. The one-line
+  `[claude-code:unrecognized_model]` diagnostic still prints; silencing it needs
+  a `modelOverrides` entry in your own Claude Code settings.
 
 ## [0.4.0a31] — 2026-11-16
 
