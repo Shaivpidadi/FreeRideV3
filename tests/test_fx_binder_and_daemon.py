@@ -140,7 +140,9 @@ class TestDaemon:
         uid = getattr(__import__("os"), "getuid", lambda: 0)()  # Windows has no getuid
         assert ["launchctl", "bootstrap", f"gui/{uid}", str(paths.plist)] in run.calls
         assert popen.started == 0
-        assert paths.log.exists() and (paths.log.stat().st_mode & 0o777) == 0o600
+        assert paths.log.exists()
+        if __import__("os").name == "posix":  # Windows has no POSIX mode bits
+            assert (paths.log.stat().st_mode & 0o777) == 0o600
 
     def test_launchd_bootstrap_failure_falls_back_to_plain_process(self, paths, monkeypatch):
         run, popen = _FakeRun(fail_bootstrap=True), _FakePopen()
