@@ -1,6 +1,6 @@
 # FreeRide
 
-**Free AI inference for real work — as a coding agent, or as a gateway for your own tools.**
+**Free AI inference for real work — for the coding agent you already use, or as a gateway for your own tools.**
 
 FreeRide routes requests across free-tier providers — **OpenRouter, Google Gemini, Ollama Cloud, Z.ai, Groq, NVIDIA NIM, Cloudflare Workers AI, xKiro**, a dozen smaller gateways, and **your own Ollama** — with automatic failover when one rate-limits or errors. No vendor subscription, no cloud middleman: your machine talks to the providers directly with your own free keys. There are two ways in; both run on the same engine.
 
@@ -8,7 +8,7 @@ FreeRide routes requests across free-tier providers — **OpenRouter, Google Gem
 > Routed through community free-tier keys via this gateway, across 550+ installs.
 > Live counter and per-model traffic: [free-ride.xyz](https://free-ride.xyz) · [free-ride.xyz/models](https://free-ride.xyz/models)
 
-<img width="800" height="468" alt="FreeRide failing over from an OpenRouter 429 to Groq in 42ms; the agent never knew" src="docs/assets/freeride-failover.gif" />
+<img width="800" alt="Install the gateway, bind your agent, and watch a request fail over from an OpenRouter 429 to Groq at $0" src="docs/assets/freeride-demo.gif" />
 
 ---
 
