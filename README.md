@@ -14,17 +14,20 @@ FreeRide routes requests across free-tier providers — **OpenRouter, Google Gem
 
 ## Pick your path
 
-### 🤖 "I want a coding agent" → ridex
+### 🤖 "I want a coding agent" → fx + FreeRide
 
-A fast, native agent (our fork of [vercel-labs/fx](https://github.com/vercel-labs/fx), Apache-2.0) that reads files, edits code, and runs commands — every model call served free through FreeRide. One command installs the agent and the gateway, supervises the daemon, and walks you through keys on first run:
+[fx](https://fx.sh) (vercel-labs, Apache-2.0) is a fast native coding agent that supports custom model connections. Three commands make FreeRide its provider: install fx, install the gateway, bind.
 
 ```bash
-curl -sSL https://api.free-ride.xyz/ridex.sh | sh
-ridex                                          # interactive agent
-ridex ask "reply with the single word pong"    # or one-shot
+curl -fsSL https://fx.sh/setup.sh | bash          # fx itself
+pip install freeride-gateway && freeride init     # gateway + your free keys (stay local)
+freeride daemon install && freeride bind fx       # always-on gateway, fx points at it
+fx                                                 # or: fx ask "reply with the single word pong"
 ```
 
-Agent releases: [github.com/Shaivpidadi/ridex](https://github.com/Shaivpidadi/ridex). macOS + Linux (arm64/x86_64).
+`freeride bind fx` writes one connection into `~/.fx/settings.json` (OpenAI chat-completions protocol, no auth, model discovery from the gateway), declares the routing presets and the tool-capable models with their context sizes, and installs the `freeride` skill so the agent can diagnose its own model plumbing. `freeride daemon install` registers `freeride serve` with launchd or a systemd user unit so it is always running on `127.0.0.1:11343`.
+
+Our earlier fork, ridex, is retired: everything it did is now configuration on stock fx.
 
 ### 🔌 "I have my own tools" → the gateway
 
@@ -42,13 +45,13 @@ OPENAI_API_KEY=any-string-here   # inbound auth is ignored; your real keys stay 
 
 It also natively serves the **Anthropic** (`/v1/messages`), **OpenAI Responses** (`/v1/responses`), **Gemini** (`:generateContent`), and **fx gateway** wire protocols, plus `/v1/embeddings` — so most tools work unmodified. Prefer the big-vendor CLIs' UX? `freeride run claude|codex|gemini` wraps them with no vendor login. macOS + Linux + Windows.
 
-Already running ridex? You have the gateway too — one shared daemon on `:11343` serves your agent sessions and your own tools with the same keys, failover chain, and cooldowns.
+Already bound fx? You have the gateway too — one shared daemon on `:11343` serves your agent sessions and your own tools with the same keys, failover chain, and cooldowns.
 
 ---
 
 ## Keys
 
-Any one is enough; more = better failover. Collected by `freeride init` (or ridex's first run) and stored **only** on your machine in `~/.freeride/.env`:
+Any one is enough; more = better failover. Collected by `freeride init` and stored **only** on your machine in `~/.freeride/.env`:
 
 | Provider | Free tier (checked 2026-10-16) | Get a key |
 |---|---|---|
@@ -76,12 +79,12 @@ may train on prompts. Full landscape and what's coming next:
 
 Free tiers are flaky — that's the whole reason FreeRide exists. Whichever path you picked, the same engine keeps a single provider's bad minute from ever reaching you:
 
-- **The gateway is a supervised daemon** (via the ridex installer): registered with launchd (macOS) or a systemd user unit (Linux), a crash restarts it in seconds. `ridex start|stop|restart|doctor` manage it, and `ridex stop` sticks until you say otherwise. (Standalone `freeride serve` users manage the process themselves, as before.)
+- **The gateway is a supervised daemon**: `freeride daemon install` registers it with launchd (macOS) or a systemd user unit (Linux), so a crash restarts it in seconds. `freeride daemon start|stop|restart|status` manage it, and `stop` sticks until you say otherwise. (Standalone `freeride serve` users manage the process themselves, as before.)
 - **Every request carries a fallback ladder.** If the serving provider rate-limits, runs out of free inference, or retires the model mid-session, the gateway silently retries on the next provider's best tool-capable model — inside the same response. Failed candidates are remembered for a few minutes so consecutive turns don't re-pay the cost.
-- **The agent can diagnose its own plumbing.** ridex ships with a `freeride` skill: when requests fail it runs the (pre-approved, read-only) diagnostics — `freeride doctor`, `freeride keys`, the health probe — reads the structured error taxonomy, and tells you the exact fix.
+- **The agent can diagnose its own plumbing.** `freeride bind fx` installs a `freeride` skill: when requests fail the agent runs the read-only diagnostics — `freeride doctor`, `freeride keys`, the health probe — reads the structured error taxonomy, and tells you the exact fix.
 - **Tool calls are non-negotiable.** The default `freeride/coding` route pins to models proven to emit correct tool calls; providers whose catalogs can't do tools are never handed agent traffic.
 
-Inside a session, `/model` switches routing per request: `freeride/coding` (default), `freeride/fast` (Groq-first, low TTFT), `freeride/quality` (OpenRouter-first, widest catalog), `freeride/free` / `auto` (pure smart-routing), or any concrete model id from `ridex models`.
+Inside a session, `/model` switches routing per request: `freeride/coding` (default), `freeride/fast` (Groq-first, low TTFT), `freeride/quality` (OpenRouter-first, widest catalog), `freeride/free` / `auto` (pure smart-routing), or any concrete model id from `fx models`.
 
 ---
 
@@ -169,7 +172,7 @@ The router tries them in health order. A 429 on one key cools it for the next 60
 ## See what the gateway is doing
 
 ```bash
-ridex doctor                   # agent binary + daemon + key status in one report
+freeride daemon status         # supervision mode, health, log path
 freeride doctor                # static checks: keys, ports, /etc/hosts, common gotchas
 freeride audit-models          # probe every free model on every key; cache the results
 freeride bench                 # measure p50/p95/tok-s per provider
@@ -201,16 +204,13 @@ The aggregate is what powers [free-ride.xyz/models](https://free-ride.xyz/models
 ## Commands
 
 ```
-ridex                   interactive coding agent (auto-starts the gateway daemon)
-ridex ask <prompt>      one noninteractive agent request
-ridex models            list available models
-ridex start|stop|restart  manage the gateway daemon (stop sticks)
-ridex doctor            agent + daemon + key health report
-
 freeride init           interactive setup wizard — prompts for keys, writes ~/.freeride/.env
-freeride serve          start the gateway on :11343 (the daemon runs this for you)
+freeride daemon install|start|stop|restart|status|uninstall
+                        keep the gateway running under launchd / systemd (stop sticks)
+freeride bind fx        make FreeRide the provider connection in fx (+ skill)
+freeride serve          start the gateway on :11343 in the foreground
 freeride run <cli>      wrap a CLI (claude / codex / gemini) — points it at the gateway
-freeride bind <agent>   write the agent's config (openclaw, aider, continue, hermes, opencode)
+freeride bind <agent>   write the agent's config (fx, openclaw, aider, continue, hermes, opencode)
 freeride doctor         pre-flight checks: keys, ports, hosts file, common gotchas
 freeride keys           which provider keys are available vs cooling
 freeride reload         hot-reload provider keys on a running gateway
@@ -225,13 +225,12 @@ freeride telemetry      manage the hourly aggregate beacon
 ## Docs
 
 - **The agent**
-  - [github.com/Shaivpidadi/ridex](https://github.com/Shaivpidadi/ridex) — the ridex agent (fork of vercel-labs/fx)
-  - [`internal-docs/RIDEX_PLAN.md`](internal-docs/RIDEX_PLAN.md) — architecture decisions + verification log
+  - [fx.sh/docs/configure-fx/custom-model-connections](https://fx.sh/docs/configure-fx/custom-model-connections) — what `freeride bind fx` writes
 - **Wrapped CLIs**
   - [`docs/agents/claude-code.md`](docs/agents/claude-code.md) — Claude Code setup, `/model` modes, troubleshooting
   - [`docs/agents/codex.md`](docs/agents/codex.md) — OpenAI Codex setup, bwrap notes, model selection
   - [`docs/agents/gemini.md`](docs/agents/gemini.md) — Google Gemini CLI setup, auth flow, model selection
-  - [`docs/agents/binders.md`](docs/agents/binders.md) — Aider, Continue, OpenClaw, OpenCode — per-agent `freeride bind` reference
+  - [`docs/agents/binders.md`](docs/agents/binders.md) — fx, Aider, Continue, OpenClaw, OpenCode — per-agent `freeride bind` reference
   - [`docs/agents/hermes.md`](docs/agents/hermes.md) — NousResearch Hermes agent integration
 - **Providers**
   - [`docs/providers/openai_compat.md`](docs/providers/openai_compat.md) — the spec-driven adapter: free-model rules, quota scopes, retry hints, keyless mode, Gemini specifics
@@ -249,4 +248,4 @@ freeride telemetry      manage the hourly aggregate beacon
 
 ## License
 
-MIT. The ridex agent is a fork of [vercel-labs/fx](https://github.com/vercel-labs/fx) (Apache-2.0); its license and notices ship with every release tarball.
+MIT.

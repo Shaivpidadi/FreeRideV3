@@ -86,7 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     p_bind = sub.add_parser("bind", help="Configure an agent to use the gateway")
-    p_bind.add_argument("agent", choices=["openclaw", "aider", "continue", "hermes", "opencode"])
+    p_bind.add_argument("agent", choices=["fx", "openclaw", "aider", "continue", "hermes", "opencode"])
     p_bind.add_argument("--gateway-url", default="http://localhost:11343/v1")
     p_bind.add_argument(
         "--scope",
@@ -94,6 +94,10 @@ def build_parser() -> argparse.ArgumentParser:
         default="home",
         help="Aider only: which config-file scope to write (default: home)",
     )
+
+    p_daemon = sub.add_parser("daemon", help="Keep the gateway running under launchd / systemd")
+    p_daemon.add_argument("action", choices=["install", "start", "stop", "restart", "status", "uninstall"])
+    p_daemon.add_argument("--port", type=int, default=11343)
 
     p_tel = sub.add_parser("telemetry", help="Manage telemetry beacon (Phase 5)")
     p_tel.add_argument("state", nargs="?", choices=["on", "off"])
@@ -299,6 +303,11 @@ def main(argv: list[str] | None = None) -> int:
         from freeride.cli.cmd_bind import cmd_bind
 
         return cmd_bind(args)
+
+    if args.command == "daemon":
+        from freeride.cli.cmd_daemon import cmd_daemon
+
+        return cmd_daemon(args)
 
     if args.command == "telemetry":
         from freeride.cli.cmd_telemetry import cmd_telemetry

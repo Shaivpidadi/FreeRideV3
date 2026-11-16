@@ -9,6 +9,15 @@ def cmd_bind(args) -> int:
     agent = args.agent
     gateway_url = args.gateway_url
 
+    if agent == "fx":
+        from freeride.binders import fx
+
+        try:
+            print(fx.bind(gateway_url))
+        except ValueError as e:
+            print(f"freeride bind: {e}", file=sys.stderr)
+            return 2
+        return 0
     if agent == "openclaw":
         from freeride.binders import openclaw
 
@@ -43,7 +52,7 @@ def cmd_bind(args) -> int:
 
     print(
         f"freeride bind: '{agent}' is not yet supported. "
-        f"Recognized: openclaw, aider, continue, hermes, opencode.",
+        f"Recognized: fx, openclaw, aider, continue, hermes, opencode.",
         file=sys.stderr,
     )
     return 2

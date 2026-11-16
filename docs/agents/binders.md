@@ -103,6 +103,35 @@ The `provider: openai` value is correct for any OpenAI-compatible endpoint — C
 
 ---
 
+## fx (vercel-labs/fx)
+
+`freeride bind fx` (since 0.4.0a30) writes a custom model connection into `~/.fx/settings.json`:
+
+```json
+{
+  "provider": "freeride",
+  "providers": {
+    "freeride": {
+      "protocol": "openai-chat-completions",
+      "base_url": "http://localhost:11343/v1",
+      "auth": { "type": "none" },
+      "fetch_models": true,
+      "model_metadata": {
+        "freeride/coding": { "context_window": 131072, "max_output_tokens": 8192, "supports_tool_use": true },
+        "...": "the other presets, then every tool-capable model from the gateway catalog with its context size"
+      }
+    }
+  },
+  "models": { "freeride": "freeride/coding" }
+}
+```
+
+- `provider` is set only when nothing was selected; otherwise run `fx provider freeride`.
+- `fetch_models: true` makes fx list everything from `GET /v1/models`; fx reads only ids from it, so the context sizes come from `model_metadata` (that is why the binder writes them).
+- Other connections, `models`, and every unrelated key are preserved; a file fx would reject (unknown keys, bad JSON) is left untouched with an error.
+- The `freeride` skill is installed at `~/.fx/skills/freeride/SKILL.md` and refreshed on every bind.
+- Docs: https://fx.sh/docs/configure-fx/custom-model-connections
+
 ## OpenCode (sst/opencode)
 
 `freeride bind opencode` writes this block for you (since 0.4.0a27); the notes below describe what it writes.

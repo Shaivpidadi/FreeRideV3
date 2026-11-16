@@ -6,6 +6,28 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+## [0.4.0a30] — 2026-11-16
+
+fx as the agent, FreeRide as its provider; the ridex fork is retired.
+
+### Added
+- ``freeride bind fx``: writes the ``freeride`` custom connection into
+  ``~/.fx/settings.json`` (OpenAI chat-completions, no auth, model
+  discovery on), declares the routing presets and the gateway's
+  tool-capable models with their context sizes so fx can plan
+  compaction, selects the connection when none is set, and installs the
+  ``freeride`` operations skill under ``~/.fx/skills``. Verified against
+  a stock fx build: ``fx status`` reports the connection, ``fx ask``
+  answers, tool calls run through the gateway.
+- ``freeride daemon install|start|stop|restart|status|uninstall``: the
+  gateway as a launchd LaunchAgent (macOS) or systemd user unit (Linux),
+  with a plain background process as the fallback. ``stop`` sticks until
+  ``start``; the log is created 0600. Ported from the ridex launcher.
+
+### Changed
+- README and docs now describe fx + ``freeride bind fx`` instead of the
+  ridex fork, which stock fx's custom connections make unnecessary.
+
 ## [0.4.0a29] — 2026-11-16
 
 Multi-minute agent turns traced to one bug and two gaps.
