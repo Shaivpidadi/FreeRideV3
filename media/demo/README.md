@@ -3,7 +3,7 @@
 A [Remotion](https://www.remotion.dev) composition that renders the 25-second launch video
 (intro → install and bind → agent request with failover → Claude Code and Codex → end card)
 shown in the top-level README. Narration clips live in `public/vo/` and were generated with
-`edge-tts` (voice en-US-AndrewMultilingualNeural, rate +22%); `src/vo.json` holds their
+`edge-tts` (voice en-US-AndrewMultilingualNeural, rate +22%, the last two lines at +10% and +5% so "subscribe" and "cost" stay crisp); `src/vo.json` holds their
 durations and sizes each scene so the picture never outruns the voice. Code-driven motion (bezier
 camera pan, typed commands, fade-up output), so edits are text edits.
 
