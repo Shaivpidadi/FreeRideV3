@@ -44,6 +44,8 @@ services/telemetry/wrangler.toml
 .agents/
 skills-lock.json
 skills/
+# ...but the skill we ship inside the package is vendored on purpose
+!freeride/assets/skills/
 
 # Local CI credentials — never commit
 tests/ci/.env*

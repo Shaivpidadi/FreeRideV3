@@ -6,18 +6,15 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
-### Added
-
-- `install-fx.sh`, served at `api.free-ride.xyz/fx.sh` (and the old `/ridex.sh`
-  URL): installs fx, the gateway, the daemon and the fx binding in one command.
-- `catalog` GitHub Actions workflow: runs `freeride audit-models --publish`
-  every six hours (and on demand) so the live catalog refreshes without a release.
-
 ## [0.4.0a31] — 2026-11-16
 
 The live catalog: probe results as data, refreshed without a release.
 
 ### Added
+- `install-fx.sh`, served at `api.free-ride.xyz/fx.sh` (and the old `/ridex.sh`
+  URL): installs fx, the gateway, the daemon and the fx binding in one command.
+- `catalog` GitHub Actions workflow: runs `freeride audit-models --publish`
+  every six hours (and on demand) so the live catalog refreshes without a release.
 - ``GET /v1/catalog`` on the telemetry worker serves an artifact that
   ``freeride audit-models --publish`` uploads (admin token): per provider,
   the models our probes found broken (with a 24 h clock), what each
@@ -32,6 +29,8 @@ The live catalog: probe results as data, refreshed without a release.
 - ``freeride catalog [status|refresh]`` and ``audit-models --export PATH``.
 
 ## [0.4.0a30] — 2026-11-16
+
+_Not published: its wheel was missing the vendored fx skill (fixed in a31). Everything below ships in a31._
 
 fx as the agent, FreeRide as its provider; the ridex fork is retired.
 

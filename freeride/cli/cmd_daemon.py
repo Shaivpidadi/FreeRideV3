@@ -157,7 +157,8 @@ class Daemon:
         return self.run(["launchctl", *args], capture_output=True, text=True, timeout=20)
 
     def _domain(self) -> str:
-        return f"gui/{os.getuid()}"
+        uid = os.getuid() if hasattr(os, "getuid") else 0  # no getuid on Windows
+        return f"gui/{uid}"
 
     def _spawn_plain(self) -> None:
         with open(self.p.log, "ab") as log:
