@@ -4,7 +4,7 @@
 //   GET  /             — 301 → marketing site at https://free-ride.xyz/
 //   GET  /install.sh   — the POSIX (macOS / Linux) installer
 //   GET  /install.ps1  — the PowerShell (Windows) installer
-//   GET  /ridex.sh     — the ridex agent installer
+//   GET  /fx.sh        — the fx + FreeRide installer (/ridex.sh is an alias)
 //   POST /v1/beacon    — accept a beacon, write a row to `beacons` and
 //                        fold it into the install_state / hourly_totals
 //                        rollups.
@@ -33,8 +33,8 @@
 // historical reference.
 //
 // The installer scripts are embedded as INSTALL_SH, INSTALL_PS1 and
-// RIDEX_SH below — KEEP IN SYNC with /install.sh and /install.ps1 at
-// the repo root (and install.sh in the ridex repo) by hand. The repo
+// FX_SH below — KEEP IN SYNC with /install.sh, /install.ps1 and
+// /install-fx.sh at the repo root by hand. The repo
 // files are the source of truth; these are their public-facing copies.
 
 const ALLOWED_OS = new Set(["darwin", "linux", "windows", "other"]);
@@ -906,8 +906,9 @@ export default {
       });
     }
 
-    if (url.pathname === "/ridex.sh" && request.method === "GET") {
-      return new Response(RIDEX_SH, {
+    if ((url.pathname === "/fx.sh" || url.pathname === "/ridex.sh") && request.method === "GET") {
+      // /ridex.sh is the retired agent's old URL; it now installs fx + the gateway.
+      return new Response(FX_SH, {
         status: 200,
         headers: { "content-type": "text/x-sh; charset=utf-8" },
       });
@@ -932,108 +933,78 @@ export default {
 
 
 // ---------------------------------------------------------------------------
-// Embedded ridex installer (KEEP IN SYNC with install.sh in the ridex
-// repo: github.com/Shaivpidadi/ridex).
+// Embedded fx + FreeRide installer (KEEP IN SYNC with /install-fx.sh at
+// the repo root).
 // ---------------------------------------------------------------------------
-const RIDEX_SH = `#!/usr/bin/env sh
-# ridex installer. Run with:
+const FX_SH = `#!/usr/bin/env sh
+# fx + FreeRide installer. Run with:
 #
-#   curl -sSL https://api.free-ride.xyz/ridex.sh | sh
+#   curl -sSL https://api.free-ride.xyz/fx.sh | sh
 #
 # What this does:
-#   1. Downloads the latest ridex release tarball for this OS/arch from
-#      github.com/Shaivpidadi/ridex/releases (checksum-verified) and
-#      installs \`ridex\` (launcher) + \`ridex-agent\` (binary) into
-#      ~/.local/bin, plus the freeride operations skill into
-#      ~/.local/share/ridex/skills/.
-#   2. Installs the FreeRide gateway via the existing FreeRide
-#      installer (uv tool install freeride-gateway) — ridex's models
-#      all come from the local FreeRide daemon on 127.0.0.1:11343.
-#   3. Runs \`ridex doctor\`.
+#   1. Installs fx, Vercel's open-source coding agent, with its official
+#      installer (https://fx.sh/setup.sh) unless \`fx\` is already on PATH.
+#   2. Installs the FreeRide gateway with the FreeRide installer
+#      (https://api.free-ride.xyz/install.sh).
+#   3. Registers the gateway as an always-on daemon (launchd / systemd)
+#      and makes it fx's model connection: \`freeride daemon install\`,
+#      \`freeride bind fx\`. The bind also installs the \`freeride\` skill so
+#      the agent can diagnose its own gateway.
 #
 # Env knobs:
-#   RIDEX_REF=ridex-v0.1.0   install a specific release tag
-#   RIDEX_SKIP_GATEWAY=1     skip the FreeRide gateway install
+#   FX_SKIP_INSTALL=1        don't touch fx (use the one already installed)
+#   FREERIDE_SKIP_GATEWAY=1  don't (re)install the gateway
+#   FREERIDE_NO_DAEMON=1     bind fx but don't register the daemon
 #   FREERIDE_REF / FREERIDE_TELEMETRY pass through to the gateway installer
 
 set -e
 
-REPO="Shaivpidadi/ridex"
 BIN_DIR="$HOME/.local/bin"
-SHARE_DIR="$HOME/.local/share/ridex"
+PATH="$BIN_DIR:$PATH"
+export PATH
 
 print() { printf '%s\\n' "$*"; }
 err() { printf 'error: %s\\n' "$*" >&2; exit 1; }
 
-print "ridex installer"
+print "fx + FreeRide installer"
 print ""
 
-# ── OS / arch → release asset name ─────────────────────────────────
-os="$(uname -s)"
-arch="$(uname -m)"
-case "$os" in
-    Darwin) os_tag="macos" ;;
-    Linux)  os_tag="linux" ;;
-    *) err "ridex is not yet supported on $os (macOS and Linux only for now)." ;;
+case "$(uname -s)" in
+    Darwin|Linux) ;;
+    *) err "this installer supports macOS and Linux; on Windows use install.ps1 and fx.sh/docs" ;;
 esac
-case "$arch" in
-    arm64|aarch64) arch_tag="aarch64" ;;
-    x86_64|amd64)  arch_tag="x86_64" ;;
-    *) err "unsupported architecture: $arch" ;;
-esac
-asset="ridex-\${os_tag}-\${arch_tag}.tar.gz"
+command -v curl >/dev/null 2>&1 || err "curl is required"
 
-# ── resolve the release tag ────────────────────────────────────────
-if [ -n "\${RIDEX_REF:-}" ]; then
-    tag="$RIDEX_REF"
+# ── 1. fx ──────────────────────────────────────────────────────────
+if [ "\${FX_SKIP_INSTALL:-0}" = "1" ]; then
+    print "Skipping fx install (FX_SKIP_INSTALL=1)."
+elif command -v fx >/dev/null 2>&1; then
+    print "fx is already installed: $(fx --version 2>/dev/null || command -v fx)"
 else
-    # Latest release whose tag starts with ridex-v (the repo is a fork
-    # of vercel-labs/fx; upstream-style tags are ignored).
-    tag="$(curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=30" \\
-        | grep -o '"tag_name": *"ridex-v[^"]*"' | head -1 | cut -d'"' -f4)"
-    [ -n "$tag" ] || err "could not find a ridex-v* release on github.com/$REPO"
+    print "Installing fx (https://fx.sh)..."
+    curl -fsSL https://fx.sh/setup.sh | bash
 fi
-print "Installing $tag ($asset)..."
+command -v fx >/dev/null 2>&1 || print "note: fx is not on PATH in this shell yet; open a new terminal after this finishes."
 
-# ── download + verify ──────────────────────────────────────────────
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
-base="https://github.com/$REPO/releases/download/$tag"
-curl -fsSL -o "$tmp/$asset" "$base/$asset" || err "download failed: $base/$asset"
-if curl -fsSL -o "$tmp/$asset.sha256" "$base/$asset.sha256" 2>/dev/null; then
-    (
-        cd "$tmp"
-        if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum -c "$asset.sha256" >/dev/null
-        else
-            expected="$(cut -d' ' -f1 "$asset.sha256")"
-            actual="$(shasum -a 256 "$asset" | cut -d' ' -f1)"
-            [ "$expected" = "$actual" ]
-        fi
-    ) || err "checksum verification failed for $asset"
-else
-    print "warning: no checksum published for $asset; skipping verification"
-fi
-
-# ── install ────────────────────────────────────────────────────────
-mkdir -p "$BIN_DIR" "$SHARE_DIR"
-tar -xzf "$tmp/$asset" -C "$tmp"
-install -m 755 "$tmp/ridex-agent" "$BIN_DIR/ridex-agent"
-install -m 755 "$tmp/ridex" "$BIN_DIR/ridex"
-rm -rf "$SHARE_DIR/skills"
-cp -R "$tmp/skills" "$SHARE_DIR/skills"
-print "Installed ridex + ridex-agent to $BIN_DIR"
-
-# ── FreeRide gateway ───────────────────────────────────────────────
-if [ "\${RIDEX_SKIP_GATEWAY:-0}" = "1" ]; then
-    print "Skipping FreeRide gateway install (RIDEX_SKIP_GATEWAY=1)."
+# ── 2. the gateway ─────────────────────────────────────────────────
+if [ "\${FREERIDE_SKIP_GATEWAY:-0}" = "1" ]; then
+    print "Skipping FreeRide gateway install (FREERIDE_SKIP_GATEWAY=1)."
 else
     print ""
-    print "Installing the FreeRide gateway (ridex's model backend)..."
+    print "Installing the FreeRide gateway..."
     curl -sSL https://api.free-ride.xyz/install.sh | sh
 fi
+command -v freeride >/dev/null 2>&1 || err "freeride is not on PATH after install; add $BIN_DIR to PATH and rerun"
 
-# ── PATH + verify ──────────────────────────────────────────────────
+# ── 3. daemon + bind ───────────────────────────────────────────────
+print ""
+if [ "\${FREERIDE_NO_DAEMON:-0}" = "1" ]; then
+    print "Not registering the daemon (FREERIDE_NO_DAEMON=1); run \\\`freeride serve\\\` yourself."
+else
+    freeride daemon install || print "warning: daemon install failed; run \\\`freeride serve\\\` yourself."
+fi
+freeride bind fx
+
 print ""
 case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
@@ -1044,11 +1015,9 @@ case ":$PATH:" in
         ;;
 esac
 
-print "Checking the install..."
-"$BIN_DIR/ridex" doctor || true
-
-print ""
-print "Done. Try:  ridex ask \\"reply with the single word pong\\""
+print "Done. Next:"
+print "  freeride init     # add one free API key (optional: keyless providers work without)"
+print "  fx                # the agent, running on freeride/coding"
 `;
 
 // ---------------------------------------------------------------------------

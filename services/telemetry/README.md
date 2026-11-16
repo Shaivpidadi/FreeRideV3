@@ -29,7 +29,7 @@ shipped to PyPI.
   recomputes from the rollup tables. The beacons table is never scanned
   on the request path.
 * **GET `/health`** — `{"ok": true}` for monitoring.
-* **GET `/install.sh`, `/install.ps1`, `/ridex.sh`** — installer scripts
+* **GET `/install.sh`, `/install.ps1`, `/fx.sh`** — installer scripts (`/ridex.sh` is a legacy alias of `/fx.sh`)
   (embedded copies of the repo-root files; keep in sync by hand).
 * **POST `/v1/_admin/refresh-openrouter`**, **`/v1/_admin/recompute-stats`**
   — require `Authorization: Bearer <ADMIN_TOKEN>`; disabled when the

@@ -16,7 +16,13 @@ FreeRide routes requests across free-tier providers — **OpenRouter, Google Gem
 
 ### 🤖 "I want a coding agent" → fx + FreeRide
 
-[fx](https://fx.sh) (vercel-labs, Apache-2.0) is a fast native coding agent that supports custom model connections. Three commands make FreeRide its provider: install fx, install the gateway, bind.
+[fx](https://fx.sh) (vercel-labs, Apache-2.0) is a fast native coding agent that supports custom model connections. One command installs fx, the gateway, the daemon and the binding:
+
+```bash
+curl -sSL https://api.free-ride.xyz/fx.sh | sh
+```
+
+Or step by step:
 
 ```bash
 curl -fsSL https://fx.sh/setup.sh | bash          # fx itself

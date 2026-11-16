@@ -8,6 +8,8 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ### Added
 
+- `install-fx.sh`, served at `api.free-ride.xyz/fx.sh` (and the old `/ridex.sh`
+  URL): installs fx, the gateway, the daemon and the fx binding in one command.
 - `catalog` GitHub Actions workflow: runs `freeride audit-models --publish`
   every six hours (and on demand) so the live catalog refreshes without a release.
 
