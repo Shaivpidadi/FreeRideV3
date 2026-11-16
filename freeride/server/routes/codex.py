@@ -29,7 +29,11 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
-from freeride.core.auto_model import is_auto_model, resolve_auto_model
+from freeride.core.auto_model import (
+    candidates_by_provider,
+    is_auto_model,
+    resolve_auto_candidates,
+)
 from freeride.core.codex_schema import ResponsesRequest
 from freeride.core.codex_translate import (
     chat_to_responses_response,
@@ -159,9 +163,22 @@ async def responses(request: Request):
             ),
         )
 
+    # Same per-provider candidate plan the chat route uses: each provider
+    # gets its own spelling of up to three models, the chain is reordered
+    # so the best candidates lead, and a model-level failure moves to the
+    # next model on the same key instead of leaving the provider.
+    model_for: dict[str, list[str]] | None = None
     if is_auto_model(openai_request.model):
         catalog = await get_or_fetch_catalog(providers, group=True)
-        resolved_id, resolved_provider = resolve_auto_model(providers, catalog)
+        candidates = resolve_auto_candidates(providers, catalog)
+        resolved_id, resolved_provider = candidates[0] if candidates else (None, None)
+        if resolved_id is not None:
+            model_for = {p.name: [resolved_id] for p, _ in chain}
+            model_for.update(candidates_by_provider(candidates))
+            by_name = {p.name: (p, keys) for p, keys in chain}
+            head = [by_name[name] for _, name in candidates if name in by_name]
+            head_names = {p.name for p, _ in head}
+            chain = head + [link for link in chain if link[0].name not in head_names]
         if resolved_id is None:
             raise HTTPException(
                 status_code=503,
@@ -176,6 +193,7 @@ async def responses(request: Request):
             request_id=ctx.request_id,
             resolved_model=resolved_id,
             resolved_provider=resolved_provider,
+            candidates=[f"{name}:{mid}" for mid, name in candidates],
             endpoint="responses",
         )
 
@@ -188,6 +206,7 @@ async def responses(request: Request):
             cooldown=cooldown,
             ctx=ctx,
             requested_model=requested_model,
+            model_for=model_for,
         )
 
     # ─── non-streaming failover loop ───────────────────────────────
@@ -201,6 +220,8 @@ async def responses(request: Request):
         model=openai_request.model,
         extra_event={"endpoint": "responses"},
         on_model_not_found=invalidate_catalog,
+        model_for=model_for,
+        body=openai_request,
     )
 
     if response_obj is None:
@@ -246,6 +267,7 @@ async def _build_responses_stream(
     cooldown: KeyCooldown,
     ctx: FailoverContext,
     requested_model: str,
+    model_for: dict[str, list[str]] | None = None,
 ) -> StreamingResponse:
     """Pre-flight first chunk through the chat-route failover helper,
     then re-frame Chat-shape deltas into Responses-shape SSE events.
@@ -254,6 +276,7 @@ async def _build_responses_stream(
         chain, openai_request, cooldown, ctx,
         extra_event={"endpoint": "responses"},
         on_model_not_found=invalidate_catalog,
+        model_for=model_for,
     )
     if chosen is None:
         emit_event(

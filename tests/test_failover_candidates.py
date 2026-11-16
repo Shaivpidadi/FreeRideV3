@@ -363,3 +363,55 @@ class TestSlowRequestRegressions:
         assert ("google/gemma-4-31b-it", "nvidia_nim") not in cands
         assert ("google/gemma-4-31b-it:free", "openrouter") in cands
         assert ("nvidia/nemotron-3-ultra-550b-a55b", "nvidia_nim") in cands
+
+
+class TestCodexRoute:
+    """``POST /v1/responses`` (Codex) must use the same per-provider
+    candidate plan as chat: never send one provider's spelling to the
+    others, and lead with the best candidates."""
+
+    def _client(self, monkeypatch, providers, catalog):
+        from freeride.core.health import ProviderHealth
+        from freeride.server.app import create_app
+
+        monkeypatch.setenv("FREERIDE_EVENTS", "0")
+        monkeypatch.setattr("freeride.core.provider_env.all_keys_for", lambda name: ["k"])
+        monkeypatch.setattr("freeride.core.failover.all_keys_for", lambda name: ["k"])
+        monkeypatch.setattr("freeride.core.auto_model._provider_keys", lambda name: ["k"])
+        monkeypatch.setattr("freeride.core.cooldown.KeyCooldown.available_keys", lambda self, n, keys: list(keys))
+        monkeypatch.setattr("freeride.core.auto_model.fetch_leaderboard", lambda: {})
+        monkeypatch.setattr("freeride.core.model_health.load_cache", lambda: {})
+
+        async def fake_catalog(*a, **k):
+            return catalog
+
+        monkeypatch.setattr("freeride.server.routes.codex.get_or_fetch_catalog", fake_catalog)
+        ProviderHealth.reset()
+        return TestClient(create_app(providers=providers))
+
+    _CATALOG = [
+        {"id": "google/gemma-4-31b-it:free", "available_providers": ["openrouter"],
+         "provider_ids": {"openrouter": "google/gemma-4-31b-it:free"}},
+        {"id": "gemma-4-31B-it", "available_providers": ["sambanova"],
+         "provider_ids": {"sambanova": "gemma-4-31B-it"}},
+    ]
+
+    def test_non_streaming_uses_each_providers_own_spelling(self, monkeypatch):
+        openrouter, sambanova = _Stub("openrouter", fail_status=402), _Stub("sambanova")
+        client = self._client(monkeypatch, [openrouter, sambanova], self._CATALOG)
+        r = client.post("/v1/responses", json={"model": "gpt-5-codex", "input": "hi"})
+        assert r.status_code == 200, r.text
+        assert r.headers["X-FreeRide-Provider"] == "sambanova"
+        assert r.json()["model"] == "gpt-5-codex"  # echoed, not the upstream id
+        assert openrouter.seen == ["google/gemma-4-31b-it:free"]
+        assert sambanova.seen == ["gemma-4-31B-it"]
+
+    def test_streaming_uses_each_providers_own_spelling(self, monkeypatch):
+        openrouter, sambanova = _Stub("openrouter", fail_status=429), _Stub("sambanova")
+        client = self._client(monkeypatch, [openrouter, sambanova], self._CATALOG)
+        r = client.post("/v1/responses", json={"model": "gpt-5-codex", "input": "hi", "stream": True})
+        assert r.status_code == 200, r.text
+        assert r.headers["X-FreeRide-Provider"] == "sambanova"
+        assert "response.completed" in r.text
+        assert openrouter.seen == ["google/gemma-4-31b-it:free"]
+        assert sambanova.seen == ["gemma-4-31B-it"]

@@ -587,3 +587,18 @@ def test_autospawn_gateway_popen_failure_returns_none(tmp_path, caplog) -> None:
                 proc = autospawn_gateway(11343)
     assert proc is None
     assert any("Popen failed" in r.message for r in caplog.records)
+
+
+def test_build_child_env_declares_claude_code_context_window() -> None:
+    from freeride.cli.cmd_run import build_child_env
+
+    env = build_child_env(base_url="http://localhost:11343", parent_env={}, cli_name="claude")
+    assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "128000"
+    env = build_child_env(
+        base_url="http://localhost:11343",
+        parent_env={"CLAUDE_CODE_MAX_CONTEXT_TOKENS": "32000"},
+        cli_name="claude",
+    )
+    assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "32000"
+    env = build_child_env(base_url="http://localhost:11343", parent_env={}, cli_name="codex")
+    assert "CLAUDE_CODE_MAX_CONTEXT_TOKENS" not in env

@@ -6,6 +6,23 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+## [0.4.0a32] — 2026-11-16
+
+Codex and Claude Code through the gateway, re-verified against codex-cli 0.166 and Claude Code 2.1.325.
+
+### Fixed
+- `POST /v1/responses` (Codex) now uses the same per-provider candidate plan as
+  chat: each provider is asked for its own spelling of up to three models and a
+  model-level failure moves to the next model on the same key. Before, one
+  provider's model id was sent to every other provider, which failed with
+  "model not found" five times before landing on a weak fallback and, once,
+  an empty answer.
+
+### Changed
+- `freeride run claude` declares `CLAUDE_CODE_MAX_CONTEXT_TOKENS=128000` for the
+  session (your own value wins), so Claude Code stops assuming a 1M window for
+  `freeride/*` ids and no longer prints the unrecognised-model warning.
+
 ## [0.4.0a31] — 2026-11-16
 
 The live catalog: probe results as data, refreshed without a release.

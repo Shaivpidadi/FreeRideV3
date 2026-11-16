@@ -130,6 +130,10 @@ def wait_for_gateway(base_url: str, *, total_wait: float) -> bool:
 # claude-* / gpt-* / gemini-* model ids fall through to free routing.
 _FREERIDE_SENTINEL_KEY = "sk-freeride-no-auth"
 
+# Context window to declare to Claude Code for freeride/* ids. 128k is
+# the floor shared by the tool-capable models the presets route to.
+_CLAUDE_CODE_CONTEXT_TOKENS = "128000"
+
 
 def _detect_cli(command_argv: list[str]) -> str:
     """Return a tag for the wrapped CLI: 'claude', 'gemini', 'codex',
@@ -199,6 +203,11 @@ def build_child_env(
         env["ANTHROPIC_BASE_URL"] = base
         if not env.get("ANTHROPIC_API_KEY") and not env.get("ANTHROPIC_AUTH_TOKEN"):
             env["ANTHROPIC_API_KEY"] = _FREERIDE_SENTINEL_KEY
+        # Claude Code assumes a 1M window for a model id it doesn't know
+        # (freeride/coding …) and prints a warning on every start. Declare
+        # a window the free models actually honour so it compacts in time
+        # and the warning goes away. The user's own value wins.
+        env.setdefault("CLAUDE_CODE_MAX_CONTEXT_TOKENS", _CLAUDE_CODE_CONTEXT_TOKENS)
     elif cli_name == "gemini":
         env["GOOGLE_GEMINI_BASE_URL"] = base
         # Newer gemini-cli versions ship a dedicated AuthType.GATEWAY
