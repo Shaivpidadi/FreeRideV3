@@ -108,21 +108,53 @@ def parse_api_keys(raw: Any) -> list[str]:
     return _clean([raw])
 
 
-def _clean(candidates: list[str]) -> list[str]:
-    """Trim, drop empties, and refuse values with embedded whitespace.
+_QUOTES = "\"'\u201c\u201d\u2018\u2019"  # straight and smart quotes
 
-    A key that contains a newline or space is a malformed environment
-    (a quoted multi-line value from a systemd EnvironmentFile, say). It
-    can never be a valid bearer token, and sending it makes httpx raise
-    with the whole value in the error text. Drop it and say so once.
+
+def strip_wrapping_quotes(value: str) -> str:
+    """Remove one layer of quotes around a pasted key, straight or smart.
+
+    Copying a key out of a chat app or a document often brings curly
+    quotes along (``\u201csk-or-v1-...\u201d``). A shell ``export`` keeps
+    them literally, and ``Bearer \u201csk-...`` then makes httpx raise
+    ``'ascii' codec can't encode character '\\u201c' in position 7``.
+    """
+    v = value.strip()
+    while len(v) >= 2 and v[0] in _QUOTES and v[-1] in _QUOTES:
+        v = v[1:-1].strip()
+    return v
+
+
+def key_problem(value: str) -> str | None:
+    """Why a key value can never be sent as a bearer token, or ``None``.
+
+    Checked after :func:`strip_wrapping_quotes`. Never includes the
+    value itself, so the message is safe to log and print.
+    """
+    for i, ch in enumerate(value):
+        if ch.isspace():
+            return f"contains whitespace at position {i}"
+        if ord(ch) > 127:
+            hint = " (a smart quote from a copy-paste?)" if ch in _QUOTES else ""
+            return f"contains a non-ASCII character U+{ord(ch):04X} at position {i}{hint}"
+    return None
+
+
+def _clean(candidates: list[str]) -> list[str]:
+    """Trim, strip wrapping quotes, drop empties, and refuse values that
+    can never be a bearer token (whitespace, non-ASCII).
+
+    Sending such a value makes httpx raise with the value in the error
+    text, so it is dropped here and reported once, without the value.
     """
     out: list[str] = []
     for k in candidates:
-        k = k.strip()
+        k = strip_wrapping_quotes(k)
         if not k:
             continue
-        if any(ch.isspace() for ch in k):
-            _warn_malformed(k)
+        problem = key_problem(k)
+        if problem is not None:
+            _warn_malformed(k, problem)
             continue
         out.append(k)
     return out
@@ -131,17 +163,19 @@ def _clean(candidates: list[str]) -> list[str]:
 _warned: set[int] = set()
 
 
-def _warn_malformed(value: str) -> None:
+def _warn_malformed(value: str, problem: str) -> None:
     import logging
 
     fingerprint = hash(value)
     if fingerprint in _warned:
         return
     _warned.add(fingerprint)
-    head = value.split()[0][:6]
+    head = "".join(ch for ch in value[:6] if ord(ch) < 128 and not ch.isspace())
     logging.getLogger(__name__).warning(
-        "ignoring an API key that contains whitespace (starts %r…, %d chars): "
-        "one key per variable, or a JSON array, or NAME_2/NAME_3 suffixes",
+        "ignoring an API key that %s (starts %r…, %d chars): fix the value in "
+        "~/.freeride/.env or your shell; one key per variable, or a JSON array, "
+        "or NAME_2/NAME_3 suffixes. `freeride doctor` points at the variable.",
+        problem,
         head,
         len(value),
     )

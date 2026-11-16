@@ -16,6 +16,7 @@ debugging — one command instead of running 4 separate checks.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import socket
@@ -96,6 +97,17 @@ def _check_provider_env_vars() -> list[_Check]:
     for spec in BUILTIN_PROVIDERS:
         provider = spec.name
         env_vars = list(spec.env_vars) + list(spec.extra_required)
+        malformed = _malformed_key_vars(spec.env_vars)
+        for bad_var, problem in malformed:
+            out.append(
+                _Check(
+                    "error",
+                    f"{provider}: ${bad_var} {problem}",
+                    "the gateway ignores this key; remove the quotes/space and re-save ~/.freeride/.env",
+                )
+            )
+        if malformed:
+            continue
         if spec.keyless:
             if keyless_enabled(provider):
                 any_set = True
@@ -166,6 +178,36 @@ def _check_provider_env_vars() -> list[_Check]:
             "set at least one (e.g. OPENROUTER_API_KEY) — get a free key at https://openrouter.ai/keys",
         ))
     return out
+
+
+def _malformed_key_vars(env_vars) -> list[tuple[str, str]]:
+    """``(VAR, problem)`` for each set key variable (and its ``_2``, ``_3``
+    suffixes) whose value the gateway would refuse to send."""
+    from freeride.core.provider_env import key_problem, strip_wrapping_quotes
+
+    found: list[tuple[str, str]] = []
+    for base in env_vars:
+        names = [base] + [f"{base}_{n}" for n in range(2, 10)]
+        for name in names:
+            raw = os.environ.get(name, "")
+            if not raw:
+                continue
+            parts = json.loads(raw) if _is_json_list(raw) else [raw]
+            for part in parts:
+                problem = key_problem(strip_wrapping_quotes(str(part)))
+                if problem:
+                    found.append((name, problem))
+                    break
+    return found
+
+
+def _is_json_list(raw: str) -> bool:
+    if not raw.strip().startswith("["):
+        return False
+    try:
+        return isinstance(json.loads(raw), list)
+    except ValueError:
+        return False
 
 
 def _check_port_or_gateway(port: int = 11343) -> list[_Check]:

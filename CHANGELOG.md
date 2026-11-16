@@ -6,6 +6,14 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+### Fixed
+- A key pasted with smart quotes (`“sk-or-v1-…”`) made every request to that
+  provider fail with `'ascii' codec can't encode character '\u201c' in
+  position 7` (seen while testing fx). Wrapping quotes, straight or smart, are
+  now stripped from key values; a key with any other non-ASCII character or
+  whitespace is ignored with a warning that names the problem but never the
+  value. `freeride doctor` reports the exact variable and character.
+
 ## [0.4.0a32] — 2026-11-16
 
 Codex and Claude Code through the gateway, re-verified against codex-cli 0.166 and Claude Code 2.1.325.
