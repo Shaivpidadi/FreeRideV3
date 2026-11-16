@@ -63,7 +63,7 @@ CACHE_TTL_SEC = 24 * 3600  # 24h — daily-cap providers (OR free) recover soone
 # usually back within minutes, and we only want to stop RE-TRYING it
 # first on every consecutive turn.
 RECENT_FAILURE_STATUS = "recent_failure"
-RECENT_FAILURE_TTL_SEC = 300
+RECENT_FAILURE_TTL_SEC = 600
 
 
 # Statuses that should disqualify a model from auto-resolution. Note
@@ -77,6 +77,7 @@ _BROKEN_STATUSES: frozenset[str] = frozenset(
         "auth",
         "unavailable",
         "timeout",
+        "payload_too_large",
         "rate_limit",
         "unknown",
     }
@@ -113,8 +114,13 @@ def load_cache() -> dict[str, HealthEntry]:
         results = raw.get("results")
         if not isinstance(as_of, (int, float)) or not isinstance(results, dict):
             return {}
-        if time.time() - as_of > ttl:
-            return {}
+        # A stale audit stamp expires the audit verdicts, not the live
+        # failure marks: those carry their own clock (checked_at +
+        # RECENT_FAILURE_TTL_SEC). Dropping them here meant every
+        # mark_recent_failure() wrote into an empty cache and was never
+        # read back, so a slow model was re-tried on every request.
+        audit_stale = time.time() - as_of > ttl
+        now = time.time()
         out: dict[str, HealthEntry] = {}
         for k, v in results.items():
             if not isinstance(k, str) or not isinstance(v, dict):
@@ -122,10 +128,16 @@ def load_cache() -> dict[str, HealthEntry]:
             status = v.get("status")
             if not isinstance(status, str):
                 continue
+            checked_at = int(v.get("checked_at") or 0)
+            if status == RECENT_FAILURE_STATUS:
+                if now - checked_at > RECENT_FAILURE_TTL_SEC:
+                    continue
+            elif audit_stale:
+                continue
             out[k] = HealthEntry(
                 status=status,
                 latency_ms=int(v.get("latency_ms") or 0),
-                checked_at=int(v.get("checked_at") or 0),
+                checked_at=checked_at,
             )
         return out
     except (OSError, ValueError, TypeError) as e:

@@ -187,6 +187,10 @@ class NVIDIANIMProvider:
             return ErrorKind.AUTH  # for safety, in case behavior changes
         if status == 429:
             return ErrorKind.RATE_LIMIT
+        if status == 413:
+            # Request too large for this model (Groq's per-model TPM / context
+            # cap): a model problem, so the chain tries the next candidate.
+            return ErrorKind.PAYLOAD_TOO_LARGE
         if status == 402:
             # Some quota-exhausted responses use 402.
             return ErrorKind.QUOTA_EXHAUSTED

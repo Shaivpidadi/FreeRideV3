@@ -160,20 +160,43 @@ def resolve_auto_candidates(
         )
         return []
 
-    out: list[tuple[str, str]] = []
+    # A slow provider costs every request its first-byte wait before the
+    # chain moves on, so recent p50 latency is part of the order: 10 s of
+    # p50 outweighs one provider of failover headroom.
+    from freeride.core.health import ProviderHealth
+
+    health = ProviderHealth.instance()
+
+    def latency_penalty(provider_name: str) -> float:
+        try:
+            return float(health.stats(provider_name).get("p50_ms", 0) or 0) / 1000.0
+        except Exception:  # noqa: BLE001
+            return 0.0
+
+    scored: list[tuple[float, str, str]] = []
     taken: dict[str, int] = {}
     for entry, intersect, score in ranked:
         provider_ids = entry.get("provider_ids") or {}
         for provider_name in intersect:
             if taken.get(provider_name, 0) >= per_provider:
                 continue
+            own_id = provider_ids.get(provider_name, entry["id"])
             if health_cache:
                 from freeride.core.model_health import is_model_known_broken
 
-                if is_model_known_broken(provider_name, entry["id"], cache=health_cache):
+                # Failures are recorded under the id the provider was
+                # actually sent (its own spelling), which is not always
+                # the group's primary id: OpenRouter lists
+                # ``google/gemma-4-31b-it:free`` and NIM
+                # ``google/gemma-4-31b-it``. Check both.
+                if is_model_known_broken(provider_name, own_id, cache=health_cache) or (
+                    own_id != entry["id"] and is_model_known_broken(provider_name, entry["id"], cache=health_cache)
+                ):
                     continue
             taken[provider_name] = taken.get(provider_name, 0) + 1
-            out.append((provider_ids.get(provider_name, entry["id"]), provider_name))
+            scored.append((score - latency_penalty(provider_name), own_id, provider_name))
+    scored.sort(key=lambda t: -t[0])
+    out: list[tuple[str, str]] = [(mid, name) for _, mid, name in scored]
     if out:
         logger.debug(
             "auto-model: %d candidates, leading with %s via %s",

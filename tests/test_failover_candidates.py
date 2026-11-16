@@ -284,3 +284,82 @@ class TestListFallback:
         cmd.cmd_list(Args())
         out = capsys.readouterr().out
         assert "xkiro" in out and "noop/echo" in out and "Total: 1 free models" in out
+
+
+
+class TestSlowRequestRegressions:
+    """The 4-minute-review bug: timeout demotions were lost behind a stale
+    audit stamp, 413s were retried as unknown, and slow providers ranked
+    ahead of fast ones."""
+
+    def test_recent_failures_survive_a_stale_audit_stamp(self, tmp_path, monkeypatch):
+        import time
+
+        from freeride.core import model_health as mh
+
+        monkeypatch.setattr(mh, "CACHE_PATH", tmp_path / "model_health.json")
+        stale = int(time.time()) - 3 * 86400
+        mh.save_cache({"nvidia_nim::old": mh.HealthEntry("ok", 100, stale)}, as_of=stale)
+        mh.mark_recent_failure("nvidia_nim", "openai/gpt-oss-20b")
+        mh.mark_recent_failure("nvidia_nim", "deepseek-ai/deepseek-v4.1-flash")
+        cache = mh.load_cache()
+        assert "nvidia_nim::old" not in cache  # audit verdict expired with its stamp
+        assert mh.is_model_known_broken("nvidia_nim", "openai/gpt-oss-20b", cache=cache)
+        assert mh.is_model_known_broken("nvidia_nim", "deepseek-ai/deepseek-v4.1-flash", cache=cache)
+
+    async def test_413_moves_to_next_model_not_next_key(self, cooldown, monkeypatch):
+        demoted = []
+        monkeypatch.setattr("freeride.core.model_health.mark_recent_failure", lambda p, m: demoted.append((p, m)))
+        a = _Stub("groq", fail_models={"big": 413})
+        a.classify_error = lambda e: ErrorKind.PAYLOAD_TOO_LARGE if getattr(e, "status_code", None) == 413 else ErrorKind.UNKNOWN
+        body = ChatRequest(model="big", messages=[{"role": "user", "content": "hi"}])
+        chosen, resp = await try_call_with_failover(
+            [(a, ["k1", "k2", "k3"])], cooldown, FailoverContext(request_id="r"),
+            call=lambda p, k: p.forward_chat(body, body.model, k), model=body.model,
+            model_for={"groq": ["big", "small"]}, body=body,
+        )
+        assert chosen is a and resp.model == "small"
+        assert a.seen == ["big", "small"]  # not retried on k2/k3
+        assert demoted == [("groq", "big")]
+
+    def test_groq_413_classifies_as_payload_too_large(self):
+        import httpx
+
+        from freeride.providers.groq import GroqProvider
+
+        r = httpx.Response(413, json={"error": {"message": "Request too large for model"}}, request=httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions"))
+        assert GroqProvider().classify_error(r) is ErrorKind.PAYLOAD_TOO_LARGE
+
+    def test_slow_provider_ranks_behind_fast_one(self, monkeypatch):
+        from freeride.core.health import ProviderHealth
+
+        monkeypatch.setattr("freeride.core.auto_model._provider_keys", lambda n: ["k"])
+        monkeypatch.setattr("freeride.core.auto_model.KeyCooldown.shared", lambda *a, **k: _NoCooldown())
+        ProviderHealth.reset()
+        h = ProviderHealth.instance()
+        for _ in range(5):
+            h.record("nvidia_nim", ok=True, duration_ms=30_000, key="k")
+            h.record("groq", ok=True, duration_ms=400, key="k")
+        catalog = [{"id": "openai/gpt-oss-20b", "available_providers": ["nvidia_nim", "groq"], "provider_ids": {"nvidia_nim": "openai/gpt-oss-20b", "groq": "openai/gpt-oss-20b"}}]
+        cands = resolve_auto_candidates([_Stub("nvidia_nim"), _Stub("groq")], catalog, leaderboard={}, health_cache={})
+        assert [c[1] for c in cands] == ["groq", "nvidia_nim"]
+        ProviderHealth.reset()
+
+
+    def test_demotion_recorded_under_provider_spelling_is_honoured(self, monkeypatch):
+        """A grouped entry's primary id is OpenRouter's ``:free`` spelling;
+        the demotion was written under NIM's own id. The filter must see it."""
+        import time
+
+        from freeride.core.model_health import RECENT_FAILURE_STATUS, HealthEntry
+
+        monkeypatch.setattr("freeride.core.auto_model._provider_keys", lambda n: ["k"])
+        monkeypatch.setattr("freeride.core.auto_model.KeyCooldown.shared", lambda *a, **k: _NoCooldown())
+        catalog = [{"id": "google/gemma-4-31b-it:free", "available_providers": ["openrouter", "nvidia_nim"],
+                    "provider_ids": {"openrouter": "google/gemma-4-31b-it:free", "nvidia_nim": "google/gemma-4-31b-it"}},
+                   {"id": "nvidia/nemotron-3-ultra-550b-a55b", "available_providers": ["nvidia_nim"], "provider_ids": {"nvidia_nim": "nvidia/nemotron-3-ultra-550b-a55b"}}]
+        cache = {"nvidia_nim::google/gemma-4-31b-it": HealthEntry(RECENT_FAILURE_STATUS, 0, int(time.time()))}
+        cands = resolve_auto_candidates([_Stub("openrouter"), _Stub("nvidia_nim")], catalog, leaderboard={}, health_cache=cache)
+        assert ("google/gemma-4-31b-it", "nvidia_nim") not in cands
+        assert ("google/gemma-4-31b-it:free", "openrouter") in cands
+        assert ("nvidia/nemotron-3-ultra-550b-a55b", "nvidia_nim") in cands

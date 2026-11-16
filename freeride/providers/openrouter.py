@@ -213,6 +213,10 @@ class OpenRouterProvider:
             return ErrorKind.QUOTA_EXHAUSTED
         if status == 429:
             return ErrorKind.RATE_LIMIT
+        if status == 413:
+            # Request too large for this model (Groq's per-model TPM / context
+            # cap): a model problem, so the chain tries the next candidate.
+            return ErrorKind.PAYLOAD_TOO_LARGE
         if status == 503:
             return ErrorKind.UNAVAILABLE
         if 500 <= status < 600:

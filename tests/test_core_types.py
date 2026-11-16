@@ -71,6 +71,7 @@ class TestErrorKind:
             "rate_limit",
             "quota_exhausted",
             "model_not_found",
+            "payload_too_large",
             "unavailable",
             "timeout",
             "auth",

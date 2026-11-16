@@ -255,7 +255,7 @@ def _record_failure(
 
 # Error kinds that are about the *model*, not the key: try the next
 # candidate model on the same provider before leaving it.
-_MODEL_LEVEL_KINDS = frozenset({ErrorKind.MODEL_NOT_FOUND, ErrorKind.TIMEOUT})
+_MODEL_LEVEL_KINDS = frozenset({ErrorKind.MODEL_NOT_FOUND, ErrorKind.TIMEOUT, ErrorKind.PAYLOAD_TOO_LARGE})
 
 
 def _models_for(
@@ -377,9 +377,9 @@ async def try_stream_with_failover(
                     summary.retry_after_s = _cool(
                         cooldown, provider, key, kind, e.response, model=body.model
                     ) or summary.retry_after_s
-                    if kind is ErrorKind.MODEL_NOT_FOUND:
-                        if on_model_not_found is not None:
-                            on_model_not_found()
+                    if kind is ErrorKind.MODEL_NOT_FOUND and on_model_not_found is not None:
+                        on_model_not_found()
+                    if _is_model_level(provider, kind):
                         _demote_model(provider, body.model)
                     if kind is ErrorKind.QUOTA_EXHAUSTED:
                         provider_done = True
@@ -481,9 +481,9 @@ async def try_call_with_failover(
                     summary.retry_after_s = _cool(
                         cooldown, provider, key, kind, e.response, model=model_id
                     ) or summary.retry_after_s
-                    if kind is ErrorKind.MODEL_NOT_FOUND:
-                        if on_model_not_found is not None:
-                            on_model_not_found()
+                    if kind is ErrorKind.MODEL_NOT_FOUND and on_model_not_found is not None:
+                        on_model_not_found()
+                    if _is_model_level(provider, kind):
                         _demote_model(provider, model_id)
                     _record_failure(
                         ctx=ctx, summary=summary, provider=provider, key=key, key_idx=key_idx,

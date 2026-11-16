@@ -366,6 +366,8 @@ class OpenAICompatProvider:
             return ErrorKind.QUOTA_EXHAUSTED
         if status == 429:
             return ErrorKind.RATE_LIMIT
+        if status == 413:
+            return ErrorKind.PAYLOAD_TOO_LARGE
         if status in (408, 504):
             return ErrorKind.TIMEOUT
         if 500 <= status < 600:
@@ -387,6 +389,8 @@ class OpenAICompatProvider:
             # and skipping that provider is the right outcome too.
             return ErrorKind.MODEL_NOT_FOUND
         if status in (400, 410, 422):
+            if any(n in text for n in ("context length", "context_length", "too large", "maximum context", "token limit", "exceeds the limit")):
+                return ErrorKind.PAYLOAD_TOO_LARGE
             if any(n in text for n in _MODEL_NOT_FOUND_NEEDLES) or (
                 "model" in text and ("invalid" in text or "unknown" in text)
             ):

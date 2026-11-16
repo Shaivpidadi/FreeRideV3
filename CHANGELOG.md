@@ -6,6 +6,34 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+## [0.4.0a29] — 2026-11-16
+
+Multi-minute agent turns traced to one bug and two gaps.
+
+### Fixed
+- Demotions were lost. The model-health cache treated an audit stamp
+  older than 24 h as "empty cache", so every live timeout demotion was
+  written into an empty file and never read back; the chain re-tried the
+  same slow models (30 s each) on every request. Live failure marks now
+  survive a stale audit stamp (they carry their own 10-minute clock) and
+  are looked up under the provider's own model spelling, which differs
+  from the grouped catalog's primary id (``google/gemma-4-31b-it:free``
+  on OpenRouter vs ``google/gemma-4-31b-it`` on NIM). Measured: a
+  request that timed out once on a model is followed by requests that
+  skip it (35 s → 6-9 s).
+- HTTP 413 (request too large for the model's per-minute token cap or
+  context) is a new ``PAYLOAD_TOO_LARGE`` kind: a model-level failure
+  that moves to the next candidate and demotes the pair, instead of
+  ``UNKNOWN`` retried on every key.
+- Every model-level failure (timeout, 413, tier gate) now demotes the
+  pair; previously only model-not-found did on the status-error path.
+
+### Changed
+- Candidate order is latency-aware: each provider's recent p50 latency
+  (seconds) is subtracted from its candidates' score, so a provider that
+  takes 30 s to first byte ranks behind one that answers in 1 s even
+  when both list the same model.
+
 ## [0.4.0a28] — 2026-10-23
 
 Findings from the first full stress matrix (18 Daytona sandboxes, every

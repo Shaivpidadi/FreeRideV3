@@ -116,6 +116,10 @@ class CerebrasProvider:
             return ErrorKind.QUOTA_EXHAUSTED
         if status == 429:
             return ErrorKind.RATE_LIMIT
+        if status == 413:
+            # Request too large for this model (Groq's per-model TPM / context
+            # cap): a model problem, so the chain tries the next candidate.
+            return ErrorKind.PAYLOAD_TOO_LARGE
         if 500 <= status < 600:
             return ErrorKind.UNAVAILABLE
 

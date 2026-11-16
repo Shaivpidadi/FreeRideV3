@@ -24,6 +24,7 @@ class ErrorKind(str, Enum):
     RATE_LIMIT = "rate_limit"  # 429-style; this key is cooling down, try another
     QUOTA_EXHAUSTED = "quota_exhausted"  # this key is dead until tomorrow / next cycle
     MODEL_NOT_FOUND = "model_not_found"  # try another model on the same provider
+    PAYLOAD_TOO_LARGE = "payload_too_large"  # 413 / context overflow: this model can't take this request
     UNAVAILABLE = "unavailable"  # provider 5xx; transient
     TIMEOUT = "timeout"
     AUTH = "auth"  # invalid key (NIM uses HTTP 403 for this; OpenRouter uses 401)
