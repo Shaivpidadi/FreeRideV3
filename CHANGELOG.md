@@ -6,6 +6,11 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+### Added
+
+- `catalog` GitHub Actions workflow: runs `freeride audit-models --publish`
+  every six hours (and on demand) so the live catalog refreshes without a release.
+
 ## [0.4.0a31] — 2026-11-16
 
 The live catalog: probe results as data, refreshed without a release.

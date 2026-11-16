@@ -208,7 +208,8 @@ the presets), and roster updates for the spec-driven providers (Ollama Cloud's F
 NIM's allowlist) so a rotation doesn't need a release. The fetch is a plain GET with the
 gateway version; nothing about you is sent. `freeride catalog` shows what's loaded;
 `FREERIDE_REMOTE_CATALOG=0` turns it off. The catalog is produced by
-`freeride audit-models --publish` from real probes.
+`freeride audit-models --publish` from real probes, on a six-hourly schedule
+(`.github/workflows/catalog.yml`).
 
 ---
 

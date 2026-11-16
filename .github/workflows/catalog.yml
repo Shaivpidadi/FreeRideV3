@@ -1,0 +1,74 @@
+name: catalog
+
+# Probe every free model with the maintainer's keys and publish the result
+# as the live catalog that gateways pull from api.free-ride.xyz/v1/catalog.
+# Runs on a schedule so roster rotations and dead models reach users without
+# a release. Forks have no secrets and the job skips itself.
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: catalog
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: audit-models --publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    if: github.repository == 'Shaivpidadi/FreeRideV3'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Probe and publish
+        env:
+          FREERIDE_ADMIN_TOKEN: ${{ secrets.FREERIDE_ADMIN_TOKEN }}
+          FREERIDE_TELEMETRY: "0"
+          FREERIDE_REMOTE_CATALOG: "0"
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SAMBANOVA_API_KEY: ${{ secrets.SAMBANOVA_API_KEY }}
+          OLLAMA_CLOUD_API_KEY: ${{ secrets.OLLAMA_CLOUD_API_KEY }}
+          XKIRO_API_KEY: ${{ secrets.XKIRO_API_KEY }}
+          REQUESTY_API_KEY: ${{ secrets.REQUESTY_API_KEY }}
+          DREAMPROMPTING_API_KEY: ${{ secrets.DREAMPROMPTING_API_KEY }}
+          LLM7_API_KEY: ${{ secrets.LLM7_API_KEY }}
+          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          FREERIDE_KEYLESS: ${{ vars.FREERIDE_KEYLESS }}
+        run: |
+          if [ -z "$FREERIDE_ADMIN_TOKEN" ]; then
+            echo "FREERIDE_ADMIN_TOKEN secret is not set; nothing to publish."
+            exit 0
+          fi
+          freeride audit-models --quiet --workers 6 --export catalog.json --publish
+
+      - name: Keep the artifact for inspection
+        if: always() && hashFiles('catalog.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: catalog
+          path: catalog.json
+          retention-days: 14

@@ -160,5 +160,7 @@ gateways polling every few hours get a 304 when nothing changed. Nothing about t
 caller is recorded.
 
 `POST /v1/_admin/catalog` (bearer `ADMIN_TOKEN`, body ≤ 512 KiB, validated) replaces
-it and purges the edge cache. The gateway side lives in
+it and purges the edge cache. The repo's `catalog` workflow runs the audit every six
+hours with the maintainer's keys (secret `FREERIDE_ADMIN_TOKEN` plus the provider
+keys; it skips itself when the token is absent). The gateway side lives in
 `freeride/core/remote_catalog.py`; `FREERIDE_REMOTE_CATALOG=0` turns consumption off.
