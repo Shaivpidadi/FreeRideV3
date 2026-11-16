@@ -174,7 +174,7 @@ That's Anthropic rejecting your credential, not FreeRide. Anthropic only accepts
 The gateway and the doctor probe must agree on the port. Default is `11343`. Override with `--port` on both: `freeride serve --port 9000` and `freeride doctor --claude-code --port 9000`.
 
 **Streaming response shows binary garbage**
-Pre-`v0.4.0a4+phase4g` behavior. Update to the latest pre-release: `freeride upgrade`.
+Behaviour of gateways older than 0.4.0a4. Update to the latest release: `freeride upgrade`.
 
 ---
 
