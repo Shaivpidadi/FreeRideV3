@@ -424,10 +424,17 @@ class OpenAICompatProvider:
 
     # ----- discovery -----------------------------------------------------
     def _override_ids(self) -> frozenset[str] | None:
+        """Roster override: the user's env var wins, then the live
+        catalog's ``free_ids`` for this provider, then nothing."""
         raw = os.environ.get(f"{self.name.upper()}_FREE_MODELS_OVERRIDE", "").strip()
-        if not raw:
+        if raw:
+            return frozenset(s.strip() for s in raw.split(",") if s.strip())
+        try:
+            from freeride.core.remote_catalog import free_ids_override
+
+            return free_ids_override(self.name)
+        except Exception:  # noqa: BLE001
             return None
-        return frozenset(s.strip() for s in raw.split(",") if s.strip())
 
     @staticmethod
     def _is_zero_priced(raw: dict[str, Any]) -> bool | None:

@@ -6,6 +6,24 @@ versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+## [0.4.0a31] — 2026-11-16
+
+The live catalog: probe results as data, refreshed without a release.
+
+### Added
+- ``GET /v1/catalog`` on the telemetry worker serves an artifact that
+  ``freeride audit-models --publish`` uploads (admin token): per provider,
+  the models our probes found broken (with a 24 h clock), what each
+  listed model can do (tools, context length, latency), and roster
+  overrides for spec-driven providers. KV-backed, edge-cached, ETag.
+- The gateway fetches it 10 s after start and every six hours
+  (``freeride/core/remote_catalog.py``). Broken rows merge into the
+  model-health cache as ``remote_broken`` so ``auto`` and the presets
+  skip them; ``free_ids`` rosters override a spec's allowlist (the user's
+  ``<NAME>_FREE_MODELS_OVERRIDE`` still wins). ``FREERIDE_REMOTE_CATALOG=0``
+  disables it; ``FREERIDE_CATALOG_URL`` points elsewhere.
+- ``freeride catalog [status|refresh]`` and ``audit-models --export PATH``.
+
 ## [0.4.0a30] — 2026-11-16
 
 fx as the agent, FreeRide as its provider; the ridex fork is retired.

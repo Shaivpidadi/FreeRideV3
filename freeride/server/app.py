@@ -98,6 +98,26 @@ async def _telemetry_loop() -> None:
         return
 
 
+async def _catalog_loop() -> None:
+    """Fetch the live catalog shortly after startup, then every few hours.
+    Silent on failure; ``FREERIDE_REMOTE_CATALOG=0`` disables it."""
+    from freeride.core import remote_catalog
+
+    try:
+        await asyncio.sleep(10)
+        while True:
+            try:
+                if remote_catalog.enabled():
+                    await asyncio.to_thread(remote_catalog.fetch_remote_catalog)
+            except asyncio.CancelledError:
+                return
+            except Exception as e:  # noqa: BLE001
+                logger.debug("remote catalog refresh failed: %s", e)
+            await asyncio.sleep(remote_catalog.REFRESH_INTERVAL_SEC)
+    except asyncio.CancelledError:
+        return
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     logger.info(
@@ -106,15 +126,17 @@ async def _lifespan(app: FastAPI):
         [p.name for p in app.state.providers],
         "on" if telemetry.is_enabled() else "off",
     )
-    task = asyncio.create_task(_telemetry_loop())
+    tasks = [asyncio.create_task(_telemetry_loop()), asyncio.create_task(_catalog_loop())]
     try:
         yield
     finally:
-        task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
         logger.info("freeride gateway shutting down")
 
 

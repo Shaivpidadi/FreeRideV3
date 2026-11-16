@@ -698,6 +698,34 @@ async function refreshOpenRouterAggregate(env) {
   return { v1, v3, combined, daily_rows_written, weekly_rows_written };
 }
 
+const CATALOG_KV_KEY = "catalog:v1";
+const CATALOG_CACHE_KEY = new Request("https://api.free-ride.xyz/__catalog-cache");
+const CATALOG_MAX_BYTES = 512 * 1024;
+
+async function sha256Hex(text) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// 304 for a matching If-None-Match so gateways polling every few hours
+// pay nothing when the artifact has not changed.
+function catalogResponse(resp, request) {
+  const etag = resp.headers.get("etag");
+  const inm = request.headers.get("if-none-match");
+  if (etag && inm && inm === etag) {
+    return new Response(null, { status: 304, headers: { etag, "access-control-allow-origin": "*" } });
+  }
+  return new Response(resp.body, {
+    status: 200,
+    headers: {
+      "content-type": "application/json",
+      "access-control-allow-origin": "*",
+      "cache-control": "no-store",
+      ...(etag ? { etag } : {}),
+    },
+  });
+}
+
 // Admin endpoints are gated by a bearer token (`wrangler secret put
 // ADMIN_TOKEN`). With no token configured they are disabled.
 function isAdmin(request, env) {
@@ -796,11 +824,65 @@ export default {
       return serve(body, marker);
     }
 
+    // The live model catalog: an artifact `freeride audit-models --publish`
+    // uploads (admin token), served to every gateway. KV-backed, edge
+    // cached 5 min, ETag so gateways can poll cheaply. Nothing per-user.
+    if (url.pathname === "/v1/catalog" && request.method === "GET") {
+      const cache = caches.default;
+      const hit = await cache.match(CATALOG_CACHE_KEY);
+      if (hit) return catalogResponse(hit, request);
+      const body = await env.STATS.get(CATALOG_KV_KEY);
+      if (!body) {
+        return json({ ok: false, error: "no_catalog" }, 404);
+      }
+      const etag = `"${await sha256Hex(body)}"`;
+      const resp = new Response(body, {
+        headers: {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*",
+          "cache-control": "s-maxage=300",
+          etag,
+        },
+      });
+      const put = cache.put(CATALOG_CACHE_KEY, resp.clone());
+      if (ctx?.waitUntil) ctx.waitUntil(put);
+      else await put;
+      return catalogResponse(resp, request);
+    }
+
     if (url.pathname.startsWith("/v1/_admin/") && request.method === "POST") {
       if (!isAdmin(request, env)) {
         return json({ ok: false, error: "unauthorized" }, 401);
       }
       try {
+        if (url.pathname === "/v1/_admin/catalog") {
+          const text = await request.text();
+          if (text.length > CATALOG_MAX_BYTES) {
+            return json({ ok: false, error: "too_large", limit: CATALOG_MAX_BYTES }, 413);
+          }
+          let doc;
+          try {
+            doc = JSON.parse(text);
+          } catch {
+            return json({ ok: false, error: "invalid_json" }, 400);
+          }
+          if (
+            !doc || doc.schema !== 1 || typeof doc.generated_at !== "string" ||
+            Number.isNaN(Date.parse(doc.generated_at)) ||
+            !doc.providers || typeof doc.providers !== "object" || Array.isArray(doc.providers)
+          ) {
+            return json({ ok: false, error: "invalid_catalog" }, 400);
+          }
+          const normalized = JSON.stringify(doc);
+          await env.STATS.put(CATALOG_KV_KEY, normalized);
+          await caches.default.delete(CATALOG_CACHE_KEY);
+          return json({
+            ok: true,
+            bytes: normalized.length,
+            providers: Object.keys(doc.providers).length,
+            generated_at: doc.generated_at,
+          });
+        }
         if (url.pathname === "/v1/_admin/refresh-openrouter") {
           const result = await refreshOpenRouterAggregate(env);
           const stats = await recomputeStats(env);

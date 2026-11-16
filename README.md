@@ -199,6 +199,17 @@ freeride telemetry off    # opt out
 
 The aggregate is what powers [free-ride.xyz/models](https://free-ride.xyz/models). Default on; explicit disclosure banner prints on first run.
 
+## Live catalog
+
+Free rosters rotate weekly and models die without notice. The gateway fetches a small
+signed-by-TLS catalog from `api.free-ride.xyz/v1/catalog` shortly after start and every
+six hours: which models our probes found broken in the last 24 h (skipped by `auto` and
+the presets), and roster updates for the spec-driven providers (Ollama Cloud's Free plan,
+NIM's allowlist) so a rotation doesn't need a release. The fetch is a plain GET with the
+gateway version; nothing about you is sent. `freeride catalog` shows what's loaded;
+`FREERIDE_REMOTE_CATALOG=0` turns it off. The catalog is produced by
+`freeride audit-models --publish` from real probes.
+
 ---
 
 ## Commands

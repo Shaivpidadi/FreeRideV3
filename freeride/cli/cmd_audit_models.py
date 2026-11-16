@@ -106,6 +106,41 @@ def cmd_audit_models(args: argparse.Namespace) -> int:
     merged.update(fresh)
     save_cache(merged)
 
+    if getattr(args, "export", None) or getattr(args, "publish", False):
+        from freeride import __version__
+        from freeride.core.remote_catalog import build_artifact, publish
+
+        models_by_provider = {}
+        rosters = {}
+        for p in providers:
+            key = keys_for.get(p.name)
+            if not key:
+                continue
+            try:
+                models_by_provider[p.name] = p.list_free_models(key)
+            except Exception as e:  # noqa: BLE001
+                print(f"{Y}warning{Z}: {p.name}: catalog unavailable for the artifact ({type(e).__name__})")
+                continue
+            spec = getattr(p, "spec", None)
+            if spec is not None and getattr(spec, "free_ids", None):
+                rosters[p.name] = sorted(m.api_id for m in models_by_provider[p.name])
+        artifact = build_artifact(
+            merged, models_by_provider, generated_by=f"freeride {__version__} audit-models", rosters=rosters
+        )
+        if args.export:
+            import json as _json
+            from pathlib import Path as _Path
+
+            _Path(args.export).write_text(_json.dumps(artifact, indent=2))
+            print(f"artifact → {args.export}")
+        if args.publish:
+            try:
+                result = publish(artifact)
+                print(f"{G}published{Z}: {result}")
+            except Exception as e:  # noqa: BLE001
+                print(f"{R}publish failed{Z}: {e}")
+                return 1
+
     # Summary
     total = counter["seen"]
     ok = counter["ok"]

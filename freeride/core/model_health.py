@@ -105,7 +105,9 @@ def load_cache() -> dict[str, HealthEntry]:
     """
     try:
         if not CACHE_PATH.exists():
-            return {}
+            out: dict[str, HealthEntry] = {}
+            _merge_remote(out)
+            return out
         raw = json.loads(CACHE_PATH.read_text())
         if not isinstance(raw, dict):
             return {}
@@ -139,10 +141,28 @@ def load_cache() -> dict[str, HealthEntry]:
                 latency_ms=int(v.get("latency_ms") or 0),
                 checked_at=checked_at,
             )
+        _merge_remote(out)
         return out
     except (OSError, ValueError, TypeError) as e:
         logger.debug("model_health: cache load failed: %s", e)
-        return {}
+        out = {}
+        _merge_remote(out)
+        return out
+
+
+def _merge_remote(out: dict[str, HealthEntry]) -> None:
+    """Overlay the live catalog's broken rows (24 h clock from ``since``)
+    where the local cache has no fresher verdict of its own."""
+    try:
+        from freeride.core.remote_catalog import broken_entries, load_remote_catalog
+
+        for key, (status, latency, since) in broken_entries(load_remote_catalog()).items():
+            local = out.get(key)
+            if local is not None and local.checked_at >= since:
+                continue
+            out[key] = HealthEntry(status=status, latency_ms=latency, checked_at=since)
+    except Exception as e:  # noqa: BLE001 — the live catalog is advisory
+        logger.debug("model_health: remote catalog merge skipped: %s", e)
 
 
 def _read_as_of() -> float | None:
@@ -207,6 +227,10 @@ def is_model_known_broken(
         return False
     if e.status == RECENT_FAILURE_STATUS:
         return time.time() - e.checked_at <= RECENT_FAILURE_TTL_SEC
+    if e.status == "remote_broken":
+        from freeride.core.remote_catalog import REMOTE_BROKEN_TTL_SEC
+
+        return time.time() - e.checked_at <= REMOTE_BROKEN_TTL_SEC
     return e.status in _BROKEN_STATUSES
 
 

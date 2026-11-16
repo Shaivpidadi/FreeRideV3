@@ -149,3 +149,16 @@ rest of the UTC day once the budget is gone (beacons are then dropped
 until midnight; the KV snapshot keeps serving). Run it at most once a
 day, never twice in a row, and never on the request path. Normal
 operation uses roughly 0.4M reads a day.
+
+
+## Live model catalog
+
+`GET /v1/catalog` serves the artifact that `freeride audit-models --publish` uploads
+(schema 1: `generated_at`, `providers.<name>.{broken,models,free_ids}`). Stored in the
+`STATS` KV namespace under `catalog:v1`, edge-cached for 5 minutes, with an ETag so
+gateways polling every few hours get a 304 when nothing changed. Nothing about the
+caller is recorded.
+
+`POST /v1/_admin/catalog` (bearer `ADMIN_TOKEN`, body ≤ 512 KiB, validated) replaces
+it and purges the edge cache. The gateway side lives in
+`freeride/core/remote_catalog.py`; `FREERIDE_REMOTE_CATALOG=0` turns consumption off.

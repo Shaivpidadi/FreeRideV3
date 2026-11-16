@@ -287,6 +287,8 @@ gating per the terms (EEA/UK/CH paid-only) belongs in `freeride init`.
 
 ### 5.9 Catalog as data, refreshed out of band
 
+*Shipped in 0.4.0a31 as the live catalog: `freeride audit-models --publish` → `GET /v1/catalog` → six-hourly gateway refresh (`freeride/core/remote_catalog.py`).*
+
 Free rosters rotate weekly on the aggregators. Keeping model ids in Python means a PyPI
 release per rotation. Move per-provider free-model allowlists and metadata into a JSON
 catalog shipped in the wheel, and let `freeride audit-models` write a refreshed local copy

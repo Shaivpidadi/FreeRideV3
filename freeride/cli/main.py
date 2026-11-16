@@ -95,6 +95,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Aider only: which config-file scope to write (default: home)",
     )
 
+    p_catalog = sub.add_parser("catalog", help="The live model catalog (fetched from the catalog service)")
+    p_catalog.add_argument("action", choices=["status", "refresh"], nargs="?", default="status")
+
     p_daemon = sub.add_parser("daemon", help="Keep the gateway running under launchd / systemd")
     p_daemon.add_argument("action", choices=["install", "start", "stop", "restart", "status", "uninstall"])
     p_daemon.add_argument("--port", type=int, default=11343)
@@ -210,6 +213,17 @@ def build_parser() -> argparse.ArgumentParser:
              "is preserved.",
     )
     p_audit.add_argument(
+        "--export",
+        default=None,
+        metavar="PATH",
+        help="Also write the audit as a live-catalog artifact (JSON) to PATH",
+    )
+    p_audit.add_argument(
+        "--publish",
+        action="store_true",
+        help="Publish the artifact to the catalog service (needs FREERIDE_ADMIN_TOKEN)",
+    )
+    p_audit.add_argument(
         "--quiet",
         action="store_true",
         help="Only print the final summary line; suppress per-model rows",
@@ -303,6 +317,11 @@ def main(argv: list[str] | None = None) -> int:
         from freeride.cli.cmd_bind import cmd_bind
 
         return cmd_bind(args)
+
+    if args.command == "catalog":
+        from freeride.cli.cmd_catalog import cmd_catalog
+
+        return cmd_catalog(args)
 
     if args.command == "daemon":
         from freeride.cli.cmd_daemon import cmd_daemon
