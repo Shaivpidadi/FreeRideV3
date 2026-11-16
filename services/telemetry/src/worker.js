@@ -455,9 +455,46 @@ async function computeStats(env) {
         ? toNum(all?.tokens_served) / lifetimeSpan
         : 0;
 
+  // Headline figure: OpenRouter's own attribution (every request that
+  // carried our referer, opted into telemetry or not, since Feb 2026)
+  // plus the telemetry tokens attributed to *other* providers (rows in
+  // provider_totals, maintained per beacon; gateways >= 0.4.0a25 send
+  // the split). The two sets are disjoint by construction, so nothing
+  // is counted twice. Older beacons without a split are left out; the
+  // figure is a floor, never an estimate. Computed here, on the hourly
+  // recompute, and served from the KV snapshot: no work per visit.
+  const orLifetimeTokens = toNum(lifetime?.combined_tokens);
+  const providerRows = byProvider?.results ?? [];
+  const attributedTokens = providerRows.reduce(
+    (sum, r) => sum + toNum(r.input_tokens) + toNum(r.output_tokens),
+    0,
+  );
+  const otherProvidersTokens = providerRows
+    .filter((r) => r.provider !== "openrouter")
+    .reduce((sum, r) => sum + toNum(r.input_tokens) + toNum(r.output_tokens), 0);
+  const or7dTokens = (last7d?.results ?? []).reduce((sum, r) => sum + toNum(r.tokens), 0);
+  // Tick rate for the counter: OpenRouter's trailing 7 days plus the
+  // share of telemetry's trailing 7 days that belongs to other
+  // providers (hourly_totals carries no split, so apportion by the
+  // lifetime attributed share). Cosmetic, and deliberately understated.
+  const otherShare = attributedTokens > 0 ? otherProvidersTokens / attributedTokens : 0;
+  const combinedRatePerSec = or7dTokens / (7 * 86400) + (tokens7d * otherShare) / (7 * 86400);
+  const combinedSince = [lifetime?.since, sinceTs ? isoDate(sinceTs) : null]
+    .filter((d) => typeof d === "string" && d.length > 0)
+    .sort()[0] ?? null;
+
   return {
     object: "stats",
     as_of: new Date().toISOString(),
+    combined: {
+      tokens_served: orLifetimeTokens + otherProvidersTokens,
+      openrouter_lifetime: orLifetimeTokens,
+      other_providers_tracked: otherProvidersTokens,
+      since: combinedSince,
+      rate_per_sec: combinedRatePerSec,
+      method:
+        "openrouter_lifetime.combined_tokens + telemetry tokens attributed to providers other than openrouter (disjoint sets, no double counting; beacons without a provider split are excluded)",
+    },
     total: {
       installations: toNum(all?.installations),
       tokens_served: toNum(all?.tokens_served),

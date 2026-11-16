@@ -151,6 +151,16 @@ day, never twice in a row, and never on the request path. Normal
 operation uses roughly 0.4M reads a day.
 
 
+## Headline token count (`combined`)
+
+`GET /v1/stats` carries a `combined` block: `tokens_served` is OpenRouter's lifetime
+attribution for FreeRide's referers plus the telemetry tokens attributed to every
+provider *other than* OpenRouter (`provider_totals`, one row per provider, incremented
+per beacon). The two sets are disjoint, so nothing is counted twice; beacons that
+predate the per-provider split are excluded, which makes it a floor. It is computed on
+the hourly recompute and served from the KV snapshot like the rest of the payload, so a
+page view never sums anything. The site's live counter and the README headline use it.
+
 ## Live model catalog
 
 `GET /v1/catalog` serves the artifact that `freeride audit-models --publish` uploads
