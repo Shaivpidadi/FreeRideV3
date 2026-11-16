@@ -68,9 +68,7 @@ if [ -n "${FREERIDE_REF:-}" ]; then
         "git+https://github.com/Shaivpidadi/FreeRideV3.git@$FREERIDE_REF"
 else
     print "Installing freeride-gateway..."
-    # --prerelease=allow because we ship 0.4.0a* alphas pre-stable; once 0.4.0
-    # final lands you can drop this flag and it'll still pick up the latest.
-    uv tool install --prerelease=allow freeride-gateway
+    uv tool install freeride-gateway
 fi
 
 print ""

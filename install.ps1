@@ -50,9 +50,7 @@ if (-not $uv) {
 
 Print ""
 Print "Installing freeride-gateway..."
-# --prerelease=allow because we ship 0.3.0a* alphas pre-stable; once 0.3.0
-# final lands you can drop this flag and it'll still pick up the latest.
-uv tool install --prerelease=allow freeride-gateway
+uv tool install freeride-gateway
 if ($LASTEXITCODE -ne 0) {
     Fail "uv tool install failed (exit $LASTEXITCODE)"
 }

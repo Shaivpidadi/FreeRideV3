@@ -24,12 +24,12 @@ from freeride import __version__
 _UPGRADE_STRATEGIES: list[tuple[str, list[str]]] = [
     (
         "uv",
-        ["uv", "tool", "install", "--upgrade", "--prerelease=allow", "freeride-gateway"],
+        ["uv", "tool", "install", "--upgrade", "freeride-gateway"],
     ),
-    ("pipx", ["pipx", "upgrade", "--pip-args=--pre", "freeride-gateway"]),
+    ("pipx", ["pipx", "upgrade", "freeride-gateway"]),
     (
         sys.executable,  # Always present
-        [sys.executable, "-m", "pip", "install", "--upgrade", "--pre", "freeride-gateway"],
+        [sys.executable, "-m", "pip", "install", "--upgrade", "freeride-gateway"],
     ),
 ]
 
